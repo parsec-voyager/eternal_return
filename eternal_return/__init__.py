@@ -10,7 +10,6 @@ from . import hud
 from . import hud_draw
 from . import hud_render
 from . import mandelbrot
-from . import names
 from . import operators
 from . import panels
 from . import parts
@@ -37,10 +36,9 @@ CLASSES = (
     *panels.PANELS,
 )
 
-# The add-on's own modules with draw handlers or load handlers, registered after the settings they read. names first,
-# so a file's old names are renamed before the others' load handlers look for the new ones; solid_sky before the
-# floors' draw handlers (mandelbrot, sphere), so they draw over its fog layers.
-MODULES = (names, solid_sky, mandelbrot, sphere, parts, surface, hud_draw)
+# The add-on's own modules with draw handlers or load handlers, registered after the settings they read; solid_sky
+# before the floors' draw handlers (mandelbrot, sphere), so they draw over its fog layers.
+MODULES = (solid_sky, mandelbrot, sphere, parts, surface, hud_draw)
 
 
 def register():

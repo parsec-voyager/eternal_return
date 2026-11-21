@@ -309,7 +309,7 @@ def draw_fog():
     space = context.space_data
     scene = context.scene
     if (context.region_data is None or space is None or space.shading.type != 'SOLID'
-            or not scene.controls_parameters.solid_fog):
+            or not scene.control_settings.solid_fog):
         return
     look = fog_look(scene)
     if look is None:

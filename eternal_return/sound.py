@@ -1,4 +1,4 @@
-"""The propellers' sound while flying: the scene's chosen sound file (other_parameters.drone_sound) from the add-on's
+"""The propellers' sound while flying: the scene's chosen sound file (flight_options.drone_sound) from the add-on's
 sound/ folder, looped on Blender's audio device (aud), louder and higher the harder the throttle is pushed."""
 import os
 
@@ -46,7 +46,7 @@ class PropellerSound:
         self.name = None
         self.handle = None
         self.speed = 1.0
-        self.play(bpy.context.scene.other_parameters.drone_sound)
+        self.play(bpy.context.scene.flight_options.drone_sound)
 
     def play(self, name):
         """Loop the sound file name forever, silent until update() sets its volume"""
@@ -63,10 +63,10 @@ class PropellerSound:
         device plays at the panel's Sound Volume, the percent used as the factor itself (the default 10 plays loud), as
         the user's settings are tuned to it."""
         throttle = min(max(throttle, 0.0), 1.0)
-        other_parameters = bpy.context.scene.other_parameters
-        if other_parameters.drone_sound != self.name:
-            self.play(other_parameters.drone_sound)
-        self.device.volume = other_parameters.volume
+        flight_options = bpy.context.scene.flight_options
+        if flight_options.drone_sound != self.name:
+            self.play(flight_options.drone_sound)
+        self.device.volume = flight_options.volume
         if self.handle is not None:
             self.handle.volume = throttle
             self.handle.pitch = (IDLE_PITCH + PITCH_RANGE * throttle) * self.speed

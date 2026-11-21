@@ -12,7 +12,7 @@ GIMBAL_GAMEPAD_AXES = [
     (sdl2.SDL_CONTROLLER_AXIS_LEFTX, 1.0),
 ]
 
-def read_gimbal_inputs(joystick_axis_inputs, gamepad):
+def read_gimbal_inputs(controller_axes, gamepad):
     """
     Get the stick positions for the HUD's gimbals (hud.py), in the order of its axes 0-3.
 
@@ -26,7 +26,7 @@ def read_gimbal_inputs(joystick_axis_inputs, gamepad):
         return [sdl2.SDL_GameControllerGetAxis(gamepad, axis) / 32768 * sign for axis, sign in GIMBAL_GAMEPAD_AXES]
 
     # Padded, so a controller with fewer than 4 axes leaves the missing gimbal axes centered
-    return (joystick_axis_inputs + [0.0] * 4)[:4]
+    return (controller_axes + [0.0] * 4)[:4]
 
 def gimbal_axes(gamepad):
     """The joystick axis each of read_gimbal_inputs()' four values comes from, and its sign there, as

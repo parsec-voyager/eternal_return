@@ -15,24 +15,14 @@ clip start, whatever the drone's scale, so the HUD sits just past the lens clip 
 
 A recording keeps what the HUD showed on each frame (recorded(), physics.Recording.key_hud()), so its replay shows the
 same HUD, played back or rendered (replay()).
-
-Until stage C (2026-11-20) the HUD was DroneCam's: clip_start, an object under the camera appended from DroneCam.blend,
-its geometry nodes making all of this as meshes, its switches the modifier's inputs, scaled by the add-on to stay at the
-lens clip. Its letters were made again every frame (about 1 ms of every frame, readouts.py's holds made it less), and
-the flight's own readouts had to be laid over its own on a third object. migrate() takes it out of a scene from before,
-keeping its switches as the scene's settings, at the scene's first flight like the rig (rig.migrate()); until then
-it's the HUD shown, and none is drawn. Its places and sizes are kept here, measured from it.
 """
 import math
 
 import bpy
 import numpy as np
 
-from . import horizon
 from . import physics
 from . import readouts
-from . import rig
-from . import velocity
 
 # HUD units ahead of the camera of its clip start
 CLIP_START_DEPTH = 0.1
@@ -66,13 +56,9 @@ READOUTS_LINE = -0.0092
 READOUTS_SIZE = 0.0070854
 TEXT_DEPTH = 0.101
 
-# The settings by the old HUD's switches (its modifier inputs' names), for migrate()
-SWITCHES = {"Crosshairs": "crosshairs", "Ring": "ring", "Gimbals": "gimbals", "Gimbal Values": "gimbal_values",
-            "Altitude": "altitude", "Speed": "speed", "Scale": "scale", "Scale Speed": "scale_speed"}
 # The readouts, top to bottom, by their settings
 LINES = (("Altitude", "altitude"), ("Speed", "speed"), ("Scale", "scale"), ("Scale Speed", "scale_speed"))
-LEGACY_NAME = "clip_start"
-# The controls a stick axis can be mapped to (controls.py's controls_axis_mapping), and those that go one way only,
+# The controls a stick axis can be mapped to (controls.py's control_axes), and those that go one way only,
 # from 0 (controls.convert())
 CONTROLS = ("throttle", "yaw", "pitch", "roll", "scale", "zoom", "orbit", "click", "camera", "lens_clip", "brake")
 UNIDIRECTIONAL = ("throttle", "orbit", "click", "brake")
@@ -81,7 +67,7 @@ UNREAD = -1.0e30
 ZERO = -1.0e20
 
 # What the HUD shows: the sticks' positions (axes 0-3, -1 to 1), the readouts' numbers as the flight measured them
-# (set_readings()), and their text by LINES name. Kept after a flight, as the old HUD kept its inputs.
+# (set_readings()), and their text by LINES name. Kept after a flight.
 axes = (0.0, 0.0, 0.0, 0.0)
 readings = {}
 lines = {}
@@ -99,7 +85,7 @@ def tag_redraw(_settings=None, context=None):
 
 
 class DroneHUD(bpy.types.PropertyGroup):
-    """The HUD's switches, the scene's. Read once from DroneCam's HUD in a scene from before (migrate())."""
+    """The HUD's switches, the scene's"""
     crosshairs: bpy.props.BoolProperty(name="Crosshairs", description="Crosshairs in the ring", default=False,
                                        update=tag_redraw)
     ring: bpy.props.BoolProperty(name="Ring", description="A ring round the view's center", default=True,
@@ -121,65 +107,11 @@ class DroneHUD(bpy.types.PropertyGroup):
         name="In Renders", description="Show the HUD in renders through the drone camera too, as objects under it "
                                        "(a recorded flight's HUD frame by frame). Locks the interface while rendering",
         default=False, update=lambda settings, context: in_renders_changed(settings.id_data))
-    hud_read: bpy.props.BoolProperty(
-        name="Read from HUD", description="The switches were read from DroneCam's HUD once (migrate())", default=False)
 
 
 def in_renders_changed(scene):
     from . import hud_render
     hud_render.in_renders_changed(scene)
-
-
-def legacy_hud(camera_obj):
-    """DroneCam's HUD under the camera (clip_start), or None"""
-    if camera_obj is None:
-        return None
-    return next((child for child in camera_obj.children
-                 if child.name.split(".")[0] == LEGACY_NAME and child.type == 'MESH'
-                 and any(m.type == 'NODES' for m in child.modifiers)), None)
-
-
-def migrate(scene, camera_obj):
-    """Take DroneCam's HUD out from under the camera, its switches kept as the scene's settings (the first time).
-    Returns whether there was one."""
-    legacy = legacy_hud(camera_obj)
-    if legacy is None:
-        return False
-    settings = scene.drone_hud
-    modifier = next((m for m in legacy.modifiers if m.type == 'NODES' and m.node_group), None)
-    if modifier is not None and not settings.hud_read:
-        for item in modifier.node_group.interface.items_tree:
-            if item.item_type == 'SOCKET' and item.in_out == 'INPUT' and item.name in SWITCHES:
-                socket = getattr(modifier.properties.inputs, item.identifier, None)
-                if socket is not None:
-                    setattr(settings, SWITCHES[item.name], bool(socket.value))
-        settings.hud_read = True
-    delete_legacy(legacy)
-    return True
-
-
-def delete_legacy(legacy):
-    """Delete DroneCam's HUD object, with the objects the add-on put under it (the flight's readouts, and the horizon
-    and velocity marker from before they were drawn), and the node groups only they used. Anything else under it
-    stays, under the camera, where it was."""
-    ours = [legacy] + [obj for obj in legacy.children_recursive
-                       if horizon.is_horizon(obj) or velocity.is_velocity(obj) or readouts.is_readouts(obj)]
-    groups = []
-    for obj in ours:
-        for modifier in obj.modifiers:
-            if modifier.type == 'NODES' and modifier.node_group:
-                groups += [group for group in rig.rig_groups(modifier) if group not in groups]
-    for child in legacy.children:
-        if child not in ours:
-            world = child.matrix_world.copy()
-            child.parent = legacy.parent
-            child.matrix_world = world
-    for obj in reversed(ours):
-        mesh = obj.data
-        bpy.data.objects.remove(obj, do_unlink=True)
-        if mesh is not None and mesh.users == 0:
-            bpy.data.meshes.remove(mesh)
-    rig.remove_groups(groups)
 
 
 def shown_lines(scene):
@@ -241,8 +173,8 @@ def replay(scene):
     physics.replay() shows the drone), held before its start and after its end"""
     if physics.is_flying():
         return
-    references = getattr(scene, "references", None)
-    drone_obj = references.drone_obj if references else None
+    drone_rig = getattr(scene, "drone_rig", None)
+    drone_obj = drone_rig.drone if drone_rig else None
     take = physics.Recording.of(drone_obj) if drone_obj else None
     if take is None:
         return
@@ -267,7 +199,7 @@ def set_axes(values):
 def gimbal_controls(scene):
     """The control mapped to the controller axis each gimbal axis (0-3) shows, with its sign there, as
     (control or None, sign)"""
-    mapping = scene.controls_axis_mapping
+    mapping = scene.control_axes
     return tuple((next((control for control in CONTROLS if getattr(mapping, control) == str(axis)), None), sign)
                  for axis, sign in gimbal_axes)
 
@@ -279,12 +211,12 @@ def deadzone_band(scene, control, sign=1.0):
     deadzone is there."""
     if control is None:
         return None
-    controls = scene.controls_parameters
+    controls = scene.control_settings
     deadzone = min(getattr(controls, f"{control}_deadzone") / 100.0, 1.0)
     if deadzone <= 0.0:
         return None
     whole_stick = (control in UNIDIRECTIONAL and not getattr(controls, f"{control}_centered")
-                   and not (control == "throttle" and controls.flying_mode == "3D"))
+                   and not (control == "throttle" and controls.flight_mode == "3D"))
     if whole_stick:
         edge = 2.0 * deadzone - 1.0
         low, high = (-edge, 1.0) if getattr(controls, f"{control}_invert") else (-1.0, edge)

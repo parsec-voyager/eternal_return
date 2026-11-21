@@ -615,7 +615,7 @@ def settle(obj, camera_matrix):
 
 def drone_camera(scene):
     """The drone's camera, the Drone object's camera child, or None"""
-    drone = getattr(getattr(scene, "references", None), "drone_obj", None)
+    drone = getattr(getattr(scene, "drone_rig", None), "drone", None)
     return next((child for child in drone.children if child.type == 'CAMERA'), None) if drone else None
 
 

@@ -28,23 +28,18 @@ degrees. Toward a closest surface point (Mesh) or along gravity, it sends the di
 camera slides along a flat face, or as the simulation turns the drone, and the draw turns it into the view by the view's
 own rotation.
 
-Until 2026-11-17 it was a geometry nodes object under clip_start, clip_start_horizon, its tubes made again at every
-depsgraph evaluation that moved the camera: twice a frame, about 1 ms each, mostly the node graph's own overhead for a
+Until 2026-11-17 it was a geometry nodes object under the camera, its tubes made again at every depsgraph
+evaluation that moved the camera: twice a frame, about 1 ms each, mostly the node graph's own overhead for a
 few hundred points (2026-11-17, Tokyo). Drawn, it costs no evaluation at all, and a draw's own work is a few hundred
-points of numpy. Its lines are flat, the same thickness on screen as the tubes were, instead of lit. remove() deletes
-the old object from a scene on its next flight.
+points of numpy. Its lines are flat, the same thickness on screen as the tubes were, instead of lit.
 
 Everything is drawn inside the HUD's ring too, where the click aims: the click is view3d.select at the middle of the
 view, which never picks what a draw handler draws.
 """
 import math
 
-import bpy
 import numpy as np
 from mathutils import Euler, Vector
-
-# Marks the geometry nodes object of the horizon until 2026-11-17 (removed from scenes: hud.migrate())
-OBJECT_KEY = "dronecam_horizon"
 
 # Where the HUD is drawn, in HUD units, which hud_draw.py draws in (hud.py): 0.1 ahead is the camera's clip start. The
 # ring and gimbals are 0.1 ahead, and the text is drawn over everything. The line is just behind them.
@@ -73,11 +68,6 @@ DOT_DEPTH = 0.1035
 
 # What the next draws are level with: set_level()'s arguments, or None while hidden
 _level = None
-
-
-def is_horizon(obj):
-    """Whether obj is the old geometry nodes horizon (hud.delete_legacy())"""
-    return isinstance(obj, bpy.types.Object) and bool(obj.get(OBJECT_KEY))
 
 
 def set_level(down=None, pivot=None, pivot_axes=(1.0, 1.0, 1.0), pivot_rotation=(0.0, 0.0, 0.0)):

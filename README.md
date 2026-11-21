@@ -2,7 +2,7 @@
 
 Eternal Return is a Blender add-on for flying a virtual FPV drone through scenes with an RC radio or gamepad, at any scale. Changing scale continuously, in flight, is the way to move: dive into a fractal, climb out of a planet, and travel between any two points of any size in seconds, on a logarithmic path like the patterns of nature.
 
-It began as a fork of Globglob's (Arthur Blaquart) DroneCam add-on and has since been rewritten on a flight core of its own. Every feature below can be assigned controls on your controller, and there are plenty of smaller additions as well. Disable DroneCam before enabling Eternal Return: the two keep their settings under the same names in a scene.
+It began as a fork of Globglob's (Arthur Blaquart) DroneCam add-on and has since been rewritten on a flight core of its own. Every feature below can be assigned controls on your controller, and there are plenty of smaller additions as well.
 
 ### Install
 
@@ -12,7 +12,7 @@ To build it from source, `eternal_return/install.sh` builds and installs it into
 
 ### Physics
 
-The drone flies on the Eternal Return core, a compiled module bundled with the add-on, in place of DroneCam's geometry nodes simulation: the same flight, in double precision. Each flight goes on from where the last one stopped, at the same position, orientation and speed, so stopping and starting again doesn't move the view. The physics settings (mass, gravity, ground, drag, air density and camera tilt) are the scene's, in the Drone panel. Add Drone builds the drone and its camera in code. A scene from before has DroneCam's rig taken out at its first flight or bake: its settings, the drone's position and any recording of inputs are kept, and the change is in the file once you save it.
+The drone flies on the Eternal Return core, a compiled module bundled with the add-on, in double precision. Each flight goes on from where the last one stopped, at the same position, orientation and speed, so stopping and starting again doesn't move the view. The physics settings (mass, gravity, ground, drag, air density and camera tilt) are the scene's, in the Drone panel. Add Drone builds the drone and its camera.
 
 Record (in the Record panel) records a flight's inputs: the sticks, and everything else the physics are given each frame, along with the Drone's own scaling, orbits and moves, keyed on the Drone. Afterwards the timeline goes back to where the flight started, and playing it replays the flight exactly. The keyed sticks (Thrust, Pitch, Roll and Yaw Rate under Drone Recording) can be edited in the Graph Editor, and the replay flies the edited sticks from the next jump of the timeline on. Bake Animation bakes the replay into an editable camera. A flight without Record keeps the last recording in the file but takes it off the Drone; assign it back (as the Drone's action) to replay it again. Record Camera, which keys the camera itself every tick, is still the way to record everything else the add-on does, like loops of an endless map.
 
@@ -58,9 +58,7 @@ The UI subpanel (in the Eternal Return side panel, above Controls) has every HUD
 
 The HUD is drawn straight into the view looking through the drone camera (draw handlers, like the sphere maps' floors), from the very view Blender draws each frame with, just past the lens clip, the same size on screen at any scale. It's not an object, so it costs the scene nothing to evaluate, and its text is drawn as text, not made into meshes every frame. Its lines are flat, light grey in Solid mode and dark in Material Preview and Rendered. Like any draw handler, it needs the viewport's overlays on.
 
-**In Renders** shows the HUD in renders through the drone camera too: it's built as objects under the camera (Drone HUD and its text), disabled in the viewport, where the drawn HUD is, and remade before every frame. A recording keeps what the HUD showed on every frame (the sticks and the readouts), so a recorded flight renders, and plays back in the viewport, with its HUD as you flew it. Turning it on locks the interface while rendering (Render > Lock Interface), which changing objects from a frame handler needs. Bake Animation's Editable Drone Camera has no HUD.
-
-Until November 2026, the HUD was DroneCam's clip_start object under the camera, its geometry nodes making the ring, gimbals and text as meshes, with the horizon, velocity marker and readouts as more objects under it. A scene's first flight takes it out, keeping its switches as the scene's settings; until then, it's still the HUD you see. Anything of yours under it moves to the camera, where it was.
+**In Renders** shows the HUD in renders through the drone camera too: it's built as objects under the camera (Drone HUD and its text), disabled in the viewport, where the drawn HUD is, and remade before every frame. A recording keeps what the HUD showed on every frame (the sticks and the readouts), so a recorded flight renders, and plays back in the viewport, with its HUD as you flew it. Turning it on locks the interface while rendering (Render > Lock Interface), which changing objects from a frame handler needs. Bake Animation's Baked Drone Camera has no HUD.
 
 ### Readouts
 

@@ -63,8 +63,8 @@ CONTROLS = {
 }
 AXIS_MAPPING = {"throttle": "5", "scale": "2"}
 OTHER = {"volume": 0.0}
-# The HUD on clip_start (its geometry nodes' inputs): no gimbal values, altitude or speed readouts; scale speed on
-HUD = {"Socket_10": False, "Socket_11": False, "Socket_12": False, "Socket_20": True}
+# The HUD (scene.drone_hud): no gimbal values, altitude or speed readouts; scale speed on
+HUD = {"gimbal_values": False, "altitude": False, "speed": False, "scale_speed": True}
 
 DRONE_LOCATION = (0.0, -28.0, 0.0)
 # A sample object to fly around, with loop_config: a twisted torus (Extra Objects' Twisted Torus, 48 x 12 segments,
@@ -123,19 +123,18 @@ def scene_settings(scene):
 def add_drone(scene):
     """The rig, as the add-on's Add Drone makes it, with the user's settings"""
     for name, value in CONTROLS.items():
-        setattr(scene.controls_parameters, name, value)
+        setattr(scene.control_settings, name, value)
     for name, value in AXIS_MAPPING.items():
-        setattr(scene.controls_axis_mapping, name, value)
+        setattr(scene.control_axes, name, value)
     for name, value in OTHER.items():
-        setattr(scene.other_parameters, name, value)
+        setattr(scene.flight_options, name, value)
     bpy.ops.er.add_to_scene()
     drone, camera = bpy.data.objects["Drone"], bpy.data.objects["Drone_Camera"]
     drone.location = DRONE_LOCATION
     # Hidden, as in the user's template: it's only the three vertices the camera hangs from
     drone.hide_set(True)
-    hud = bpy.data.objects["clip_start"].modifiers[0]
-    for identifier, value in HUD.items():
-        getattr(hud.properties.inputs, identifier).value = value
+    for name, value in HUD.items():
+        setattr(scene.drone_hud, name, value)
     scene.camera = camera
 
 

@@ -11,8 +11,7 @@ full throttle. So:
   frequency domain of the whole loop (loop_noise()), so it's periodic too, and a hit's tail past the end wraps round to
   the start (add_wrapped())
 - nothing is made above MAX_PARTIAL, as 2.5 times higher must stay audible and under Nyquist
-- each is as loud (RMS) as the sound it replaced (DroneCam's propellers, the Pixabay ones), so the scenes' Sound Volume,
-  tuned to those, still fits
+- each is as loud (RMS) as the sound it replaced, so the scenes' Sound Volume, tuned to those, still fits
 """
 
 import argparse
@@ -86,7 +85,7 @@ def propellers(rng):
     """A quadcopter hovering, 4 s. Each of the four rotors' sound repeats at its shaft rate: strong at the blade pass
     (three blades, three times the shaft rate) and its multiples, weak at the rest (the blades' imbalance), with the
     motor's electrical whine (7 pole pairs) above. The rotors run at slightly different speeds, two pairs near 265 and
-    315 Hz blade pass as DroneCam's had, so they beat against each other; each speed also wanders a little, as a flight
+    315 Hz blade pass, so they beat against each other; each speed also wanders a little, as a flight
     controller holds a hover. Air rushing through the props is noise, pulsing with the blade pass."""
     n = 4 * SR
     out = np.zeros(n)

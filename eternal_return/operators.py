@@ -1,5 +1,5 @@
 """The add-on's operators: Fly (the modal loop around flight.FlightFeatures), Add Drone, Bake Animation and
-Store/Load Parameters, with the References and Other settings groups and the add-on preferences Store Parameters
+Store/Load Controls, with the drone rig and flight options settings groups and the add-on preferences Store Controls
 keeps the controls' settings in."""
 import traceback
 
@@ -7,7 +7,6 @@ import bpy
 
 from . import controls
 from . import flight
-from . import hud
 from . import hud_render
 from . import physics
 from . import rig
@@ -15,17 +14,18 @@ from . import sound
 
 # The modal timer's interval, in seconds: one tick of flight each
 TICK_INTERVAL = 0.01
+# What Bake Animation names the camera it bakes the flight into
+BAKED_CAMERA = "Baked Drone Camera"
 
-# The controls' settings groups Store and Load Parameters copy between the scene and the add-on preferences
-STORED_GROUPS = ("controls_axis_mapping", "controls_parameters", "throttle_control_power",
-                 "rotation_controls_actual_rates")
+# The controls' settings groups Store and Load Controls copy between the scene and the add-on preferences
+STORED_GROUPS = ("control_axes", "control_settings", "stick_rates")
 
 
-class References(bpy.types.PropertyGroup):
-    """The scene's drone, its camera, and how far Keep Drone at Origin has moved the world (scene.references)"""
-    drone_obj: bpy.props.PointerProperty(
+class DroneRig(bpy.types.PropertyGroup):
+    """The scene's drone, its camera, and how far Keep Drone at Origin has moved the world (scene.drone_rig)"""
+    drone: bpy.props.PointerProperty(
         name="Drone", description="The scene's drone, which Add Drone built", type=bpy.types.Object)
-    camera_obj: bpy.props.PointerProperty(
+    camera: bpy.props.PointerProperty(
         name="Drone Camera", description="The drone's camera", type=bpy.types.Object)
     world_offset: bpy.props.FloatVectorProperty(
         name="World Offset",
@@ -33,8 +33,8 @@ class References(bpy.types.PropertyGroup):
         size=3, subtype='TRANSLATION', default=(0.0, 0.0, 0.0))
 
 
-class OtherParameters(bpy.types.PropertyGroup):
-    """Recording and sound settings (scene.other_parameters)"""
+class FlightOptions(bpy.types.PropertyGroup):
+    """Recording and sound settings (scene.flight_options)"""
     record: bpy.props.BoolProperty(
         name="Record", description="Record the flight's inputs as keyframes on the Drone. Playing the timeline "
                                    "replays them", default=False)
@@ -53,22 +53,22 @@ class OtherParameters(bpy.types.PropertyGroup):
 
 
 # The settings groups, by the scene attribute each is kept under
-SCENE_GROUPS = {"references": References, "other_parameters": OtherParameters}
+SCENE_GROUPS = {"drone_rig": DroneRig, "flight_options": FlightOptions}
 
 
 class EternalReturnPreferences(bpy.types.AddonPreferences):
-    """The controls' settings as Store Parameters last kept them, for Load Parameters to give any scene"""
+    """The controls' settings as Store Controls last kept them, for Load Controls to give any scene"""
     bl_idname = __package__
     __annotations__ = {name: bpy.props.PointerProperty(type=controls.SCENE_GROUPS[name]) for name in STORED_GROUPS}
 
     def draw(self, context):
-        self.layout.label(text="Store and Load Parameters in the Eternal Return panel's Controls copy settings here")
+        self.layout.label(text="Store and Load in the Eternal Return panel's Controls keep the controls' settings here")
 
 
 class ER_OT_Fly(flight.FlightFeatures, bpy.types.Operator):
     """Fly the drone camera with the controller. Click again, or press Esc, to stop"""
     bl_idname = "er.fly"
-    bl_label = "Fly Drone Camera"
+    bl_label = "Fly"
 
     # What execute() set up, for cancel() to take down: on the instance once set, None until then
     _controller = None
@@ -86,7 +86,7 @@ class ER_OT_Fly(flight.FlightFeatures, bpy.types.Operator):
         """The propellers follow the throttle: its thrust as a fraction of the Maximum Thrust"""
         if self._sound is None:
             return
-        power = context.scene.throttle_control_power.power
+        power = context.scene.control_settings.max_thrust
         throttle = abs(flight.dict_controls.get("throttle", 0.0)) / power if power > 0.0 else 0.0
         self._sound.update(throttle)
 
@@ -167,10 +167,10 @@ class ER_OT_Fly(flight.FlightFeatures, bpy.types.Operator):
             self._sound.stop()
             self._sound = None
 
-        if context.scene.other_parameters.record:
-            self.report({'INFO'}, "Flying Stopped. Inputs recorded. Play the timeline to replay them.")
+        if context.scene.flight_options.record:
+            self.report({'INFO'}, "Landed. The flight's inputs are keyed on the Drone: play the timeline to replay it.")
         else:
-            self.report({'INFO'}, "Flying Stopped.")
+            self.report({'INFO'}, "Landed.")
 
 
 def is_drone(obj):
@@ -183,7 +183,7 @@ def is_drone_camera(obj):
 
 
 def remove_drones():
-    """Delete every earlier drone in the file, with its camera, their data, and DroneCam's node groups"""
+    """Delete every earlier drone in the file, with its camera and their data"""
     for obj in [obj for obj in bpy.data.objects if is_drone(obj) or is_drone_camera(obj)]:
         bpy.data.objects.remove(obj, do_unlink=True)
     # Their data, and any left over without an object
@@ -191,8 +191,6 @@ def remove_drones():
         bpy.data.meshes.remove(mesh, do_unlink=True)
     for camera in [camera for camera in bpy.data.cameras if camera.name.startswith("Drone_Camera")]:
         bpy.data.cameras.remove(camera, do_unlink=True)
-    for group in [group for group in bpy.data.node_groups if group.name.startswith("_DroneCam_")]:
-        bpy.data.node_groups.remove(group, do_unlink=True)
 
 
 class ER_OT_AddToScene(bpy.types.Operator):
@@ -202,20 +200,16 @@ class ER_OT_AddToScene(bpy.types.Operator):
 
     def execute(self, context):
         scene = context.scene
-        # DroneCam's old HUD, wherever it's left in the file, and the HUD's render objects (remade below)
-        for obj in [obj for obj in bpy.data.objects if hud.legacy_hud(obj.parent) == obj]:
-            hud.delete_legacy(obj)
+        # The HUD's render objects, remade below
         hud_render.remove(scene)
 
         remove_drones()
 
-        references = scene.references
+        drone_rig = scene.drone_rig
         drone = rig.build_drone(scene)
-        references.drone_obj = drone
-        references.camera_obj = rig.build_camera(scene, drone, scene.controls_parameters.default_clip_start)
+        drone_rig.drone = drone
+        drone_rig.camera = rig.build_camera(scene, drone, scene.control_settings.default_clip_start)
 
-        # The drawn HUD reads the scene's settings, not an old HUD's
-        scene.drone_hud.hud_read = True
         hud_render.update(scene)
 
         for obj in context.selected_objects:
@@ -224,15 +218,6 @@ class ER_OT_AddToScene(bpy.types.Operator):
         context.view_layer.objects.active = drone
         self.report({'INFO'}, "Drone added to the scene.")
         return {'FINISHED'}
-
-
-def migrate_scene(context):
-    """Take DroneCam's rig and HUD out of a scene from before (rig.migrate(), hud.migrate()), as a flight does, so a
-    bake replays the drone as it now flies"""
-    scene = context.scene
-    references = scene.references
-    rig.migrate(scene, references.drone_obj, references.camera_obj, context.evaluated_depsgraph_get())
-    hud.migrate(scene, references.camera_obj)
 
 
 class ER_OT_BakeAnimation(bpy.types.Operator):
@@ -244,9 +229,8 @@ class ER_OT_BakeAnimation(bpy.types.Operator):
     end_frame: bpy.props.IntProperty(name="End Frame", description="The last frame to bake", default=250, min=1)
 
     def invoke(self, context, event):
-        migrate_scene(context)
         # The drone's recording's frames, else the last flight's
-        drone_obj = context.scene.references.drone_obj
+        drone_obj = context.scene.drone_rig.drone
         take = physics.Recording.of(drone_obj) if drone_obj and physics.available() else None
         if take is not None:
             self.start_frame, self.end_frame = take.start_frame, take.end_frame()
@@ -255,19 +239,18 @@ class ER_OT_BakeAnimation(bpy.types.Operator):
         return context.window_manager.invoke_props_dialog(self)
 
     def execute(self, context):
-        migrate_scene(context)
         scene = context.scene
-        drone_camera = scene.references.camera_obj
+        drone_camera = scene.drone_rig.camera
         if drone_camera is None:
             self.report({'ERROR'}, "No Drone Camera detected. Click Add Drone first")
             return {'CANCELLED'}
 
         # A camera following the drone camera, baked into keyframes with its constraints cleared
-        camera_data = bpy.data.cameras.new("Editable Drone Camera")
+        camera_data = bpy.data.cameras.new(BAKED_CAMERA)
         camera_data.lens = drone_camera.data.lens
         camera_data.clip_start = drone_camera.data.clip_start
         camera_data.clip_end = drone_camera.data.clip_end
-        camera = bpy.data.objects.new("Editable Drone Camera", camera_data)
+        camera = bpy.data.objects.new(BAKED_CAMERA, camera_data)
         (context.collection or scene.collection).objects.link(camera)
         for kind in ('COPY_LOCATION', 'COPY_ROTATION'):
             constraint = camera.constraints.new(kind)
@@ -283,14 +266,14 @@ class ER_OT_BakeAnimation(bpy.types.Operator):
         bpy.ops.nla.bake(frame_start=self.start_frame, frame_end=self.end_frame, only_selected=True,
                          visual_keying=True, clear_constraints=True, bake_types={'OBJECT'},
                          channel_types={'LOCATION', 'ROTATION'})
-        self.report({'INFO'}, "Baked Camera Animation. Location/Rotation keyframes can now be edited in the graph "
-                              "editor.")
+        self.report({'INFO'}, f"Baked frames {self.start_frame}-{self.end_frame} into {camera.name}: its location and "
+                              f"rotation keys can be edited in the Graph Editor.")
         return {'FINISHED'}
 
 
 def copy_settings(source, target):
     """Copy every add-on-defined setting of a settings group onto another of the same class: its own and its mixins'
-    (controls_parameters' scaling settings), not Blender's own"""
+    (control_settings' scaling settings), not Blender's own"""
     for prop in source.bl_rna.properties:
         name = prop.identifier
         if name in ("rna_type", "name") or prop.is_readonly or prop.type in ('POINTER', 'COLLECTION'):
@@ -305,31 +288,30 @@ def preferences(context):
     return context.preferences.addons[__package__].preferences
 
 
-class ER_OT_StoreParameters(bpy.types.Operator):
-    """Keep the scene's controls settings in the add-on preferences, for Load Parameters to give other scenes"""
-    bl_idname = "er.store_parameters"
-    bl_label = "Store Parameters in Addon Preferences"
+class ER_OT_StoreControls(bpy.types.Operator):
+    """Keep the scene's controls settings in the add-on preferences, for Load Controls to give other scenes"""
+    bl_idname = "er.store_controls"
+    bl_label = "Store Controls"
 
     def execute(self, context):
         stored = preferences(context)
         for name in STORED_GROUPS:
             copy_settings(getattr(context.scene, name), getattr(stored, name))
-        self.report({'INFO'}, "Stored Parameters")
+        self.report({'INFO'}, "The controls' settings are kept in the preferences.")
         return {'FINISHED'}
 
 
-class ER_OT_LoadParameters(bpy.types.Operator):
-    """Give the scene the controls settings Store Parameters kept in the add-on preferences"""
-    bl_idname = "er.load_parameters"
-    bl_label = "Load Parameters from Addon Preferences"
+class ER_OT_LoadControls(bpy.types.Operator):
+    """Give the scene the controls settings Store Controls kept in the add-on preferences"""
+    bl_idname = "er.load_controls"
+    bl_label = "Load Controls"
 
     def execute(self, context):
         stored = preferences(context)
         for name in STORED_GROUPS:
             copy_settings(getattr(stored, name), getattr(context.scene, name))
-        self.report({'INFO'}, "Loaded Parameters")
+        self.report({'INFO'}, "The scene has the controls' settings from the preferences.")
         return {'FINISHED'}
 
 
-OPERATORS = (ER_OT_Fly, ER_OT_AddToScene, ER_OT_BakeAnimation, ER_OT_StoreParameters,
-             ER_OT_LoadParameters)
+OPERATORS = (ER_OT_Fly, ER_OT_AddToScene, ER_OT_BakeAnimation, ER_OT_StoreControls, ER_OT_LoadControls)

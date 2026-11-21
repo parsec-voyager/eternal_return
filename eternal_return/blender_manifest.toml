@@ -78,7 +78,6 @@ paths_exclude_pattern = [
   "/.git/",
   "/*.zip",
   "*.blend1",
-  "/.vscode/",
   "/mouse_move.py",
   "/install.sh"
 ]

@@ -3,12 +3,12 @@
 (velocity.py).
 
 The horizon and velocity marker say where something is in the drone camera's view: the way down, the way the drone
-flies. As geometry nodes objects under clip_start (until 2026-11-17), each read its own evaluated transform to be exact
-for the frame drawn, which made the depsgraph build them again at every evaluation that moved the camera, twice a frame:
-about 2.5 ms a frame together, nearly all of it the node graphs' overhead, on every map (2026-11-17, measured on the
-Earth over Tokyo: 49 -> 54 fps with them hidden). A draw handler has the view matrix Blender draws that frame with, so
-it's exact for every draw, and costs no evaluation at all: just a few hundred points worked out and drawn. The rest of
-the HUD followed in stage C (2026-11-20), DroneCam's clip_start object, whose letters were made again every frame.
+flies. As geometry nodes objects (until 2026-11-17), each read its own evaluated transform to be exact for the frame
+drawn, which made the depsgraph build them again at every evaluation that moved the camera, twice a frame: about 2.5 ms
+a frame together, nearly all of it the node graphs' overhead, on every map (2026-11-17, measured on the Earth over
+Tokyo: 49 -> 54 fps with them hidden). A draw handler has the view matrix Blender draws that frame with, so it's exact
+for every draw, and costs no evaluation at all: just a few hundred points worked out and drawn. The rest of the HUD
+followed in 2026-11-20, from an object whose letters were made again every frame.
 
 Everything is drawn in the camera's own space (the view matrix left out), so however far the camera is from the world's
 origin, float32 never shakes it. The HUD's plane is a fixed depth ahead, in HUD units (hud.CLIP_START_DEPTH of them
@@ -72,7 +72,7 @@ def flight_lines(view_matrix, drone_eval):
     None)."""
     view_rotation = view_matrix.to_3x3().normalized()
     curves, dots = [], []
-    if bpy.context.scene.controls_parameters.horizon:
+    if bpy.context.scene.control_settings.horizon:
         down = horizon.world_down(view_matrix.inverted().translation)
         if down is not None:
             curves, dots = horizon.lines(to_hud(view_rotation, down))
@@ -172,14 +172,13 @@ def draw_texts(context, view, texts):
 
 
 def hud_camera(context):
-    """The drone camera, when the view looks through it and its HUD is drawn (not DroneCam's, in a scene from before
-    its first flight: hud.migrate()), else None"""
+    """The drone camera, when the view looks through it, else None"""
     region_data = context.region_data
     if region_data is None or not region_data.is_perspective or region_data.view_perspective != 'CAMERA':
         return None
     scene = context.scene
-    camera = scene.references.camera_obj if hasattr(scene, "references") else None
-    if camera is None or scene.camera != camera or hud.legacy_hud(camera) is not None:
+    camera = scene.drone_rig.camera if hasattr(scene, "drone_rig") else None
+    if camera is None or scene.camera != camera:
         return None
     return camera
 

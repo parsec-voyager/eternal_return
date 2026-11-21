@@ -16,7 +16,6 @@ from . import mandelbrot
 from . import odometer
 from . import parts
 from . import physics
-from . import rig
 from . import sphere
 from . import substitution
 from . import surface
@@ -39,8 +38,8 @@ MAX_MODAL_INTERVAL = 0.1
 
 # How far the Drone_Camera can get from the world origin, in multiples of its clip_start, before Keep Drone at Origin
 # moves the scene back under it. Like physics.RECENTER_DISTANCE, but for float32 rounding in world space. In multiples
-# of clip_start, not of the drone's scale, since nothing closer than clip_start is drawn, and the clip_start HUD sits
-# right there. At 500 times the scale, with a default clip start of 0.01 (50,000 times clip_start), float32 put the HUD
+# of clip_start, not of the drone's scale, since nothing closer than clip_start is drawn, and the HUD sits right
+# there. At 500 times the scale, with a default clip start of 0.01 (50,000 times clip_start), float32 put the HUD
 # up to 0.8 px off on a 1920 px wide frame, and it shook. At 5,000 times clip_start it's at most 0.1 px.
 ORIGIN_DISTANCE = 5000.0
 
@@ -54,7 +53,7 @@ GROWTH_BUFFER = 0.01
 # orbit.
 TIDAL_LOCK_MAX_ANGLE = math.pi / 2
 
-# Scaling config keys, as paths into the config JSON, for the controls_parameters property each one sets
+# Scaling config keys, as paths into the config JSON, for the control_settings property each one sets
 SCALING_CONFIG_PATHS = {
     "loop": ("loop",),
     "loop_factor": ("loop_factor",),
@@ -193,7 +192,7 @@ camera_matrix_kept = None
 def get_world_objects(scene):
     """The top-level objects Keep Drone at Origin moves through delta_location: all but the Drone and the recording
     camera, which follow the Drone_Camera."""
-    record_obj = scene.objects.get(scene.other_parameters.record_obj)
+    record_obj = scene.objects.get(scene.flight_options.record_obj)
     return [obj for obj in scene.objects if not obj.parent and obj not in (drone_obj, record_obj)]
 
 def move_world_origin(scene, location):
@@ -201,18 +200,18 @@ def move_world_origin(scene, location):
     move through delta_location, which Blender adds on top of location, so their own transforms and animation are left
     alone. The Drone and the recording camera move through location instead, since setting their matrix_world (as
     flying and recording do) would cancel out a delta."""
-    references = scene.references
-    old_offset = references.world_offset[:]
-    references.world_offset = [offset + loc for offset, loc in zip(old_offset, location)]
+    drone_rig = scene.drone_rig
+    old_offset = drone_rig.world_offset[:]
+    drone_rig.world_offset = [offset + loc for offset, loc in zip(old_offset, location)]
 
     # world_offset is float32, so move everything by the amount it actually changed after rounding, or the Drone would
     # hop relative to the objects around it. Python floats, since mathutils vectors are float32 too.
-    shift = [new - old for new, old in zip(references.world_offset, old_offset)]
+    shift = [new - old for new, old in zip(drone_rig.world_offset, old_offset)]
 
     for obj in get_world_objects(scene):
         obj.delta_location = [delta - s for delta, s in zip(obj.delta_location, shift)]
 
-    record_obj = scene.objects.get(scene.other_parameters.record_obj)
+    record_obj = scene.objects.get(scene.flight_options.record_obj)
     for obj in (drone_obj, record_obj):
         if obj and not obj.parent:
             obj.location = [loc - s for loc, s in zip(obj.location, shift)]
@@ -229,18 +228,15 @@ def fly_frame(scene):
 
 def start_physics(context, report=None):
     """Get the drone's physics ready for a flight, at its start (execute(), and the flight harness): the drone goes on
-    from where the last flight or replay left it (physics.py), recorded from there with Record on. A scene from before
-    stage B has DroneCam's rig taken out first (rig.migrate()), and one from before stage C its HUD (hud.migrate()). Returns False, after reporting it, when the core isn't
-    installed for this platform."""
+    from where the last flight or replay left it (physics.py), recorded from there with Record on. Returns False, after
+    reporting it, when the core isn't installed for this platform."""
     if not physics.available():
         if report is not None:
             report({'ERROR'}, "Eternal Return core not installed for this platform: can't fly")
         return False
     scene = context.scene
-    rig.migrate(scene, drone_obj, drone_camera, context.evaluated_depsgraph_get())
-    hud.migrate(scene, drone_camera)
     gravity.set_pull((0.0, 0.0, rig_gravity()))
-    physics.take_over(drone_obj, scene, context.evaluated_depsgraph_get(), scene.other_parameters.record)
+    physics.take_over(drone_obj, scene, context.evaluated_depsgraph_get(), scene.flight_options.record)
     return True
 
 
@@ -286,13 +282,13 @@ class FlightFeatures:
         the drone flown (fly_tick()), and the propellers' sound updated. An endless map's tiling is built once, at the
         end, however many times the step moved its anchor (endless.deferred_builds())."""
         with endless.deferred_builds():
-            dict_controls_raw, joystick_axis_inputs = self.read_controls()
-            self.fly_tick(context, dict_controls_raw, joystick_axis_inputs)
+            dict_controls_raw, controller_axes = self.read_controls()
+            self.fly_tick(context, dict_controls_raw, controller_axes)
             self.update_sound(context)
 
-    def fly_tick(self, context, dict_controls_raw, joystick_axis_inputs):
+    def fly_tick(self, context, dict_controls_raw, controller_axes):
         """Everything a tick does with the controls (dict_controls_raw, each control's stick position as mapped from
-        the controller's axes, joystick_axis_inputs): the controls converted to what they do, the scaling tools, the
+        the controller's axes, controller_axes): the controls converted to what they do, the scaling tools, the
         selection, and the HUD"""
         global dict_controls
         global selected_obj
@@ -302,17 +298,17 @@ class FlightFeatures:
         dict_controls = controls.convert(dict_controls_raw, context.scene)
 
         global min_scale
-        controls_parameters = bpy.context.scene.controls_parameters
+        control_settings = bpy.context.scene.control_settings
 
-        min_scale = max(scaling_settings.DEFAULT_MIN_SCALE, controls_parameters.min_scale)
+        min_scale = max(scaling_settings.DEFAULT_MIN_SCALE, control_settings.min_scale)
         min_scale = min(min_scale, scaling_settings.DEFAULT_MAX_SCALE)
 
-        self._max_scale = min(scaling_settings.DEFAULT_MAX_SCALE, controls_parameters.max_scale)
+        self._max_scale = min(scaling_settings.DEFAULT_MAX_SCALE, control_settings.max_scale)
         self._max_scale = max(self._max_scale, scaling_settings.DEFAULT_MIN_SCALE)
 
         max_loop_factor = self._max_scale / min_scale
-        if controls_parameters.loop_factor > max_loop_factor:
-            controls_parameters.loop_factor = max_loop_factor
+        if control_settings.loop_factor > max_loop_factor:
+            control_settings.loop_factor = max_loop_factor
 
         # Capped so a long gap between ticks (the computer sleeping, macOS throttling Blender in the background) isn't
         # applied as one huge step of scaling, zooming, braking or orbiting
@@ -331,7 +327,7 @@ class FlightFeatures:
 
             self.parent()
 
-            self.drone_ui(context, joystick_axis_inputs)
+            self.drone_ui(context, controller_axes)
 
             self.fit_scale_range()
 
@@ -356,7 +352,7 @@ class FlightFeatures:
             lower_bound = self.get_lower_bound()
             selected_obj_diff_vector = self.get_selected_object_diff_vector(selected_obj)
 
-            auto_scale = bpy.context.scene.controls_parameters.auto_scale
+            auto_scale = bpy.context.scene.control_settings.auto_scale
             if auto_scale:
                 self.auto_scale(selected_obj_diff_vector, lower_bound, selection_changed)
             else:
@@ -368,11 +364,11 @@ class FlightFeatures:
 
             self._selected_obj_diff_vector = selected_obj_diff_vector
 
-            bounded = bpy.context.scene.controls_parameters.bounded
+            bounded = bpy.context.scene.control_settings.bounded
             if dict_controls["scale"] != 1.0:
                 drone_log_scale = dict_controls["scale"]**self._modal_interval
-                scale_camera = bpy.context.scene.controls_parameters.scale_camera
-                scale_lens_clip = bpy.context.scene.controls_parameters.scale_lens_clip
+                scale_camera = bpy.context.scene.control_settings.scale_camera
+                scale_lens_clip = bpy.context.scene.control_settings.scale_lens_clip
                 bounded_bool = bounded and selected_obj_bool and (auto_scale or dict_controls["zoom"] != 1.0)
                 if bounded_bool and auto_scale and drone_log_scale > 1.0:
                     drone_log_scale = min(drone_log_scale, self.growth_room())
@@ -386,8 +382,8 @@ class FlightFeatures:
 
             if dict_controls["zoom"] != 1.0:
                 drone_log_scale = dict_controls["zoom"]**self._modal_interval
-                scale_camera_zoom = bpy.context.scene.controls_parameters.scale_camera_zoom
-                scale_lens_clip_zoom = bpy.context.scene.controls_parameters.scale_lens_clip_zoom
+                scale_camera_zoom = bpy.context.scene.control_settings.scale_camera_zoom
+                scale_lens_clip_zoom = bpy.context.scene.control_settings.scale_lens_clip_zoom
 
                 self.scale(drone_log_scale, selected_obj, scale_camera_zoom, scale_lens_clip_zoom, bounded=False)
                 self._camera_moved = True
@@ -399,7 +395,7 @@ class FlightFeatures:
 
             if dict_controls["camera"] != 1.0:
                 camera_log_scale = dict_controls["camera"]**self._modal_interval
-                scale_lens_clip_with_camera = bpy.context.scene.controls_parameters.scale_lens_clip_with_camera
+                scale_lens_clip_with_camera = bpy.context.scene.control_settings.scale_lens_clip_with_camera
 
                 self.scale_camera(camera_log_scale, scale_lens_clip_with_camera)
 
@@ -415,7 +411,7 @@ class FlightFeatures:
             self.record_surface_check_start()
             self.record_tidal_lock_start()
             self.horizon_ui()
-            velocity.set_shown(controls_parameters.velocity)
+            velocity.set_shown(control_settings.velocity)
             self.gravity_pull()
             self.readouts_ui()
 
@@ -475,11 +471,11 @@ class FlightFeatures:
         """Brake by thickening the air the drone flies in (physics.brake_density), more every tick, for as long as the
         throttle is at zero with Auto Brake on, or the brake stick is held; the scene's own Air Density once it lets
         go"""
-        controls_parameters = bpy.context.scene.controls_parameters
+        control_settings = bpy.context.scene.control_settings
         factor = None
         if dict_controls["throttle"] == 0.0:
-            if controls_parameters.auto_brake:
-                factor = controls_parameters.brake_factor
+            if control_settings.auto_brake:
+                factor = control_settings.brake_factor
             elif dict_controls["brake"] > 1.0:
                 factor = dict_controls["brake"]
         if factor is None:
@@ -504,9 +500,9 @@ class FlightFeatures:
             self._parent = drone_obj.parent
             self._parent_scale = current_scale
 
-    def drone_ui(self, context, joystick_axis_inputs):
+    def drone_ui(self, context, controller_axes):
         """Read the sticks' positions for the HUD's gimbals (hud.py), drawn with the next redraw"""
-        hud.set_axes(gamepad.read_gimbal_inputs(joystick_axis_inputs, self._gamepad))
+        hud.set_axes(gamepad.read_gimbal_inputs(controller_axes, self._gamepad))
 
     def click(self, context):
         if dict_controls["click"] > 0.0:
@@ -539,7 +535,7 @@ class FlightFeatures:
         elif self._click_bool:
             self._click_bool = False
 
-            auto_deselect = bpy.context.scene.controls_parameters.auto_deselect
+            auto_deselect = bpy.context.scene.control_settings.auto_deselect
             if auto_deselect:
                 self.select_nothing()
 
@@ -549,20 +545,18 @@ class FlightFeatures:
 
     def select_nothing(self):
         """Deselect everything, the active object too. get_selected_object() then falls back to the drone camera, a
-        drone part, which everything that follows a selected object takes as nothing selected. That's what selecting
-        clip_start did, as a stand-in for nothing, until 2026-11-16: its origin is the camera's, so zoom and the lens
-        clip measured from the same point. With no object selected, none is drawn selected or shown in the Properties
-        editor."""
+        drone part, which everything that follows a selected object takes as nothing selected: its origin is the
+        camera's, so zoom and the lens clip measure from the same point. With no object selected, none is drawn
+        selected or shown in the Properties editor."""
         for obj in bpy.context.selected_objects:
             obj.select_set(False)
         bpy.context.view_layer.objects.active = None
 
     def click_center_of_viewport(self, context):
         """Select what's under the middle of the view, never a part of the drone. view3d.select picks the nearest
-        selectable object within a few pixels, so DroneCam's HUD (clip_start, before stage C), the camera, or a Drone
-        left unhidden often won the click. They're made unselectable just for the pick, and kept selectable otherwise, since
-        the user may select one by hand. A click on nothing selects nothing (select_nothing()), as the HUD being
-        picked there amounted to."""
+        selectable object within a few pixels, so the camera, or a Drone left unhidden, could win the click. They're
+        made unselectable just for the pick, and kept selectable otherwise, since the user may select one by hand. A
+        click on nothing selects nothing (select_nothing())."""
         parts = [obj for obj in (drone_obj, drone_camera, clip_end_obj) if obj]
         selectable = [obj.hide_select for obj in parts]
         for obj in parts:
@@ -597,7 +591,7 @@ class FlightFeatures:
                 break
 
     def get_selected_object(self):
-        selected_obj_name = bpy.context.scene.controls_parameters.selected_obj
+        selected_obj_name = bpy.context.scene.control_settings.selected_obj
         selected_obj = bpy.context.scene.objects.get(selected_obj_name)
 
         if not selected_obj:
@@ -623,7 +617,7 @@ class FlightFeatures:
         # Tells a missing key, which leaves the setting alone, apart from null
         missing = object()
 
-        params = bpy.context.scene.controls_parameters
+        params = bpy.context.scene.control_settings
         for prop, path in SCALING_CONFIG_PATHS.items():
             value = config_json
             for key in path:
@@ -647,7 +641,7 @@ class FlightFeatures:
                 self.report({'WARNING'}, f"Scaling config on {source_name}: ignored {'.'.join(path)} ({error})")
 
     def is_drone_part(self, obj):
-        return obj in [drone_obj, drone_camera, clip_end_obj] or gravity.is_carrier(obj)
+        return obj in [drone_obj, drone_camera, clip_end_obj]
 
     def get_selected_object_diff_vector(self, selected_obj, mesh=None):
         """From the drone camera to the selected object's origin, or with mesh, to the closest point on its surface.
@@ -655,7 +649,7 @@ class FlightFeatures:
         camera_location = get_camera_matrix().translation
 
         if mesh is None:
-            mesh = bpy.context.scene.controls_parameters.auto_scale_mesh
+            mesh = bpy.context.scene.control_settings.auto_scale_mesh
         anchored = anchored_map(selected_obj)
         if anchored is not None:
             # A sphere map has no origin to measure to (its object's origin is the anchor's point, which moves, and its
@@ -758,7 +752,7 @@ class FlightFeatures:
     def auto_scale(self, selected_obj_diff_vector, lower_bound, selection_changed):
         # Toggling mesh mode switches between origin and surface distances, so skip that tick instead of zooming by
         # their ratio
-        auto_scale_mesh = bpy.context.scene.controls_parameters.auto_scale_mesh
+        auto_scale_mesh = bpy.context.scene.control_settings.auto_scale_mesh
         mesh_mode_changed = auto_scale_mesh != self._auto_scale_mesh
         self._auto_scale_mesh = auto_scale_mesh
 
@@ -817,11 +811,11 @@ class FlightFeatures:
     def get_split_axes_settings(self, prefix):
         """The Split Axes settings of auto scale or tidal lock (prefix "auto_scale" or "tidal_lock"): None when Split
         Axes is off, otherwise (which of X, Y and Z are on, the rotation of those axes)"""
-        controls_parameters = bpy.context.scene.controls_parameters
-        if not getattr(controls_parameters, f"{prefix}_split_axes"):
+        control_settings = bpy.context.scene.control_settings
+        if not getattr(control_settings, f"{prefix}_split_axes"):
             return None
-        axes = tuple(getattr(controls_parameters, f"{prefix}_{axis}") for axis in "xyz")
-        return axes, tuple(getattr(controls_parameters, f"{prefix}_rotation"))
+        axes = tuple(getattr(control_settings, f"{prefix}_{axis}") for axis in "xyz")
+        return axes, tuple(getattr(control_settings, f"{prefix}_rotation"))
 
     def get_split_axes_vector(self, diff_vector, prefix):
         """diff_vector, or with Split Axes (auto scale's or tidal lock's, see get_split_axes_settings()), just its part
@@ -857,7 +851,7 @@ class FlightFeatures:
         Measured from the end of the last tick (record_tidal_lock_start()) before anything else this tick moves the
         drone, so the only move it sees is flight, and the object's own moves."""
         start = self._tidal_lock_start
-        if start is None or not bpy.context.scene.controls_parameters.tidal_lock:
+        if start is None or not bpy.context.scene.control_settings.tidal_lock:
             return
         if not selected_obj_bool or start[0] != self.get_tidal_lock_key():
             return
@@ -880,7 +874,7 @@ class FlightFeatures:
 
     def get_tidal_lock_direction(self):
         """From the drone camera to the point, line or surface tidal lock keeps at the same angle (see tidal_lock())"""
-        mesh = bpy.context.scene.controls_parameters.tidal_lock_mesh
+        mesh = bpy.context.scene.control_settings.tidal_lock_mesh
         return self.get_split_axes_vector(self.get_selected_object_direction(selected_obj, mesh), "tidal_lock")
 
     def get_selected_object_direction(self, selected_obj, mesh):
@@ -903,13 +897,13 @@ class FlightFeatures:
         """What tidal lock measures to. When it changes (another object is selected, mesh mode or Split Axes toggled),
         the direction jumps, and the drone isn't turned for that."""
         selection = selected_obj.copy() if isinstance(selected_obj, mathutils.Vector) else selected_obj
-        return (selection, bpy.context.scene.controls_parameters.tidal_lock_mesh,
+        return (selection, bpy.context.scene.control_settings.tidal_lock_mesh,
                 self.get_split_axes_settings("tidal_lock"))
 
     def record_tidal_lock_start(self):
         """Record the direction to the selected object at the end of the tick, for the next tidal_lock() to turn the
         drone by how much flight changes it"""
-        if not (bpy.context.scene.controls_parameters.tidal_lock and selected_obj_bool):
+        if not (bpy.context.scene.control_settings.tidal_lock and selected_obj_bool):
             self._tidal_lock_start = None
             return
 
@@ -918,7 +912,7 @@ class FlightFeatures:
     def horizon_ui(self):
         """Level the HUD's horizon (horizon.py) with what's down (get_horizon_level()), or hide it while Horizon is off
         or nothing is down. At the end of the tick, so the next frame draws the newest measure."""
-        level = self.get_horizon_level() if bpy.context.scene.controls_parameters.horizon else {}
+        level = self.get_horizon_level() if bpy.context.scene.control_settings.horizon else {}
         horizon.set_level(**level)
 
     def get_horizon_level(self):
@@ -936,7 +930,7 @@ class FlightFeatures:
         too (get_selected_object_direction(): its center, or with Mesh, its closest point), as its object's origin is
         the anchor's point, which follows the drone."""
         if selected_obj_bool:
-            mesh = bpy.context.scene.controls_parameters.horizon_mesh
+            mesh = bpy.context.scene.control_settings.horizon_mesh
             diff_vector = self.get_selected_object_direction(selected_obj, mesh)
             down = self.get_split_axes_vector(diff_vector, "auto_scale")
             if down.length > 0.0:
@@ -971,7 +965,7 @@ class FlightFeatures:
         pull = mathutils.Vector((0.0, 0.0, strength))
         if selected_obj_bool:
             pull = mathutils.Vector((0.0, 0.0, 0.0))
-            mesh = bpy.context.scene.controls_parameters.gravity_mesh
+            mesh = bpy.context.scene.control_settings.gravity_mesh
             down = self.get_split_axes_vector(self.get_selected_object_diff_vector(selected_obj, mesh), "auto_scale")
             if down.length > 0.0:
                 # Into the Drone object's space, without its scale: gravity is in the drone's own units
@@ -1046,7 +1040,7 @@ class FlightFeatures:
                 diff_vector = self.get_selected_object_diff_vector(ground)
             height, sign = self.get_auto_scale_distance(diff_vector), 1
         else:
-            z = camera_location.z + bpy.context.scene.references.world_offset[2]
+            z = camera_location.z + bpy.context.scene.drone_rig.world_offset[2]
             height, sign = abs(z), (1 if z >= 0.0 else -1)
         if height <= 0.0:
             return None, 1
@@ -1067,7 +1061,7 @@ class FlightFeatures:
 
         A sphere map's 3D tiles have a floor over their ground instead (sphere.floor_move()), which the drone glides
         along: moved out of it every tick, flown into it or not, since a finer tile's ground can come in higher under it."""
-        if not selected_obj_bool or not bpy.context.scene.controls_parameters.auto_scale:
+        if not selected_obj_bool or not bpy.context.scene.control_settings.auto_scale:
             return
         if isinstance(selected_obj, bpy.types.Object) and sphere.is_sphere(selected_obj) and sphere.floor_of(selected_obj) > 0.0:
             move = sphere.floor_move(selected_obj, get_camera_matrix().translation)
@@ -1107,14 +1101,14 @@ class FlightFeatures:
         """If the move from start_location to end_location crosses the surface auto scale measures to, the signed
         distances of its start and end from it, in world units. Otherwise None. Without Split Axes or mesh mode, that's
         a point, which flight can't cross. Split Axes on two axes measures to a line, which it can't cross either."""
-        controls_parameters = bpy.context.scene.controls_parameters
+        control_settings = bpy.context.scene.control_settings
 
         # A sphere or surface map is always measured to its surface (see get_selected_object_diff_vector())
         anchored = anchored_map(selected_obj)
         if anchored is not None:
             return anchored.crossing(selected_obj, start_location, end_location)
 
-        if controls_parameters.auto_scale_mesh:
+        if control_settings.auto_scale_mesh:
             if isinstance(selected_obj, bpy.types.Object) and fractal.is_fractal(selected_obj):
                 return fractal.crossing(selected_obj, mathutils.Vector(start_location), mathutils.Vector(end_location))
             if isinstance(selected_obj, mathutils.Vector) or selected_obj.type != 'MESH':
@@ -1148,13 +1142,13 @@ class FlightFeatures:
             start, end = normal @ (start_location - point), normal @ (end_location - point)
             return (start, end) if start > 0.0 >= end or start < 0.0 <= end else None
 
-        axes = (controls_parameters.auto_scale_x, controls_parameters.auto_scale_y, controls_parameters.auto_scale_z)
+        axes = (control_settings.auto_scale_x, control_settings.auto_scale_y, control_settings.auto_scale_z)
         # Only one axis measures to a plane. Two measure to the line where their planes meet, and three to the point
         # where all of them do. Stopping at each axis's plane kept the drone in one quarter of a cylinder auto scaled on
         # Y and Z, since it couldn't get past y = 0 or z = 0 to circle the axis.
-        if controls_parameters.auto_scale_split_axes and sum(axes) == 1:
+        if control_settings.auto_scale_split_axes and sum(axes) == 1:
             # The X, Y and Z axes are the world axes turned by auto_scale_rotation. A rotation's inverse is its transpose.
-            to_zoom_axes = np.array(mathutils.Euler(controls_parameters.auto_scale_rotation).to_matrix()).T
+            to_zoom_axes = np.array(mathutils.Euler(control_settings.auto_scale_rotation).to_matrix()).T
             origin = selection_matrix[:3, 3]
             axis = axes.index(True)
             start, end = ((to_zoom_axes @ (location - origin))[axis] for location in (start_location, end_location))
@@ -1164,7 +1158,7 @@ class FlightFeatures:
 
     def record_surface_check_start(self):
         """Record where the drone ends the tick, for the next stop_at_surface() to check the flight from"""
-        if not (bpy.context.scene.controls_parameters.auto_scale and selected_obj_bool):
+        if not (bpy.context.scene.control_settings.auto_scale and selected_obj_bool):
             self._surface_check_start = None
             return
 
@@ -1184,8 +1178,8 @@ class FlightFeatures:
         min_drone = min(drone_obj.scale)
         max_drone = max(drone_obj.scale)
 
-        maintain_ratio = bpy.context.scene.controls_parameters.maintain_ratio
-        default_clip_start = bpy.context.scene.controls_parameters.default_clip_start
+        maintain_ratio = bpy.context.scene.control_settings.maintain_ratio
+        default_clip_start = bpy.context.scene.control_settings.default_clip_start
         if maintain_ratio and min_scale < scaling_settings.DEFAULT_MIN_SCALE / default_clip_start:
             min_drone_scale = max(min_scale, min_scale / min(drone_camera.scale) / default_clip_start)
         else:
@@ -1207,8 +1201,8 @@ class FlightFeatures:
                 self.apply_scale(grown, scale_origin, scale_camera, scale_lens_clip, bounded)
                 return scale_factor / grown
 
-            loop = bpy.context.scene.controls_parameters.loop
-            loop_factor = bpy.context.scene.controls_parameters.loop_factor
+            loop = bpy.context.scene.control_settings.loop
+            loop_factor = bpy.context.scene.control_settings.loop_factor
             if allow_loop and loop and loop_factor > 1.0 and selected_obj_bool:
                 # As many loops as it takes to get within min_scale and max_scale. One isn't always enough, like
                 # after clicking an object whose config sets a range far from the drone's scale, and the rest would be
@@ -1469,7 +1463,7 @@ class FlightFeatures:
         (get_pivot_vector())"""
         rotation_matrix = mathutils.Euler(rotation_euler).to_matrix().to_4x4()
 
-        orbit_axes = bpy.context.scene.controls_parameters.orbit_axes
+        orbit_axes = bpy.context.scene.control_settings.orbit_axes
         if orbit_axes == "drone_axes":
             local_orientation = get_camera_matrix().to_3x3().normalized().to_4x4()
             local_orientation.translation = mathutils.Vector((0, 0, 0))
@@ -1508,8 +1502,8 @@ class FlightFeatures:
         min_camera = min(drone_camera.scale)
         max_camera = max(drone_camera.scale)
 
-        maintain_ratio = bpy.context.scene.controls_parameters.maintain_ratio
-        default_clip_start = bpy.context.scene.controls_parameters.default_clip_start
+        maintain_ratio = bpy.context.scene.control_settings.maintain_ratio
+        default_clip_start = bpy.context.scene.control_settings.default_clip_start
         if maintain_ratio and min_scale < scaling_settings.DEFAULT_MIN_SCALE / default_clip_start:
             drone_scale = min(drone_obj.matrix_world.to_scale())
             min_camera_scale = max(min_scale, min_scale / drone_scale / default_clip_start)
@@ -1570,7 +1564,7 @@ class FlightFeatures:
         drone_camera.matrix_world is stale until the depsgraph updates. Read from it after scaling the drone in the same
         tick, the bound belonged to the drone's scale before that, and under fast scaling it ratcheted clip_start up
         past clip_end."""
-        default_clip_start = bpy.context.scene.controls_parameters.default_clip_start
+        default_clip_start = bpy.context.scene.control_settings.default_clip_start
         return default_clip_start * drone_camera.scale.z * drone_obj.matrix_world.to_scale().z
 
     def scale_lens_clip_objects(self):
@@ -1579,30 +1573,30 @@ class FlightFeatures:
             clip_end_obj.scale = (clip_end_obj_scale, clip_end_obj_scale, clip_end_obj_scale)
 
     def wrap(self):
-        wrap = bpy.context.scene.controls_parameters.wrap
+        wrap = bpy.context.scene.control_settings.wrap
         if wrap:
             # The ranges are along the world axes turned by wrap_rotation around the pivot, so measure the drone from the
             # pivot along them. A rotation's inverse is its transpose.
-            wrap_rotation = mathutils.Euler(bpy.context.scene.controls_parameters.wrap_rotation).to_matrix()
+            wrap_rotation = mathutils.Euler(bpy.context.scene.control_settings.wrap_rotation).to_matrix()
             drone_location = wrap_rotation.transposed() @ (get_camera_matrix().translation - self.get_wrap_pivot())
             wrap_vector = mathutils.Vector((0.0, 0.0, 0.0))
 
-            wrap_split_axes = bpy.context.scene.controls_parameters.wrap_split_axes
+            wrap_split_axes = bpy.context.scene.control_settings.wrap_split_axes
             if not wrap_split_axes:
-                wrap_range = bpy.context.scene.controls_parameters.wrap_range
+                wrap_range = bpy.context.scene.control_settings.wrap_range
 
                 wrap_vector.x = self.get_wrap_offset(drone_location.x, wrap_range)
                 wrap_vector.y = self.get_wrap_offset(drone_location.y, wrap_range)
                 wrap_vector.z = self.get_wrap_offset(drone_location.z, wrap_range)
             else:
-                wrap_split_axes_x = bpy.context.scene.controls_parameters.wrap_split_axes_x
-                wrap_range_x = bpy.context.scene.controls_parameters.wrap_range_x
+                wrap_split_axes_x = bpy.context.scene.control_settings.wrap_split_axes_x
+                wrap_range_x = bpy.context.scene.control_settings.wrap_range_x
 
-                wrap_split_axes_y = bpy.context.scene.controls_parameters.wrap_split_axes_y
-                wrap_range_y = bpy.context.scene.controls_parameters.wrap_range_y
+                wrap_split_axes_y = bpy.context.scene.control_settings.wrap_split_axes_y
+                wrap_range_y = bpy.context.scene.control_settings.wrap_range_y
 
-                wrap_split_axes_z = bpy.context.scene.controls_parameters.wrap_split_axes_z
-                wrap_range_z = bpy.context.scene.controls_parameters.wrap_range_z
+                wrap_split_axes_z = bpy.context.scene.control_settings.wrap_split_axes_z
+                wrap_range_z = bpy.context.scene.control_settings.wrap_range_z
 
                 if wrap_split_axes_x:
                     wrap_vector.x = self.get_wrap_offset(drone_location.x, wrap_range_x)
@@ -1632,19 +1626,19 @@ class FlightFeatures:
     def get_wrap_pivot(self):
         """The point the wrap ranges are measured from, in the scene's current coordinates: the Pivot location if it's
         on, otherwise the selected object's origin, or the world origin if no object is selected."""
-        controls_parameters = bpy.context.scene.controls_parameters
-        world_offset = mathutils.Vector(bpy.context.scene.references.world_offset)
+        control_settings = bpy.context.scene.control_settings
+        world_offset = mathutils.Vector(bpy.context.scene.drone_rig.world_offset)
 
-        if controls_parameters.wrap_custom_pivot:
+        if control_settings.wrap_custom_pivot:
             # Pivot is in the scene's original coordinates, before Keep Drone at Origin moved it
-            return mathutils.Vector(controls_parameters.wrap_pivot) - world_offset
+            return mathutils.Vector(control_settings.wrap_pivot) - world_offset
         if selected_obj_bool:
             return selected_obj.matrix_world.translation.copy()
         return -world_offset
 
     def move_and_record(self):
-        record_camera = bpy.context.scene.other_parameters.record_camera
-        record_obj_name = bpy.context.scene.other_parameters.record_obj
+        record_camera = bpy.context.scene.flight_options.record_camera
+        record_obj_name = bpy.context.scene.flight_options.record_obj
         record_obj = bpy.context.scene.objects.get(record_obj_name)
 
         current_frame = bpy.context.scene.frame_current
@@ -1659,7 +1653,7 @@ class FlightFeatures:
             physics.recording.key_transform(current_frame)
 
     def keep_drone_at_origin(self, record_camera, record_obj, current_frame):
-        keep_drone_at_origin = bpy.context.scene.controls_parameters.keep_drone_at_origin
+        keep_drone_at_origin = bpy.context.scene.control_settings.keep_drone_at_origin
         camera_location = get_camera_matrix().translation
 
         # Only once the camera is far enough from the origin, for its clip_start, that float32 rounding would show
@@ -1791,7 +1785,7 @@ class FlightFeatures:
         # With selected_obj, or the last flight's True outlives it into the next one's first tick
         selected_obj_bool = False
 
-        drone_obj = context.scene.references.drone_obj
+        drone_obj = context.scene.drone_rig.drone
         if drone_obj:
             for child in drone_obj.children:
                 if child.type == 'CAMERA':
@@ -1841,7 +1835,7 @@ class FlightFeatures:
             dict_controls[key] = 0.0
 
         # A recorded flight goes back to its first frame, ready to replay
-        if context.scene.other_parameters.record:
+        if context.scene.flight_options.record:
             bpy.context.scene.frame_current = record_start_frame
             physics.replay(context.scene)
 
@@ -1867,13 +1861,13 @@ class ER_OT_ResetScale(FlightFeatures, bpy.types.Operator):
                     1.0 / drone_obj.scale.z if drone_obj.scale.z != 0 else 1.0
                 ))
 
-                scale_camera = bpy.context.scene.controls_parameters.scale_camera
+                scale_camera = bpy.context.scene.control_settings.scale_camera
                 if not scale_camera:
                     drone_camera.scale *= drone_obj.scale.z
 
                 self.scale_drone(drone_camera, inverse_scale)
 
-                scale_lens_clip = bpy.context.scene.controls_parameters.scale_lens_clip
+                scale_lens_clip = bpy.context.scene.control_settings.scale_lens_clip
                 if scale_lens_clip:
                     drone_camera.data.clip_start *= inverse_scale.z
                     drone_camera.data.clip_end *= inverse_scale.z
@@ -1899,7 +1893,7 @@ class ER_OT_ResetLocations(FlightFeatures, bpy.types.Operator):
     def execute(self, context):
         ER_OT_ResetScale.execute(self, context)
 
-        world_offset = context.scene.references.world_offset
+        world_offset = context.scene.drone_rig.world_offset
         move_world_origin(context.scene, [-offset for offset in world_offset])
 
         self.report({'INFO'}, "Object locations reset!")
@@ -1914,7 +1908,7 @@ class ER_OT_ResetCamera(FlightFeatures, bpy.types.Operator):
         self.get_drone_objects(context)
 
         if drone_camera:
-            scale_lens_clip_with_camera = bpy.context.scene.controls_parameters.scale_lens_clip_with_camera
+            scale_lens_clip_with_camera = bpy.context.scene.control_settings.scale_lens_clip_with_camera
             if scale_lens_clip_with_camera:
                 lens_scale = 1 / drone_camera.scale.z
                 drone_camera.data.clip_start *= lens_scale
@@ -1936,7 +1930,7 @@ class ER_OT_ResetLensClip(FlightFeatures, bpy.types.Operator):
         self.get_drone_objects(context)
 
         if drone_camera:
-            default_clip_start = bpy.context.scene.controls_parameters.default_clip_start
+            default_clip_start = bpy.context.scene.control_settings.default_clip_start
 
             drone_camera.data.clip_start = default_clip_start * drone_camera.matrix_world.to_scale().z
             drone_camera.data.clip_end = drone_camera.data.clip_start * 100_000
@@ -1953,7 +1947,7 @@ class ER_OT_ResetMinScale(bpy.types.Operator):
     bl_label = "Reset Min Scale"
 
     def execute(self, context):
-        context.scene.controls_parameters.min_scale = scaling_settings.DEFAULT_MIN_SCALE
+        context.scene.control_settings.min_scale = scaling_settings.DEFAULT_MIN_SCALE
 
         self.report({'INFO'}, "Min Scale reset!")
         return {'FINISHED'}
@@ -1964,7 +1958,7 @@ class ER_OT_ResetMaxScale(bpy.types.Operator):
     bl_label = "Reset Max Scale"
 
     def execute(self, context):
-        context.scene.controls_parameters.max_scale = scaling_settings.DEFAULT_MAX_SCALE
+        context.scene.control_settings.max_scale = scaling_settings.DEFAULT_MAX_SCALE
 
         self.report({'INFO'}, "Max Scale reset!")
         return {'FINISHED'}

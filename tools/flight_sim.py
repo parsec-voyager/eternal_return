@@ -45,8 +45,8 @@ The plan is JSON:
                                       dozen. (Re-aiming the camera at it instead fought the drone's momentum and spun.)
                                       The biggest move, against the distance to look_at, is logged at the end.
   },
-  "settings": {"keep_drone_at_origin": true},     optional scene.controls_parameters overrides
-  "other_settings": {"record_camera": true, "record_obj": "RecCam"},   scene.other_parameters, e.g. to record
+  "settings": {"keep_drone_at_origin": true},     optional scene.control_settings overrides
+  "other_settings": {"record_camera": true, "record_obj": "RecCam"},   scene.flight_options, e.g. to record
   "object_properties": {"Habitat": {"spin_rpm": 0.0}},   custom properties to set on objects first
   "duration": 10.0,
   "start_frame": 1000,                optional; real flights start wherever the timeline was left (default 1000)
@@ -122,7 +122,7 @@ def parse_args():
 
 
 def load_addon(which):
-    """The add-on's module that flies: flight.py, which holds the flight's code and state (since stage C, 2026-11-20).
+    """The add-on's module that flies: flight.py, which holds the flight's code and state.
     The installed one is already registered; the working copy is imported beside it and uses the installed one's
     registered properties, so property changes need a reinstall first."""
     if which == "installed":
@@ -150,7 +150,7 @@ class VirtualController:
                     if control not in self.tracks:
                         raise ValueError(f"unknown control {control!r}")
                     self.tracks[control].append((key["t"], float(value)))
-        mapping = scene.controls_axis_mapping
+        mapping = scene.control_axes
         self.axis_of = {c: getattr(mapping, c) for c in CONTROLS}
         for control, track in self.tracks.items():
             if track and self.axis_of[control] == 'none':
@@ -171,7 +171,7 @@ class VirtualController:
         return track[-1][1]
 
     def axes(self, t):
-        cp = self.scene.controls_parameters
+        cp = self.scene.control_settings
         axes = [0.0] * self.num_axes
         for control in CONTROLS:
             value = self.value_at(control, t)
@@ -180,7 +180,7 @@ class VirtualController:
             if axis == 'none':
                 continue
             raw = value
-            if control in UNIDIRECTIONAL and not (control == "throttle" and cp.flying_mode == "3D"):
+            if control in UNIDIRECTIONAL and not (control == "throttle" and cp.flight_mode == "3D"):
                 if not getattr(cp, f"{control}_centered"):
                     raw = 2.0 * value - 1.0          # the add-on maps -1..1 to 0..1
             if getattr(cp, f"{control}_invert"):
@@ -221,7 +221,7 @@ def place_drone(m, start):
     origin = start_origin(start)
     scale = float(start.get("scale", drone.matrix_world.to_scale().z))
     ratio = camera.data.clip_end / camera.data.clip_start
-    default = scene.controls_parameters.default_clip_start
+    default = scene.control_settings.default_clip_start
     clip = start.get("clip") or [default, default * ratio]
     drone.scale = (scale, scale, scale)
     camera.data.clip_start, camera.data.clip_end = clip[0] * scale, clip[1] * scale
@@ -291,7 +291,7 @@ def make_operator(m, events, clock, snap, click_select=None, moved=None, out=Non
                     m.fractal.follow(obj, m.drone_camera.matrix_world)
         return raw_snap()
 
-    # The operator's own methods and its mixins' (flight.FlightFeatures since stage C), not bpy's
+    # The operator's own methods and its mixins' (flight.FlightFeatures), not bpy's
     methods = {}
     for cls in reversed(fly_operator(m).__mro__):
         if cls.__module__.startswith(m.__package__):
@@ -437,20 +437,17 @@ def make_operator(m, events, clock, snap, click_select=None, moved=None, out=Non
 
 
 def frame_step_handler(m):
-    """The add-on's frame change handler that flies each frame: fly_frame since stage B, inputs_to_GN before"""
-    return getattr(m, "fly_frame", None) or m.inputs_to_GN
+    """The add-on's frame change handler that flies each frame"""
+    return m.fly_frame
 
 
 def start_flight(m, op, clock, keep_state=False):
-    """What ER_OT_Fly.execute() does (with flight.FlightFeatures.prepare_flight() and start_flight() since
-    stage C), minus SDL, sound, playback and the timer. Flying on the core, the drone starts at rest, upright at the
-    Drone object's origin, as every flight did on the rig's simulation, unless keep_state (the plan's "continue"):
-    then it goes on from where the file left it, as real flights do."""
+    """What ER_OT_Fly.execute() does (with flight.FlightFeatures.prepare_flight() and start_flight()), minus SDL,
+    sound, playback and the timer. The drone starts at rest, upright at the Drone object's origin, unless keep_state
+    (the plan's "continue"): then it goes on from where the file left it, as real flights do."""
     context = bpy.context
     op.get_drone_objects(context)
     op.reset_objects()
-    if hasattr(m, "clear_recenter"):                    # the rig's simulation's recenter, until stage B
-        m.clear_recenter()
     if getattr(m, "endless", None) and hasattr(m.endless, "prepare"):
         for obj in context.scene.objects:
             if m.endless.is_endless(obj):
@@ -458,33 +455,10 @@ def start_flight(m, op, clock, keep_state=False):
             if hasattr(m.fractal, "settle") and m.fractal.is_fractal(obj):
                 m.fractal.settle(obj, m.drone_camera.matrix_world)
                 m.fractal.follow(obj, m.drone_camera.matrix_world)
-    # The horizon and velocity marker: geometry nodes objects in add-on copies from before 2026-11-17, drawn since
-    # (hud_draw.py, which renders here don't show)
-    for module in ("horizon", "velocity"):
-        hud = getattr(m, module, None)
-        if clip_start(m) and hud is not None:
-            if hasattr(hud, "ensure"):
-                hud.ensure(clip_start(m), m.drone_obj) if module == "velocity" else hud.ensure(clip_start(m))
-            elif hasattr(hud, "remove"):
-                hud.remove(clip_start(m))
-    if clip_start(m) and hasattr(m.readouts, "ensure"):
-        m.readouts.ensure(clip_start(m))
-        m.readouts.hold(clip_start(m))
-        m.readouts.hide(clip_start(m))
-    if hasattr(m, "start_physics"):
-        if m.start_physics(context) is False:
-            raise RuntimeError("the add-on can't fly: no Eternal Return core")
-        if m.physics.is_flying() and not keep_state:
-            m.physics.reset(m.drone_obj)
-    else:
-        if hasattr(m, "gravity"):
-            m.gravity.carry(m.drone_obj, not context.scene.other_parameters.record,
-                            m.rig_gravity() if hasattr(m, "rig_gravity") else 0.0)
-        modifier = m.drone_obj.modifiers[m.DRONE_MODIFIER]
-        modifier.show_viewport = False                  # clears the simulation cache, as execute() does
-        modifier.show_viewport = True
-    # The viewport evaluates the scene right away, at the same frame, with the simulation cleared: the drone camera's
-    # position is invalid for that one evaluation. A map's drivers must survive it.
+    if m.start_physics(context) is False:
+        raise RuntimeError("the add-on can't fly: no Eternal Return core")
+    if m.physics.is_flying() and not keep_state:
+        m.physics.reset(m.drone_obj)
     context.view_layer.update()
     op._controller = object()
     op._gamepad = None
@@ -510,28 +484,14 @@ def start_flight(m, op, clock, keep_state=False):
                                            math.log2(camera_matrix.to_scale().z) + unit, context.scene.frame_current)
 
 
-def clip_start(m):
-    """DroneCam's HUD object, in add-on copies from before stage C (2026-11-20), which drew the HUD with it; else None"""
-    return getattr(m, "clip_start_obj", None)
-
-
 def readout_texts(m):
-    """The HUD's readouts as the add-on last wrote them (readouts.py), by name, or {} for a copy from before them"""
-    if hasattr(getattr(m, "hud", None), "lines"):
-        return dict(m.hud.lines)
-    if not (clip_start(m) and hasattr(m.readouts, "get_object")):
-        return {}
-    obj = m.readouts.get_object(clip_start(m))
-    modifier = obj.modifiers.get(m.readouts.MODIFIER) if obj else None
-    if modifier is None or modifier.node_group is None:
-        return {}
-    items = modifier.node_group.interface.items_tree
-    return {name: getattr(modifier.properties.inputs, items[name].identifier).value for name in m.readouts.LINES}
+    """The HUD's readouts as the add-on last wrote them (hud.py), by name"""
+    return dict(m.hud.lines)
 
 
 def camera_state(m, scene):
     camera = m.drone_camera
-    offset = Vector(scene.references.world_offset)
+    offset = Vector(scene.drone_rig.world_offset)
     return {
         "location": camera.matrix_world.translation + offset,      # where it is in the map, undoing origin moves
         "scale": m.drone_obj.matrix_world.to_scale().z,
@@ -554,24 +514,13 @@ def enclosure(m, scene, depsgraph):
     return behind / len(ENCLOSURE_DIRECTIONS)
 
 
-def hud_objects(m):
-    """The HUD's own objects, children of clip_start: the horizon (the add-on's horizon.py) and the velocity marker
-    (velocity.py), each missing for an add-on copy from before it"""
-    if not clip_start(m):
-        return []
-    checks = [getattr(getattr(m, module), check)
-              for module, check in (("horizon", "is_horizon"), ("velocity", "is_velocity"), ("readouts", "is_readouts"))
-              if hasattr(getattr(m, module, None), check)]
-    return [obj for obj in clip_start(m).children if any(check(obj) for check in checks)]
-
-
 def world_snapshot(m, scene, exclude=()):
     """Everything about the map that can change during a flight, in the map's own coordinates (undoing Keep Drone at
     Origin): each object's matrix_world, and the float inputs of its geometry nodes modifiers. A layer a map pushes
     away from the drone camera along its rays (custom property "camera_push_scale": its scale without the push, like
     the strip floor's layers) moves with the camera without changing the view, so it's kept unpushed, with its push."""
-    offset = Vector(scene.references.world_offset)
-    drone_parts = {m.drone_obj, m.drone_camera, clip_start(m), m.clip_end_obj, *hud_objects(m), *exclude}
+    offset = Vector(scene.drone_rig.world_offset)
+    drone_parts = {m.drone_obj, m.drone_camera, m.clip_end_obj, *exclude}
     matrices, inputs, pushes = {}, {}, {}
     eye = offset + m.drone_camera.matrix_world.translation
     for obj in scene.objects:
@@ -631,7 +580,7 @@ def render_with_world(m, scene, snapshot, path):
     that with the frame as rendered separates what the map did (a level switching, a patch moving) from what the
     camera did (moving, passing close to something)."""
     matrices, inputs, pushes = snapshot
-    offset = Vector(scene.references.world_offset)
+    offset = Vector(scene.drone_rig.world_offset)
     # The pushed layers, pushed as they were, but about the camera now, as the map's drivers do
     eye = offset + m.drone_camera.matrix_world.translation
     objects = [scene.objects[name] for name in matrices if name in scene.objects]
@@ -752,9 +701,8 @@ def replay(args):
     Origin moves are in the recording (as jumps of the camera, and keyed delta_location of the map's top objects)."""
     scene = bpy.context.scene
     m = load_addon(args.addon)
-    m.drone_obj = scene.references.drone_obj
+    m.drone_obj = scene.drone_rig.drone
     m.drone_camera = next(c for c in m.drone_obj.children if c.type == 'CAMERA')
-    m.clip_start_obj = next((c for c in m.drone_camera.children if c.name == 'clip_start'), None)  # until stage C
     m.clip_end_obj = next((c for c in m.drone_camera.children if c.name == 'clip_end'), None)
     recorded = scene.objects[args.replay]
     follow_recording(m.drone_camera, recorded)
@@ -775,7 +723,7 @@ def replay(args):
     r.image_settings.media_type = 'IMAGE'
     r.image_settings.file_format = 'PNG'
     scene.camera = recorded
-    for obj in (m.drone_obj, clip_start(m), m.clip_end_obj, *hud_objects(m)):
+    for obj in (m.drone_obj, m.clip_end_obj):
         if obj:
             obj.hide_render = True
     snap_path = os.path.join(out, "snap.png")
@@ -882,16 +830,16 @@ def main():
     m = load_addon(args.addon)
     scene = bpy.context.scene
     for key, value in plan.get("settings", {}).items():
-        setattr(scene.controls_parameters, key, value)
+        setattr(scene.control_settings, key, value)
     for key, value in plan.get("other_settings", {}).items():
-        setattr(scene.other_parameters, key, value)
+        setattr(scene.flight_options, key, value)
     # Custom properties on objects, e.g. a map's spin turned off, so the pop check only sees level changes
     for name, properties in plan.get("object_properties", {}).items():
         for key, value in properties.items():
             scene.objects[name][key] = value
     # Record Camera needs its camera object
-    name = scene.other_parameters.record_obj
-    if scene.other_parameters.record_camera and name and name not in scene.objects:
+    name = scene.flight_options.record_obj
+    if scene.flight_options.record_camera and name and name not in scene.objects:
         scene.collection.objects.link(bpy.data.objects.new(name, bpy.data.cameras.new(name)))
 
     clock = types.SimpleNamespace(t=0.0)
@@ -959,7 +907,7 @@ def main():
     r.image_settings.media_type = 'IMAGE'
     r.image_settings.file_format = 'PNG'
     scene.camera = m.drone_camera
-    for obj in (m.drone_obj, clip_start(m), m.clip_end_obj, *hud_objects(m)):
+    for obj in (m.drone_obj, m.clip_end_obj):
         if obj:
             obj.hide_render = True
 
@@ -967,7 +915,7 @@ def main():
     duration = float(plan.get("duration", 5.0))
     next_tick, next_frame, frame_count = 0.0, 1.0 / fps, 0
     rows, changes, previous_image, previous_world, map_changes = [], [], None, None, {}
-    last_offset, last_selected, last_enclosed = tuple(scene.references.world_offset), "", False
+    last_offset, last_selected, last_enclosed = tuple(scene.drone_rig.world_offset), "", False
     print(f"FLIGHT {os.path.basename(args.plan)}: {duration:g} s at {fps:g} fps, add-on {args.addon} ({m.__name__})")
 
     start = plan.get("start", {})
@@ -1027,24 +975,15 @@ def main():
         frame_count += 1
         # The add-on moves the Drone object onto the simulated drone once it's drifted RECENTER_DISTANCE from it, and
         # the simulation subtracts the same offset, so the camera shouldn't move
-        physics = getattr(m, "physics", None)
-        if physics is not None and physics.is_flying():
-            if physics.recentered and physics.recentered[0] == scene.frame_current:
-                moved_by = m.drone_camera.matrix_world.translation - camera_before
-                events.append((clock.t, "SIMRECENTER", f"the core recentered by "
-                                                       f"{tuple(round(c, 2) for c in physics.recentered[1])} (drone "
-                                                       f"units); the camera moved {moved_by.length:.4g} this frame"))
-            recenter_input = None
-        else:
-            modifier = m.drone_obj.modifiers.get(getattr(m, "DRONE_MODIFIER", ""))
-            recenter_input = getattr(modifier.properties.inputs, m.RECENTER_SOCKET, None) if modifier else None
-        if recenter_input is not None and Vector(recenter_input.value).length > 0.0:
+        physics = m.physics
+        if physics.is_flying() and physics.recentered and physics.recentered[0] == scene.frame_current:
             moved_by = m.drone_camera.matrix_world.translation - camera_before
-            events.append((clock.t, "SIMRECENTER", f"the simulation recentered by {tuple(round(c, 2) for c in recenter_input.value)}"
-                                                   f" (drone units); the camera moved {moved_by.length:.4g} this frame"))
+            events.append((clock.t, "SIMRECENTER", f"the core recentered by "
+                                                   f"{tuple(round(c, 2) for c in physics.recentered[1])} (drone "
+                                                   f"units); the camera moved {moved_by.length:.4g} this frame"))
 
         state = camera_state(m, scene)
-        offset = tuple(scene.references.world_offset)
+        offset = tuple(scene.drone_rig.world_offset)
         if offset != last_offset:
             events.append((clock.t, "ORIGIN", "Keep Drone at Origin moved the world"))
             last_offset = offset

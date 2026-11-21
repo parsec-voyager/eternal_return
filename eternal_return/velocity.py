@@ -20,19 +20,16 @@ the view by the Drone's evaluated rotation and the view's own, as Blender draws 
 drawn. Python's tick only says whether it's shown. Read in the tick, it would be a frame stale whenever Blender draws a
 frame before a tick has run since its frame step (see horizon.py).
 
-Until 2026-11-17 it was a geometry nodes object under clip_start, clip_start_velocity, made again at every depsgraph
-evaluation that moved the camera (see horizon.py). remove() deletes the old object from a scene on its next flight.
+Until 2026-11-17 it was a geometry nodes object under the camera, made again at every depsgraph evaluation that
+moved the camera (see horizon.py).
 """
 import math
 
 import bpy
 import numpy as np
 
-# Marks the geometry nodes object of the marker until 2026-11-17 (removed from scenes: hud.migrate())
-OBJECT_KEY = "dronecam_velocity"
-
 # The drone's velocity attribute (physics.write()), in the Drone object's space. Every point of the drone's geometry has
-# the same one, and the drone's own come first, before the upstream UI's.
+# the same one.
 VELOCITY_ATTRIBUTE = "vel"
 
 # Where the marker is drawn, in HUD units (hud.py: 0.1 ahead is the camera's clip start): in front of the horizon's
@@ -58,11 +55,6 @@ MIN_SPEED = 0.05
 
 # Whether the next draws show it: set_shown()
 _shown = False
-
-
-def is_velocity(obj):
-    """Whether obj is the old geometry nodes marker (hud.delete_legacy())"""
-    return isinstance(obj, bpy.types.Object) and bool(obj.get(OBJECT_KEY))
 
 
 def set_shown(shown):

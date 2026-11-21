@@ -61,7 +61,7 @@ MATERIAL = "Fog_look"                  # objects with a "Col" color attribute
 PLAIN_MATERIAL = "Fog_look_plain"      # objects without one: their viewport color (Object Properties > Viewport Display)
 DISSOLVE_MATERIAL = "Fog_look_dissolve"     # Fog_look that turns transparent by the object's "dissolve" property
 WORLD = "Fog_sky"
-RIG = {"Drone", "Drone_Camera", "clip_start", "clip_end"}
+RIG = {"Drone", "Drone_Camera", "clip_end"}
 
 
 def srgb_to_linear(c):

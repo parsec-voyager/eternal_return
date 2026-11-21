@@ -2536,7 +2536,7 @@ def recenter_move(obj, camera_world):
     return world_vector(obj, (move if move is not None else 0.0) + (pop if pop is not None else 0.0))
 
 
-def select_if_looking_at_it(scene, camera, rig_names=("Drone", "Drone_Camera", "clip_start", "clip_end")):
+def select_if_looking_at_it(scene, camera, rig_names=("Drone", "Drone_Camera", "clip_end")):
     """From ER_OT_Fly.click(), after its click at the view's center: if it selected nothing (but the drone rig)
     and the drone camera's view center meets a sphere, select that sphere's object, as a click would have if it were a
     mesh"""

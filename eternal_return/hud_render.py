@@ -180,8 +180,8 @@ def write_texts(obj, texts):
 def update(scene):
     """Make the HUD's objects show what the HUD shows now, with In Renders on"""
     settings = getattr(scene, "drone_hud", None)
-    references = getattr(scene, "references", None)
-    camera_obj = references.camera_obj if references else None
+    drone_rig = getattr(scene, "drone_rig", None)
+    camera_obj = drone_rig.camera if drone_rig else None
     if settings is None or not settings.in_renders or camera_obj is None:
         return
     obj = ensure(scene, camera_obj)

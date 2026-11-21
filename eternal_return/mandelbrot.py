@@ -2,7 +2,7 @@
 for as long as the numbers hold out.
 
 The floor is the plane through the map's object's origin (the scene's "mandelbrot_object"), the real axis along world X
-and the imaginary along Y. A point p of it, in the map's frame (world location + scene.references.world_offset, see
+and the imaginary along Y. A point p of it, in the map's frame (world location + scene.drone_rig.world_offset, see
 Keep Drone at Origin), is
 
     c = center + units * (p - anchor)
@@ -71,7 +71,7 @@ VERSION = "mandelbrot_version"
 SCENE_KEY = "mandelbrot_object"
 CAMERA_NAME = "Drone_Camera"
 # The drone rig, which a click may select without having hit the map
-RIG_NAMES = {"Drone", "Drone_Camera", "clip_start", "clip_end"}
+RIG_NAMES = {"Drone", "Drone_Camera", "clip_end"}
 
 # Fixed point bits beyond what the zoom needs (a pixel is about 1/1000 of the view under the drone): the center has
 # CENTER_MARGIN, a reference orbit ORBIT_MARGIN, which also covers its rounding errors growing along the orbit
@@ -530,8 +530,8 @@ def mapping_of(obj):
 
 def world_offset(scene):
     """Where the world origin is in the map's frame (see Keep Drone at Origin), as Python floats"""
-    references = getattr(scene, "references", None)
-    return tuple(references.world_offset) if references else (0.0, 0.0, 0.0)
+    drone_rig = getattr(scene, "drone_rig", None)
+    return tuple(drone_rig.world_offset) if drone_rig else (0.0, 0.0, 0.0)
 
 
 def setting(obj, name):

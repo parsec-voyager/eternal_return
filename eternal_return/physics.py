@@ -1,10 +1,8 @@
 """The drone's flight on the Eternal Return core (the eternal_return_core wheel).
 
 The core is one pure function, step(state, commands, params, dt), in float64: gravity, the turn for the step, thrust,
-drag, the move, and the ground, in the Drone object's space (see eternal_return_core's spec/physics.md). It flew every
-reference flight recorded from DroneCam's geometry nodes simulation to float32 precision, so it flies as that rig did,
-minus the rig's stray Clamp that limited roll one way only in Angle mode. The rig itself is gone since stage B
-(2026-11-20): rig.py builds the drone without it and takes it out of older scenes.
+drag, the move, and the ground, in the Drone object's space (see eternal_return_core's spec/physics.md, and its
+reference flights in vectors/, which it flies to float32 precision). rig.py builds the drone.
 
 The Drone's mesh is one flat triangle, the rest triangle (REST_KEY), and the Drone_Camera is parented to its three
 vertices. Once a frame, before the frame is evaluated (flight.fly_frame()), the drone's state is stepped, and the mesh's
@@ -79,8 +77,7 @@ def tag_scene(physics_settings, context):
 
 
 class DronePhysics(bpy.types.PropertyGroup):
-    """The drone's physics settings, the scene's: what DroneCam's rig had as its geometry nodes modifier's inputs.
-    rig.py reads them from that rig, in scenes from before stage B."""
+    """The drone's physics settings, the scene's (the Drone panel)"""
     mass: bpy.props.FloatProperty(
         name="Mass", description="The drone's mass. Heavier, the same thrust speeds it up less", default=0.5,
         min=0.001, soft_max=10.0, unit='MASS')
@@ -105,8 +102,6 @@ class DronePhysics(bpy.types.PropertyGroup):
     camera_tilt: bpy.props.FloatProperty(
         name="Camera Tilt", description="The camera's tilt up from the drone's frame, as on an FPV drone",
         default=math.pi / 2, soft_min=0.0, soft_max=math.pi / 2, subtype='ANGLE', update=tag_scene)
-    rig_read: bpy.props.BoolProperty(
-        name="Read from Rig", description="The settings were read from DroneCam's rig once (rig.py)", default=False)
 
 
 class DroneRecording(bpy.types.PropertyGroup):
@@ -184,9 +179,8 @@ def fit_pose(rest, moved):
 
 
 def read_state(drone_obj, depsgraph):
-    """The drone's state as the evaluated mesh shows it: the core's last state written to the mesh, or in a scene from
-    before stage B, the rig's simulation's (its evaluated mesh can have more vertices than the rest mesh, the original
-    add-on's in-camera UI: the drone's own come first)"""
+    """The drone's state as the evaluated mesh shows it: the core's last state written to the mesh (the drone's own
+    vertices come first, should a modifier add more)"""
     rest = rest_positions(drone_obj.data)
     drone_eval = drone_obj.evaluated_get(depsgraph)
     mesh = drone_eval.data
@@ -237,22 +231,22 @@ def stop():
 
 def stick_settings(scene):
     """The scene's controls as the core's stick settings (the panel's percentages as fractions)"""
-    controls = scene.controls_parameters
-    rates = scene.rotation_controls_actual_rates
+    controls = scene.control_settings
+    rates = scene.stick_rates
     axes = ("throttle", "yaw", "pitch", "roll")
     rotation_axes = ("yaw", "pitch", "roll")
     return core.StickSettings(
-        mode=controls.flying_mode,
+        mode=controls.flight_mode,
         invert={axis: getattr(controls, f"{axis}_invert") for axis in axes},
         # A deadzone of the whole stick is no valid setting for the core (the old conversion divided by zero)
         deadzone={axis: min(getattr(controls, f"{axis}_deadzone") / 100.0, 0.999) for axis in axes},
         throttle_centered=controls.throttle_centered,
-        max_thrust=scene.throttle_control_power.power,
+        max_thrust=scene.control_settings.max_thrust,
         center_rate={axis: getattr(rates, f"{axis}_center_sensitivity") for axis in rotation_axes},
         max_rate={axis: getattr(rates, f"{axis}_max_rate") for axis in rotation_axes},
         expo={axis: getattr(rates, f"{axis}_expo") for axis in rotation_axes},
-        auto_level_strength=controls.autoleveling_strength / 100.0,
-        angle_limit=controls.angle_limit_value,
+        auto_level_strength=controls.level_strength / 100.0,
+        angle_limit=controls.angle_limit,
     )
 
 
@@ -542,8 +536,8 @@ def replay(scene):
     global _replayed
     if core is None or state is not None:
         return
-    references = getattr(scene, "references", None)
-    drone_obj = references.drone_obj if references else None
+    drone_rig = getattr(scene, "drone_rig", None)
+    drone_obj = drone_rig.drone if drone_rig else None
     take = Recording.of(drone_obj) if drone_obj else None
     if take is None:
         return

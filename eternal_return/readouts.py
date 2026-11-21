@@ -1,28 +1,16 @@
 """The HUD's readouts' text (hud.py): Altitude, Speed, Scale and Scale Speed, as the flight works them out
 (odometer.py), written every odometer.PERIOD frames.
 
-The HUD's own readouts, DroneCam's (until stage C, 2026-11-20), measured Blender's coordinates and the drone's Blender
-scale, which wraps, recenters, Keep Drone at Origin and loops all jump, in Blender units, not the Earth's meters. The add-on
-knows what each of those was, so it works the four out itself. Numbers of any size are shown to three figures: lengths in
+Blender's coordinates and the drone's Blender scale would make poor readouts: wraps, recenters, Keep Drone at Origin
+and loops all jump them, and they're in Blender units, not the Earth's meters. The add-on knows what each of those was,
+so it works the four out itself. Numbers of any size are shown to three figures: lengths in
 meters with SI prefixes (nm, km, Mm), past them in powers of ten, as the scales are.
-
-Before they were drawn, they were geometry nodes text on an object of their own under DroneCam's HUD, clip_start_readouts,
-marked with OBJECT_KEY: is_readouts() finds it in scenes from before, for hud.migrate() to delete.
 """
 import math
-
-import bpy
-
-# Marks the readouts object of scenes from before stage C, whatever it ended up named
-OBJECT_KEY = "dronecam_readouts"
 
 # SI prefixes, by thousands from yocto (10^-24) to yotta (10^24). The newer ronto and quecto, ronna and quetta are
 # left out: "320 rm" reads as nothing, "3.20e-25 m" does.
 PREFIXES = "yzafpnµm kMGTPEZY"
-
-
-def is_readouts(obj):
-    return isinstance(obj, bpy.types.Object) and bool(obj.get(OBJECT_KEY))
 
 
 def figures(log10_value):

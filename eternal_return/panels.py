@@ -47,17 +47,17 @@ class ER_PT_UI(SidePanel, bpy.types.Panel):
 # Each control's own rows under its Axis, Invert and Deadzone, drawn by draw_<kind>(box, scene)
 
 def draw_throttle(box, scene):
-    parameters = scene.controls_parameters
+    parameters = scene.control_settings
     row = box.row()
-    row.prop(scene.throttle_control_power, "power", text="Maximum Thrust")
+    row.prop(parameters, "max_thrust", text="Maximum Thrust")
     # In 3D mode the throttle's whole travel is used, reverse thrust below center, so it has no rest end to center
-    if parameters.flying_mode != '3D':
+    if parameters.flight_mode != '3D':
         row.prop(parameters, "throttle_centered", text="Centered")
 
 
 def draw_rates(control):
     def draw(box, scene):
-        rates = scene.rotation_controls_actual_rates
+        rates = scene.stick_rates
         row = box.row()
         row.prop(rates, f"{control}_center_sensitivity", text="Center Sensitivity")
         row.prop(rates, f"{control}_max_rate", text="Max Rate")
@@ -66,7 +66,7 @@ def draw_rates(control):
 
 
 def draw_scale(box, scene):
-    parameters = scene.controls_parameters
+    parameters = scene.control_settings
     box.prop(parameters, "scale_factor", text="Scale Factor")
     row = box.row()
     row.prop(parameters, "scale_lens_clip", text="Lens Clip")
@@ -75,7 +75,7 @@ def draw_scale(box, scene):
 
 
 def draw_zoom(box, scene):
-    parameters = scene.controls_parameters
+    parameters = scene.control_settings
     box.prop(parameters, "zoom_factor", text="Zoom Factor")
     row = box.row()
     row.prop(parameters, "scale_lens_clip_zoom", text="Lens Clip")
@@ -83,14 +83,14 @@ def draw_zoom(box, scene):
 
 
 def draw_orbit(box, scene):
-    parameters = scene.controls_parameters
+    parameters = scene.control_settings
     row = box.row()
     row.prop(parameters, "orbit_centered", text="Centered")
     row.prop(parameters, "orbit_axes", text="Orbit Axes")
 
 
 def draw_click(box, scene):
-    parameters = scene.controls_parameters
+    parameters = scene.control_settings
     row = box.row()
     row.prop(parameters, "click_centered", text="Centered")
     row.prop(parameters, "auto_deselect", text="Auto Deselect")
@@ -98,7 +98,7 @@ def draw_click(box, scene):
 
 
 def draw_camera(box, scene):
-    parameters = scene.controls_parameters
+    parameters = scene.control_settings
     box.prop(parameters, "camera_factor", text="Camera Factor")
     row = box.row()
     row.prop(parameters, "scale_lens_clip_with_camera", text="Lens Clip")
@@ -106,7 +106,7 @@ def draw_camera(box, scene):
 
 
 def draw_lens_clip(box, scene):
-    parameters = scene.controls_parameters
+    parameters = scene.control_settings
     box.prop(parameters, "lens_clip_factor", text="Lens Clip Factor")
     row = box.row()
     row.prop(parameters, "default_clip_start", text="Clip Start")
@@ -117,7 +117,7 @@ def draw_lens_clip(box, scene):
 
 
 def draw_brake(box, scene):
-    parameters = scene.controls_parameters
+    parameters = scene.control_settings
     box.prop(parameters, "brake_factor", text="Brake Factor")
     row = box.row()
     row.prop(parameters, "brake_centered", text="Centered")
@@ -131,11 +131,11 @@ CONTROL_ROWS = {"throttle": draw_throttle, "yaw": draw_rates("yaw"), "pitch": dr
 
 def draw_control(column, scene, control):
     """A control's box: its title, the axis it reads with its invert and deadzone, then its own settings"""
-    parameters = scene.controls_parameters
+    parameters = scene.control_settings
     box = column.box()
     box.label(text=controls.label(control), icon=CONTROL_ICONS[control])
     row = box.row()
-    row.prop(scene.controls_axis_mapping, control, text="Axis")
+    row.prop(scene.control_axes, control, text="Axis")
     row.prop(parameters, f"{control}_invert", text="Invert")
     row.prop(parameters, f"{control}_deadzone", text="Deadzone")
     CONTROL_ROWS[control](box, scene)
@@ -158,24 +158,24 @@ class ER_PT_UI_Controls(SubPanel, bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         scene = context.scene
-        parameters = scene.controls_parameters
+        parameters = scene.control_settings
 
         box = layout.box()
-        box.label(text="Controls Parameters:", icon='PREFERENCES')
+        box.label(text="Controls Settings in the Preferences", icon='PREFERENCES')
         row = box.row()
-        row.operator("er.store_parameters", text="Store Parameters")
-        row.operator("er.load_parameters", text="Load Parameters")
+        row.operator("er.store_controls", text="Store")
+        row.operator("er.load_controls", text="Load")
 
         row = layout.row()
         row.scale_y = 1.5
         split = row.split(factor=0.5)
         # No label: in half the panel's width it was cut to "Fly M...", and the mode's name says what it is
-        split.prop(parameters, "flying_mode", text="")
+        split.prop(parameters, "flight_mode", text="")
         modes = split.row()
-        if parameters.flying_mode in ('HORIZON', 'ANGLE'):
-            modes.prop(parameters, "autoleveling_strength", text="Auto-Level Strength")
-            if parameters.flying_mode == 'ANGLE':
-                modes.prop(parameters, "angle_limit_value", text="Angle Limit")
+        if parameters.flight_mode in ('HORIZON', 'ANGLE'):
+            modes.prop(parameters, "level_strength", text="Auto-Level Strength")
+            if parameters.flight_mode == 'ANGLE':
+                modes.prop(parameters, "angle_limit", text="Angle Limit")
         else:
             # Keeps the layout from jumping when the mode changes
             modes.label(text="")
@@ -186,15 +186,15 @@ class ER_PT_UI_Controls(SubPanel, bpy.types.Panel):
             if control == SCALING_TOOLS_AFTER:
                 draw_scaling_tools(column, context)
 
-        layout.label(text="Controls Outputs:", icon='GRAPH')
+        layout.label(text="What the Controls Do", icon='GRAPH')
         grid = layout.box().grid_flow(row_major=True, columns=2, even_columns=True)
         for control in controls.CONTROLS:
-            grid.prop(scene.controls_output, control)
+            grid.prop(scene.control_outputs, control)
 
-        layout.label(text="Raw Controller Axis Inputs:", icon='CONSOLE')
+        layout.label(text="Controller Axes", icon='CONSOLE')
         grid = layout.box().grid_flow(row_major=True, columns=4, even_columns=True)
         for axis in range(controls.NUM_AXES):
-            grid.prop(scene.joystick_axis_inputs, f"joystick_axis{axis}_input", text=f"Axis {axis}:")
+            grid.prop(scene.controller_axes, f"axis_{axis}", text=f"Axis {axis}")
 
 
 class ER_PT_UI_Record(SubPanel, bpy.types.Panel):
@@ -204,14 +204,14 @@ class ER_PT_UI_Record(SubPanel, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        other_parameters = context.scene.other_parameters
+        flight_options = context.scene.flight_options
         row = layout.row()
-        row.prop(other_parameters, "record", text="Record",
-                 icon='RECORD_ON' if other_parameters.record else 'RECORD_OFF')
+        row.prop(flight_options, "record", text="Record",
+                 icon='RECORD_ON' if flight_options.record else 'RECORD_OFF')
         row.operator("er.bake_animation", text="Bake Animation", icon='AUTOMERGE_OFF')
         row = layout.row()
-        row.prop(other_parameters, "record_camera", text="Record Camera")
-        row.prop(other_parameters, "record_obj", text="Camera Object")
+        row.prop(flight_options, "record_camera", text="Record Camera")
+        row.prop(flight_options, "record_obj", text="Camera Object")
 
 
 class ER_PT_UI_Extras(SubPanel, bpy.types.Panel):
@@ -221,9 +221,9 @@ class ER_PT_UI_Extras(SubPanel, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        other_parameters = context.scene.other_parameters
-        layout.prop(other_parameters, "drone_sound", text="Drone Sound")
-        layout.prop(other_parameters, "volume", text="Sound Volume", slider=True)
+        flight_options = context.scene.flight_options
+        layout.prop(flight_options, "drone_sound", text="Drone Sound")
+        layout.prop(flight_options, "volume", text="Sound Volume", slider=True)
 
 
 # In registration order, which is also their order on screen

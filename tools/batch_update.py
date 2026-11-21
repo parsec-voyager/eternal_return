@@ -1,5 +1,4 @@
-"""Apply one edit to every map, the way stage B's and stage C's re-saves did: a dry run first, then the saves, then a
-read-back. The edit is a small Python file; everything around it (finding the maps, the windowed saves, the camera
+"""Apply one edit to every map: a dry run first, then the saves, then a read-back. The edit is a small Python file; everything around it (finding the maps, the windowed saves, the camera
 check, the backups, the reports) is here.
 
 Usage (plain python3, which launches Blender for each map):
@@ -11,14 +10,16 @@ The edit file defines
     def edit(addon):
         ...change bpy.data...
         return ["what it changed", ...]          # empty: nothing to change, the map isn't saved
+An entry starting with "note:" is reported but isn't a change (something for you to look at, like a script that
+mentions a renamed setting).
 and may set MOVES_CAMERA = True when moving a drone camera is the point (otherwise a map whose drone camera moved
 is reported and not saved). addon(name) imports the installed add-on's module of that name (addon("hud")). An edit
 should be idempotent: the read-back runs it again on the saved maps and expects no changes. tools/batch_edits/ has
 examples.
 
 The maps: the .blend files under each --root (default: the Proton Drive blender folder and ~/blender_tests) that
-contain a drone (their bytes hold the drone mesh's name, _ER_Drone, or its name from before the rename; a map with
-a drone mesh no scene flies is opened too, and the edit finds nothing to do), skipping
+contain a drone (their bytes hold the drone mesh's name, _ER_Drone; a map with a drone mesh no scene flies is opened
+too, and the edit finds nothing to do), skipping
 Blender profiles (a test profile's extensions and startup files) and .blend1 backups. --maps names them instead, one
 path per line; every map listed is opened, drone or not.
 
@@ -47,8 +48,8 @@ BLENDER = "/Applications/Blender.app/Contents/MacOS/Blender"
 HOME = os.path.expanduser("~")
 DEFAULT_ROOTS = sorted(glob.glob(os.path.join(HOME, "Library/CloudStorage/ProtonDrive-*-folder/blender"))) + [
     os.path.join(HOME, "blender_tests")]
-# The drone mesh's name now (rig.MESH_NAME) and before Eternal Return (names.py renames it on load)
-DRONE_MARKS = (b"_ER_Drone", b"_DroneCam_Drone")
+# The drone mesh's name (rig.MESH_NAME)
+DRONE_MARKS = (b"_ER_Drone",)
 CHUNK = 64 << 20
 
 
@@ -85,7 +86,9 @@ def run_in_blender():
         spec.loader.exec_module(edit_module)
 
         before = camera_matrices(bpy)
-        report["changes"] = list(edit_module.edit(addon) or [])
+        returned = list(edit_module.edit(addon) or [])
+        report["notes"] = [entry for entry in returned if entry.lower().startswith("note:")]
+        report["changes"] = [entry for entry in returned if not entry.lower().startswith("note:")]
         after = camera_matrices(bpy)
         report["cameras_moved"] = {key: max(abs(x - y) for ra, rb in zip(before[key], after[key])
                                             for x, y in zip(ra, rb))
@@ -108,8 +111,8 @@ def camera_matrices(bpy):
     """Every scene's drone camera's evaluated world matrix, by "scene/camera" """
     matrices = {}
     for scene in bpy.data.scenes:
-        references = getattr(scene, "references", None)
-        camera = references.camera_obj if references else None
+        drone_rig = getattr(scene, "drone_rig", None)
+        camera = drone_rig.camera if drone_rig else None
         if camera is None:
             continue
         view_layer = scene.view_layers[0]
@@ -233,6 +236,9 @@ def print_summary(title, reports):
             counts[change] = counts.get(change, 0) + 1
     for change, count in sorted(counts.items(), key=lambda item: -item[1])[:20]:
         print(f"  {count:4} x {change}")
+    for path, report in reports.items():
+        for note in dict.fromkeys(report.get("notes", [])):
+            print(f"  {short(path)}: {note}")
     for path, messages in errors.items():
         print(f"  ERROR {short(path)}: {messages[0].strip().splitlines()[-1]}")
     return errors
