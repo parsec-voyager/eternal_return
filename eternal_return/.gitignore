@@ -1,0 +1,8 @@
+__pycache__/
+venv/
+tests/
+media/
+*.zip
+.DS_Store
+# A sound of the pilot's own, not the add-on's to share (sound.SLOTS)
+sound/oggggm-power_176-93513.mp3

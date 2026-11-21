@@ -1,0 +1,1936 @@
+"""Endless surface maps: any mesh of quads and triangles, its faces the biggest tiles of a lattice, each splitting at
+every level (a quad 2 x 2, a triangle 4 ways at its sides' middles), that the drone can dive into anywhere forever and
+climb back out of to see the whole object (2026-11-12: step 2 of tiling any surface, quads; 2026-11-13, step 3:
+triangles, and corners where any number of faces meet; see ~/blender_tests/surface).
+
+The faces are flat tiles, folded at the mesh's edges (sphere.py's chart is conformal instead, made for one surface). A
+quad's lattice at level L is its corners' bilinear blend at u, v = I / 2^L, J / 2^L: the points its repeated midpoint
+subdivision makes; a triangle's is the linear map's at I + J <= 2^L, a triangular lattice, 6 around a point. Either way
+a face's side splits at its middles, so a level's points on an edge are the same from both of its faces (a quad's and a
+triangle's alike), and the lattice runs on across the fold. A point of a level's lattice is a point of every finer one,
+and its key (Topology.key()) names it the same way from every face it's on: one inside a face by the face, one on an
+edge by the edge, a corner by its vertex. Flat faces need no corner charts: a corner where any number of faces meet (3
+at a cube's, 5 at an icosahedron's, 24 at a UV sphere's pole) is a vertex of every level, with a neighbor along each of
+its edges, and only a level's corners are other than 4 (or 6) around. A quad that isn't flat is its bilinear patch,
+curved: the point below the drone is found on it with Newton's steps, and the floor's cells near the drone are split
+until they're as flat as it (refine()).
+
+The world is kept in two parts, like a sphere map's: n, the depth (a level-n cell is a unit), and the anchor A, a point
+of the level-n lattice, Python integers that grow without limit; and everything else in map units around A's point, the
+map's origin, in floats that stay within the view. Map units are the mesh's own times rho 2^n.
+- A dive loop by 2^k: n grows by k and A's integers double k times, a change of units about the map's origin, so the
+  view doesn't change at all (dive()).
+- A climb loop first moves the anchor to the nearest point of the 2^k times coarser lattice, then n shrinks by k
+  (climb()). At n = 0 the mesh's faces are the units: climb loops stop there, and the drone grows freely to see the
+  whole object (at_top()).
+- The anchor follows the point below the drone (recenter_move()), so the drone stays near the map's origin.
+Every difference from A is worked out exactly: the mesh's corners are float32, so dyadic, and a lattice point is a
+blend of them with dyadic weights, so it's integers over a power of 2 (Topology.point()). A point a thousand loops deep
+is placed from A as exactly as one at the top, and rounded once.
+
+What's drawn:
+- the surface near the drone, the floor (build_floor()): the cells of the level about a quarter of the window across,
+  the cells in the window (window times the drone camera's clip end), each corner from the camera, exactly, then
+  rounded. Like the giant parts' window (parts.Exact): loops and recenters only move and scale its object, and it's
+  built again when the view reaches past it or it's grown far wider than wanted (and with a bent quad's cells split,
+  as the drone moves on). Its faces have the mesh's colors (its face "Col" attribute) and the map's material.
+- the 3D parts, pillars and arches at every level (parts.py, the map's "parts" property), through the lattice here
+  (MeshLattice): the parts' instanced levels from the lattice near the drone in floats, and the giant ones exactly.
+The mesh itself, the map's source, isn't drawn: it's 2^n times too big for float32 once the drone has dived.
+
+The map's object (an empty at the map's origin, its axes the mesh's, scaled uniformly) holds:
+- "surface": its settings (see DEFAULTS), written by the map's build script
+- "surface_source": the mesh's object (its mesh, untransformed, is the surface)
+- "surface_state": "n kind id i j", n and the anchor's key (Topology.key()) in hex
+- "surface_version": counts the state's writes, so an undo, which puts an older one back, is noticed
+"""
+
+import math
+import time
+from fractions import Fraction
+
+import numpy as np
+
+try:
+    from . import parts
+    from . import sphere
+    from . import tiling
+except ImportError:          # tests import it by itself
+    import parts
+    import sphere
+    import tiling
+
+PROPERTY = "surface"
+STATE = "surface_state"
+VERSION = "surface_version"
+SOURCE = "surface_source"
+FLOOR_KEY = "surface_floor_of"       # on the floor object: its map's object's name
+
+# The "surface" property's keys:
+# - rho: map units per unit of the mesh at n = 0 (the mesh's own size, times rho, is the object's at the top)
+# - window: how far the floor is built, in drone camera clip ends
+# - floor_cells: the floor's cells are about the window over this, across (more: more, smaller cells)
+# - floor_color: linear RGBA for faces without a "Col" of the mesh's own
+# - rule: "square" (quads 2 x 2, triangles 4 ways: this module's lattice) or "penrose" (a rhomb mesh, its Penrose
+#   strapwork drawn on the floor at every level: surface_penrose.py)
+DEFAULTS = {"rho": 1.0, "window": 1.25, "floor_cells": 4.0, "floor_color": [0.04, 0.03, 0.10, 1.0], "rule": "square"}
+
+# A key's kinds: a corner of the mesh (its vertex), a point inside an edge (the edge, k along it from its smaller vertex
+# to its bigger one), a point inside a face (the face, I and J)
+VERTEX, EDGE, FACE = 0, 1, 2
+# A face of k sides (4: a quad, 3: a triangle) has its corners at these (I, J), in its loop's order, at a level of M
+# cells across: a quad's at (0, 0), (M, 0), (M, M), (0, M), its points the bilinear blend's at u, v = I / M, J / M; a
+# triangle's at (0, 0), (M, 0), (0, M), its points those with I + J <= M, of the linear map. Its side s runs from
+# corner s to corner s + 1. Inside a face a point's neighbors are these steps away: a quad's cells split 2 x 2, so its
+# lattice is square, 4 around; a triangle's split 4 ways (at their sides' middles), so its lattice is triangular, 6
+# around.
+STEPS = {4: ((1, 0), (0, 1), (-1, 0), (0, -1)), 3: ((1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1), (1, -1))}
+# A point inside side s steps into the face by these (a quad's one, a triangle's two)
+INWARD = {4: (((0, 1),), ((-1, 0),), ((0, -1),), ((1, 0),)),
+          3: (((0, 1), (-1, 1)), ((-1, 0), (0, -1)), ((1, 0), (1, -1)))}
+
+# The point below the drone (Below): Newton steps in a face at most (until they stop moving it: a flat face needs one, a
+# curved quad a few), faces crossed at most
+NEWTON_STEPS = 12
+WALK_HOPS = 12
+# Further than this many units from the anchor's point, or this share of its face's size (whichever is less), and n
+# under GLOBAL_N, the face below is first found among them all (the source's own coordinates in float64 tell faces
+# apart that shallow), else by walking from the anchor's face: over a mesh's creases (Suzanne's eyes), a walk from the
+# anchor's face can end in a hollow while a face across the crease is nearer
+WALK_REACH = 2.0
+WALK_SHARE = 0.25
+GLOBAL_N = 40
+# Recenter once the drone is this many units from the anchor's point, or this many of its heights over the surface
+RECENTER_UNITS = 4.0
+RECENTER_HEIGHTS = 2.0
+# The floor: at most this many cells (the whole mesh, at the top), and at most this many from a face's first, either way
+FLOOR_MAX_CELLS = 20000
+FLOOR_REACH = 64
+# A quad cell of the floor is split 2 x 2 while it bulges off the two flat triangles it's drawn as by more than this
+# share of its distance from the camera (about a pixel), or of the drone's height nearer than that, this many times at
+# most (refine()); a floor with split cells is built again once the camera has moved FLOOR_FOLLOW drone heights from
+# where it was built for, or the drone's height has halved
+FLOOR_FLATNESS = 1e-3
+FLOOR_SPLITS = 24
+FLOOR_FOLLOW = 16.0
+# The grid a face's Jacobian is bounded on (Topology)
+SIGMA_GRID = 9
+# A point's faces' normals cancel (Topology.key_normal()) when their sum is shorter than this share of their count
+NORMALS_CANCEL = 1e-6
+
+
+def setting(obj, name):
+    settings = obj.get(PROPERTY)
+    value = settings.get(name) if settings is not None else None
+    return DEFAULTS[name] if value is None else value
+
+
+def side_point(k, s, t, M):
+    """The point t along side s of a face of k sides (from its corner s), as (I, J) at a level of M cells across"""
+    if k == 4:
+        return ((t, 0), (M, t), (M - t, M), (0, M - t))[s]
+    return ((t, 0), (M - t, t), (0, M - t))[s]
+
+
+def corner_point(k, c, M):
+    return ((0, 0), (M, 0), (M, M), (0, M))[c] if k == 4 else ((0, 0), (M, 0), (0, M))[c]
+
+
+def sides_on(k, I, J, M):
+    """The sides of a face of k sides its point (I, J) is on, at a level of M cells across"""
+    if k == 4:
+        return [s for s, on in enumerate((J == 0, I == M, J == M, I == 0)) if on]
+    return [s for s, on in enumerate((J == 0, I + J == M, I == 0)) if on]
+
+
+def nearest_point(k, u, v, M):
+    """The point of a face of k sides' lattice of M cells across nearest (u, v) in its parameters (in cells, numbers of
+    any type), (I, J): rounded, kept in the face"""
+    I = min(max(round(u), 0), M)
+    J = min(max(round(v), 0), M)
+    while k == 3 and I + J > M:
+        # Past the long side: back off along whichever was rounded up the more
+        if (I - u >= J - v and I > 0) or J == 0:
+            I -= 1
+        else:
+            J -= 1
+    return I, J
+
+
+def big_float(value):
+    """An int of any size as a float, inf past a float's range"""
+    try:
+        return float(value)
+    except OverflowError:
+        return math.copysign(math.inf, value)
+
+
+def quotient(a, b):
+    """a / b for ints of any size, correctly rounded, inf past a float's range"""
+    try:
+        return a / b
+    except OverflowError:
+        return math.copysign(math.inf, a) * (1.0 if b > 0 else -1.0)
+
+
+# ----- exact points: three ints over a power of 2 -----
+
+def d_sub(a, b):
+    """a - b for exact points (ints, e): the ints over 2^e"""
+    (ax, ae), (bx, be) = a, b
+    if ae >= be:
+        return tuple(x - (y << (ae - be)) for x, y in zip(ax, bx)), ae
+    return tuple((x << (be - ae)) - y for x, y in zip(ax, bx)), be
+
+
+def d_add(a, b):
+    (ax, ae), (bx, be) = a, b
+    if ae >= be:
+        return tuple(x + (y << (ae - be)) for x, y in zip(ax, bx)), ae
+    return tuple((x << (be - ae)) + y for x, y in zip(ax, bx)), be
+
+
+def d_float(a, shift=0):
+    """An exact point times 2^shift, as floats (inf past a float's range)"""
+    x, e = a
+    e -= shift
+    if e >= 0:
+        d = 1 << e
+        return np.array([quotient(v, d) for v in x])
+    return np.array([big_float(v << -e) for v in x])
+
+
+def d_of(values, shift=0):
+    """Floats times 2^-shift, exactly, as an exact point"""
+    ratios = [float(v).as_integer_ratio() for v in values]
+    k = max(den.bit_length() - 1 for _, den in ratios)
+    return tuple(num << (k - (den.bit_length() - 1)) for num, den in ratios), k + shift
+
+
+def d_fractions(a):
+    x, e = a
+    return [Fraction(v, 1 << e) for v in x]
+
+
+# ----- the mesh -----
+
+class Topology:
+    """A mesh of quads and triangles as the lattice sees it: each face's corners (vertex indices, in its loop's order)
+    and their places (float64, the float32 coordinates as they are), its number of sides, each face's sides' edges (and
+    whether a side runs from the edge's smaller vertex to its bigger one), each edge's faces and each vertex's, the
+    faces' blends (P0, the u and v edges eu and ev, and the twist w = P0 - P1 + P2 - P3, as floats and as exact ints over
+    2^E; a triangle's eu and ev are its sides from its corner 0, and it has no twist), the bounds on how far a step of a
+    face's parameters moves its point (sigma_lo, sigma_hi), and each face's color. Any number of faces may meet at a
+    corner, and quads and triangles may share an edge: both split it at its middle.
+
+    From a Blender mesh, or without one from positions (float64, (vertices, 3)) and faces (vertex index tuples): the
+    icosahedron sphere's 20 faces, whose keys and neighbors its 3D parts use (parts_ico.py), its places not."""
+
+    def __init__(self, mesh, color=(0.04, 0.03, 0.10, 1.0), positions=None, faces=None):
+        if mesh is not None:
+            count = len(mesh.vertices)
+            co = np.empty(count * 3, dtype=np.float32)
+            mesh.vertices.foreach_get("co", co)
+            self.positions = co.reshape(-1, 3).astype(np.float64)
+            faces = [tuple(p.vertices) for p in mesh.polygons]
+        else:
+            self.positions = np.asarray(positions, dtype=np.float64)
+            count = len(self.positions)
+            faces = [tuple(int(v) for v in f) for f in faces]
+        others = sum(len(f) not in (3, 4) for f in faces)
+        if others or not faces:
+            raise ValueError(f"surface: {getattr(mesh, 'name', 'a mesh')} has {others} faces that aren't triangles "
+                             f"or quads (of {len(faces)})")
+        self.corners = faces
+        F = len(faces)
+        self.sides = np.array([len(c) for c in faces], dtype=np.int64)
+        self.edges, self.edge_sides = [], []
+        edge_index = {}
+        self._side_edge = [[0] * len(c) for c in faces]
+        self._side_forward = [[False] * len(c) for c in faces]
+        self.vertex_faces = [[] for _ in range(count)]
+        for f, c in enumerate(faces):
+            k = len(c)
+            for s in range(k):
+                a, b = c[s], c[(s + 1) % k]
+                key = (min(a, b), max(a, b))
+                e = edge_index.get(key)
+                if e is None:
+                    e = edge_index[key] = len(self.edges)
+                    self.edges.append(key)
+                    self.edge_sides.append([])
+                self.edge_sides[e].append((f, s, a < b))
+                self._side_edge[f][s] = e
+                self._side_forward[f][s] = a < b
+                self.vertex_faces[c[s]].append((f, s))
+        self.vertex_edges = [sorted({self._side_edge[f][c] for f, c in vf}
+                                    | {self._side_edge[f][(c - 1) % len(faces[f])] for f, c in vf})
+                             for vf in self.vertex_faces]
+        first, second, third, last = (self.positions[[c[k] for c in faces]] for k in (0, 1, 2, -1))
+        self.P0 = first
+        self.eu = second - first
+        self.ev = last - first
+        self.w = np.where((self.sides == 4)[:, None], first - second + third - last, 0.0)
+        # A ball round each face (its corners' mean, the furthest corner): a patch lies in its corners' hull, so no point
+        # of it is nearer a point than that point's distance to the middle less the radius (Below.global_face())
+        self.middle = np.where((self.sides == 4)[:, None], (first + second + third + last) / 4.0,
+                               (first + second + third) / 3.0)
+        self.radius = np.max(np.stack([np.linalg.norm(corner - self.middle, axis=1)
+                                       for corner in (first, second, third, last)]), axis=0)
+        # As plain lists too, for the lookups made a point at a time
+        self._corners = [list(c) for c in faces]
+        self._sides = self.sides.tolist()
+        self._eu, self._ev, self._w = self.eu.tolist(), self.ev.tolist(), self.w.tolist()
+        self._levels = {}
+        # Exactly: every coordinate is an int over 2^E
+        ratios = [v.as_integer_ratio() for v in self.positions.ravel().tolist()]
+        self.E = max(den.bit_length() - 1 for _, den in ratios)
+        ints = [num << (self.E - (den.bit_length() - 1)) for num, den in ratios]
+        vi = [tuple(ints[3 * k:3 * k + 3]) for k in range(count)]
+        sub = lambda p, q: tuple(x - y for x, y in zip(p, q))
+        self.exact = []
+        for c in faces:
+            p0, p1, p2, pl = vi[c[0]], vi[c[1]], vi[c[2]], vi[c[-1]]
+            twist = tuple(a - b + c_ - d for a, b, c_, d in zip(p0, p1, p2, pl)) if len(c) == 4 else (0, 0, 0)
+            self.exact.append((p0, sub(p1, p0), sub(pl, p0), twist))
+        # A step of 1 in u or v moves a face's point by its Jacobian's columns, eu + v w and ev + u w: their singular
+        # values on a grid of SIGMA_GRID x SIGMA_GRID over the face, give or take what the Jacobian can change between
+        # the grid's points (by |w| times the way to the nearest, Weyl's inequality), bound it over the face (a
+        # triangle's is the same everywhere)
+        grid = np.linspace(0.0, 1.0, SIGMA_GRID)
+        u, v = (g.ravel() for g in np.meshgrid(grid, grid, indexing="ij"))
+        ju = self.eu[:, None, :] + v[None, :, None] * self.w[:, None, :]
+        jv = self.ev[:, None, :] + u[None, :, None] * self.w[:, None, :]
+        # A 3 x 2 matrix's singular values, from its 2 x 2 Gram matrix's eigenvalues (closed form)
+        a, b, c = np.sum(ju * ju, -1), np.sum(ju * jv, -1), np.sum(jv * jv, -1)
+        mean, gap = (a + c) / 2.0, np.sqrt(((a - c) / 2.0) ** 2 + b * b)
+        small, big = np.sqrt(np.maximum(mean - gap, 0.0)), np.sqrt(mean + gap)
+        slack = np.linalg.norm(self.w, axis=1) * math.sqrt(0.5) / (SIGMA_GRID - 1)
+        self.sigma_lo = np.maximum(small.min(axis=1) - slack, 0.0)
+        self.sigma_hi = big.max(axis=1) + slack
+        self.colors = np.tile(np.asarray(color, dtype=np.float64), (F, 1))
+        attribute = mesh.attributes.get("Col") if mesh is not None else None
+        if attribute is not None and attribute.data_type in ('FLOAT_COLOR', 'BYTE_COLOR'):
+            values = np.empty(len(attribute.data) * 4, dtype=np.float32)
+            attribute.data.foreach_get("color", values)
+            values = values.reshape(-1, 4)
+            if attribute.domain == 'FACE':
+                self.colors = values.astype(np.float64)
+            elif attribute.domain == 'CORNER':
+                starts = np.array([p.loop_start for p in mesh.polygons])
+                self.colors = np.add.reduceat(values, starts, axis=0) / self.sides[:, None]
+
+    # ----- the lattice's points: keys, and the faces they're on -----
+
+    def key(self, f, I, J, M):
+        """The key of the point (I, J) of face f at a level of M cells across, the same from every face it's on"""
+        if self._sides[f] == 4:
+            on_u, on_v = I == 0 or I == M, J == 0 or J == M
+            if on_u and on_v:
+                return VERTEX, self._corners[f][(0, 1, 3, 2)[(I == M) + 2 * (J == M)]], 0, 0
+            if not (on_u or on_v):
+                return FACE, f, I, J
+            s = 0 if J == 0 else 1 if I == M else 2 if J == M else 3
+            t = (I, J, M - I, M - J)[s]
+        else:
+            on0, on1, on2 = J == 0, I + J == M, I == 0
+            if on0 + on1 + on2 >= 2:
+                return VERTEX, self._corners[f][0 if on2 and on0 else 1 if on0 else 2], 0, 0
+            if not (on0 or on1 or on2):
+                return FACE, f, I, J
+            s = 0 if on0 else 1 if on1 else 2
+            t = (I, J, M - J)[s]
+        return EDGE, self._side_edge[f][s], t if self._side_forward[f][s] else M - t, 0
+
+    def grid_keys(self, M):
+        """Every face's points' keys at a level of M cells across, as key() gives them: (faces, M + 1, M + 1, 4) ints,
+        the kind -1 where a triangle has no point (I + J > M)"""
+        F = len(self.corners)
+        grid = np.arange(M + 1)
+        I, J = np.meshgrid(grid, grid, indexing="ij")
+        keys = np.zeros((F, M + 1, M + 1, 4), dtype=np.int64)
+        for k in set(self._sides):
+            faces = np.flatnonzero(self.sides == k)
+            corners = np.array([self._corners[f] for f in faces])
+            side_edge = np.array([self._side_edge[f] for f in faces])
+            side_forward = np.array([self._side_forward[f] for f in faces])
+            # One face's grid: each point's kind, and its corner or its side and how far along it
+            if k == 4:
+                on = [J == 0, I == M, J == M, I == 0]
+                corner = np.array((0, 1, 3, 2))[(I == M) + 2 * (J == M)]
+                along = (I, J, M - I, M - J)
+                kind = np.where((on[1] | on[3]) & (on[0] | on[2]), VERTEX, np.where(on[0] | on[1] | on[2] | on[3], EDGE, FACE))
+            else:
+                on = [J == 0, I + J == M, I == 0]
+                corner = np.where(on[2] & on[0], 0, np.where(on[0], 1, 2))
+                along = (I, J, M - J)
+                kind = np.where(on[0].astype(int) + on[1] + on[2] >= 2, VERTEX, np.where(on[0] | on[1] | on[2], EDGE, FACE))
+                kind = np.where(I + J > M, -1, kind)
+            side = np.argmax(np.stack(on), axis=0)
+            t = np.choose(side, along)
+            edge_t = np.where(side_forward[:, side], t, M - t)
+            is_vertex, is_edge, is_face = kind == VERTEX, kind == EDGE, kind == FACE
+            keys[faces, :, :, 0] = kind
+            keys[faces, :, :, 1] = np.where(is_vertex, corners[:, corner],
+                                            np.where(is_edge, side_edge[:, side], faces[:, None, None]))
+            keys[faces, :, :, 2] = np.where(is_edge, edge_t, np.where(is_face, I, 0))
+            keys[faces, :, :, 3] = np.where(is_face, J, 0)
+        return keys
+
+    def params(self, key, M):
+        """Every (face, I, J) a key is, at a level of M cells across"""
+        kind, a, b, c = key
+        if kind == FACE:
+            return [(a, b, c)]
+        sides = self._sides
+        if kind == EDGE:
+            return [(f, *side_point(sides[f], s, b if forward else M - b, M)) for f, s, forward in self.edge_sides[a]]
+        return [(f, *corner_point(sides[f], c_, M)) for f, c_ in self.vertex_faces[a]]
+
+    def param_in(self, key, M, face):
+        """The (I, J) of a key in a face it's on"""
+        for f, I, J in self.params(key, M):
+            if f == face:
+                return I, J
+        raise KeyError((key, face))
+
+    def neighbors(self, key, M):
+        """A key's neighbors in the lattice of M cells across, a cell away along it: inside a face, along each of its
+        lattice's directions (STEPS); inside an edge, along it either way and a step into each of its faces (INWARD);
+        at a corner, along each of its edges. Each as (its key, a face both are on, the key's (I, J) there, the
+        neighbor's)."""
+        kind, a, b, c = key
+        out = []
+        if kind == FACE:
+            for dI, dJ in STEPS[self._sides[a]]:
+                out.append((self.key(a, b + dI, c + dJ, M), a, (b, c), (b + dI, c + dJ)))
+            return out
+        sides = self._sides
+        if kind == EDGE:
+            f, s, forward = self.edge_sides[a][0]
+            here = side_point(sides[f], s, b if forward else M - b, M)
+            for step in (1, -1):
+                t = (b + step) if forward else M - (b + step)
+                there = side_point(sides[f], s, t, M)
+                out.append((self.key(f, *there, M), f, here, there))
+            for f, s, forward in self.edge_sides[a]:
+                here = side_point(sides[f], s, b if forward else M - b, M)
+                for dI, dJ in INWARD[sides[f]][s]:
+                    there = (here[0] + dI, here[1] + dJ)
+                    out.append((self.key(f, *there, M), f, here, there))
+            return out
+        for e in self.vertex_edges[a]:
+            f, s, forward = self.edge_sides[e][0]
+            # From this corner one step along the edge, in the first face of the edge
+            at_start = self._corners[f][s] == a
+            here = side_point(sides[f], s, 0 if at_start else M, M)
+            there = side_point(sides[f], s, 1 if at_start else M - 1, M)
+            out.append((self.key(f, *there, M), f, here, there))
+        return out
+
+    def across(self, f, s):
+        """The face on the other side of face f's side s, or None at the mesh's boundary"""
+        for g, _s, _forward in self.edge_sides[self._side_edge[f][s]]:
+            if g != f:
+                return g
+        return None
+
+    # ----- places -----
+
+    def point(self, f, I, J, level):
+        """Face f's point (I, J) of a level, exactly: (ints, e), the place in the mesh's units being the ints over
+        2^e. (I M eu + J M ev + I J w + M^2 P0) / (M^2 2^E), M = 2^level."""
+        M = 1 << level
+        p0, eu, ev, w = self.exact[f]
+        MM, IM, JM, IJ = M * M, I * M, J * M, I * J
+        return tuple(MM * p + IM * x + JM * y + IJ * z for p, x, y, z in zip(p0, eu, ev, w)), 2 * level + self.E
+
+    def key_point(self, key, level):
+        f, I, J = self.params(key, 1 << level)[0]
+        return self.point(f, I, J, level)
+
+    def frame(self, f, I, J, M):
+        """The columns of face f's Jacobian at (I, J) of a level of M cells across: how a step of its parameters, in
+        the level's cells, moves its point (the mesh's units over M), (a, b); and the twist w"""
+        return self.eu[f] + quotient(J, M) * self.w[f], self.ev[f] + quotient(I, M) * self.w[f], self.w[f]
+
+    def _normal(self, f, u, v):
+        """Face f's normal at (u, v), as three floats"""
+        (ex, ey, ez), (fx, fy, fz), (wx, wy, wz) = self._eu[f], self._ev[f], self._w[f]
+        ax, ay, az = ex + v * wx, ey + v * wy, ez + v * wz
+        bx, by, bz = fx + u * wx, fy + u * wy, fz + u * wz
+        nx, ny, nz = ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx
+        length = math.sqrt(nx * nx + ny * ny + nz * nz) or 1e-300
+        return nx / length, ny / length, nz / length
+
+    def normal(self, f, u, v):
+        return np.array(self._normal(f, u, v))
+
+    def key_normal(self, key, M):
+        """The surface's normal at a key: its face's, or on an edge or a corner, the mean of its faces'. Where those
+        cancel (the mesh folds back on itself there: Suzanne's has such a corner), its first face's."""
+        x = y = z = 0.0
+        normals = [self._normal(f, quotient(I, M), quotient(J, M)) for f, I, J in self.params(key, M)]
+        for a, b, c in normals:
+            x, y, z = x + a, y + b, z + c
+        length = math.sqrt(x * x + y * y + z * z)
+        if not length > NORMALS_CANCEL * len(normals):
+            return np.array(normals[0])
+        return np.array((x / length, y / length, z / length))
+
+    def key_slope(self, key, M):
+        """How steeply the surface falls away from a key's tangent plane (its normal's, key_normal()): the tangent of the
+        most any of its faces is tilted from it, at most 5 (a fold back on itself); 0 inside a face"""
+        if key[0] == FACE:
+            return 0.0
+        n = self.key_normal(key, M)
+        steepest = 0.0
+        for f, I, J in self.params(key, M):
+            c = float(n @ self.normal(f, quotient(I, M), quotient(J, M)))
+            steepest = max(steepest, math.sqrt(max(1.0 - c * c, 0.0)) / max(c, 0.2))
+        return steepest
+
+    def level_lattice(self, level):
+        """A coarse level's whole lattice (LevelLattice), made once"""
+        found = self._levels.get(level)
+        if found is None:
+            found = self._levels[level] = LevelLattice(self, level)
+        return found
+
+
+# A level with at most this many points over the whole mesh is kept whole (Topology.level_lattice()), once made: a
+# coarse level's points near the drone span many faces, and finding them face by face costs as much as the faces
+GLOBAL_POINTS = 20000
+
+
+def is_whole(top, level):
+    return len(top.corners) << (2 * level) <= GLOBAL_POINTS
+
+
+# How far the coarsest level of parts is built at most, in its cells, when it isn't kept whole (a mesh of more than
+# GLOBAL_POINTS faces): its pieces grow as the square of this
+FIRST_REACH = 32
+
+
+class LevelLattice:
+    """A coarse level's lattice over the whole mesh: its points' keys (and rows by key), places (the mesh's units,
+    float64), normals and slopes (Topology.key_slope()), each one's neighbors (rows, -1 for none, in
+    Topology.neighbors()' order; these two made when first asked for), each key's rank
+    among them (sorted), and every face's cells (cells: groups of the cells with as many corners, each group (their
+    corners' rows, in the face's order, and their faces); a quad's cells are quads, a triangle's triangles)"""
+
+    def __init__(self, top, level):
+        M = 1 << level
+        F = len(top.corners)
+        grid = np.arange(M + 1)
+        I, J = np.meshgrid(grid, grid, indexing="ij")
+        u, v = I / M, J / M
+        places = (top.P0[:, None, None] + u[None, ..., None] * top.eu[:, None, None]
+                  + v[None, ..., None] * top.ev[:, None, None] + (u * v)[None, ..., None] * top.w[:, None, None])
+        normals = np.cross(top.eu[:, None, None] + v[None, ..., None] * top.w[:, None, None],
+                           top.ev[:, None, None] + u[None, ..., None] * top.w[:, None, None])
+        normals /= np.maximum(np.linalg.norm(normals, axis=-1, keepdims=True), 1e-300)
+        # Every face's grid of (M + 1) x (M + 1), a triangle's points the ones with I + J <= M (-1: not a point): each
+        # key's row is its place in the order the keys first come up in, face by face. All faces' keys at once
+        # (Topology.grid_keys()), and the slopes and neighbors left for whoever needs them (_around()): everything
+        # here a point at a time, as until 2026-11-14, a level of 15k points took 100 to 230 ms in the floor's build,
+        # a dozen frames gone the first time a dive reached it.
+        grid_keys = top.grid_keys(M).reshape(-1, 4)
+        valid = np.flatnonzero(grid_keys[:, 0] >= 0)
+        span = max(F, len(top.edges), len(top.positions), M + 1)
+        codes = ((grid_keys[valid, 0] * span + grid_keys[valid, 1]) * (M + 1) + grid_keys[valid, 2]) * (M + 1) \
+            + grid_keys[valid, 3]
+        _codes, found, inverse = np.unique(codes, return_index=True, return_inverse=True)
+        count = len(found)
+        order = np.argsort(found)
+        row_of = np.empty(count, dtype=np.int64)
+        row_of[order] = np.arange(count)
+        flat = np.full(len(grid_keys), -1, dtype=np.int64)
+        flat[valid] = row_of[inverse]
+        rows = flat.reshape(F, M + 1, M + 1)
+        first = valid[found[order]]
+        key_rows = grid_keys[first]
+        keys = [tuple(key) for key in key_rows.tolist()]
+        index = dict(zip(keys, range(count)))
+        self.places = places.reshape(-1, 3)[first]
+        total = np.zeros((count, 3))
+        np.add.at(total, flat[valid], normals.reshape(-1, 3)[valid])
+        self.normals = total / np.maximum(np.linalg.norm(total, axis=1, keepdims=True), 1e-300)
+        # Where the faces' normals cancel, as key_normal() has it
+        counts = np.bincount(flat[valid], minlength=count)
+        for row in np.flatnonzero(~(np.linalg.norm(total, axis=1) > NORMALS_CANCEL * counts)):
+            self.normals[row] = top.key_normal(keys[row], M)
+        self.keys, self.index = keys, index
+        rank = np.empty(count, dtype=np.int64)
+        rank[np.lexsort(key_rows.T[::-1])] = np.arange(count)
+        self.rank = rank
+        self._top, self._M, self._key_rows, self._rows = top, M, key_rows, rows
+        self._slopes = self._neighbors = None
+        self.cells = []
+        quads, triangles = np.flatnonzero(top.sides == 4), np.flatnonzero(top.sides == 3)
+        if len(quads):
+            r = rows[quads]
+            corners = np.stack([r[:, :-1, :-1], r[:, 1:, :-1], r[:, 1:, 1:], r[:, :-1, 1:]], axis=-1)
+            self.cells.append((corners.reshape(-1, 4), np.repeat(quads, M * M)))
+        if len(triangles):
+            r = rows[triangles]
+            # A triangle's cells: each (I, J) with I + J < M has one pointing out (to I + 1 and J + 1), and with
+            # I + J < M - 1 one pointing back too, between the next ones
+            ui, uj = np.nonzero(I[:-1, :-1] + J[:-1, :-1] + 1 <= M)
+            di, dj = np.nonzero(I[:-1, :-1] + J[:-1, :-1] + 2 <= M)
+            out = np.stack([r[:, ui, uj], r[:, ui + 1, uj], r[:, ui, uj + 1]], axis=-1)
+            back = np.stack([r[:, di + 1, dj], r[:, di + 1, dj + 1], r[:, di, dj + 1]], axis=-1)
+            self.cells.append((np.concatenate([out.reshape(-1, 3), back.reshape(-1, 3)]),
+                               np.concatenate([np.repeat(triangles, len(ui)), np.repeat(triangles, len(di))])))
+
+    def _around(self):
+        """The points' slopes and neighbors, worked out when first asked for (by the 3D parts: the floor needs
+        neither). Inside a face a point's slope is 0 and its neighbors are the grid's, along the face's lattice's
+        directions; only the points on edges and corners are asked for one at a time."""
+        top, M, key_rows, keys = self._top, self._M, self._key_rows, self.keys
+        count = len(keys)
+        inside = key_rows[:, 0] == FACE
+        slopes = np.zeros(count)
+        around = {row: top.neighbors(keys[row], M) for row in np.flatnonzero(~inside).tolist()}
+        inside_sides = top.sides[np.where(inside, key_rows[:, 1], 0)]
+        inside_rows = {k: np.flatnonzero(inside & (inside_sides == k)) for k in set(top._sides)}
+        width = max([len(a) for a in around.values()] + [len(STEPS[k]) for k, at in inside_rows.items() if len(at)])
+        neighbors = np.full((count, width), -1, dtype=np.int64)
+        for row, nbs in around.items():
+            slopes[row] = top.key_slope(keys[row], M)
+            for slot, (nb, *_rest) in enumerate(nbs):
+                neighbors[row, slot] = self.index.get(nb, -1)
+        for k, at in inside_rows.items():
+            # (None at a coarse level of triangles: level 0's points are all corners, level 1's all on edges)
+            for slot, (dI, dJ) in enumerate(STEPS[k] if len(at) else ()):
+                neighbors[at, slot] = self._rows[key_rows[at, 1], key_rows[at, 2] + dI, key_rows[at, 3] + dJ]
+        self._slopes, self._neighbors = slopes, neighbors
+
+    @property
+    def slopes(self):
+        if self._slopes is None:
+            self._around()
+        return self._slopes
+
+    @property
+    def neighbors(self):
+        if self._neighbors is None:
+            self._around()
+        return self._neighbors
+
+
+_topologies = {}     # (mesh name, vertices, faces) -> Topology
+
+
+def topology_of(obj):
+    """The map's mesh as a Topology (made again for another mesh, or one with other counts: an edited mesh is read again
+    after a file loads, forget())"""
+    source = obj.get(SOURCE)
+    if source is None or getattr(source, "type", None) != 'MESH':
+        raise ValueError(f"surface: {obj.name} has no source mesh")
+    mesh = source.data
+    key = (mesh.name, len(mesh.vertices), len(mesh.polygons))
+    topology = _topologies.get(key)
+    if topology is None:
+        topology = _topologies[key] = Topology(mesh, tuple(setting(obj, "floor_color")))
+    return topology
+
+
+# ----- the world -----
+
+class World:
+    """n, the anchor A (a key of the level-n lattice: Topology.key()) and rho, on a mesh's Topology. A's place in its
+    first face: face, U, V (level n's)."""
+
+    layout = "mesh"
+    level_shift = 0                  # a level's cells are 2^(n - level) units
+
+    def __init__(self, n, A, rho, topology):
+        self.n, self.A, self.rho, self.topology = int(n), tuple(int(c) for c in A), float(rho), topology
+        assert self.n >= 0
+        self.face, self.U, self.V = topology.params(self.A, self.N)[0]
+        self._point = None
+
+    @property
+    def N(self):
+        return 1 << self.n
+
+    def text(self):
+        return " ".join([str(self.n)] + [format(c, "x") for c in self.A])
+
+    @staticmethod
+    def from_text(text, rho, topology):
+        n, *A = text.split()
+        return World(int(n), [int(c, 16) for c in A], rho, topology)
+
+    def anchor_point(self):
+        """A's place in the mesh's units, exactly (Topology.point())"""
+        if self._point is None:
+            self._point = self.topology.point(self.face, self.U, self.V, self.n)
+        return self._point
+
+    def units(self, point):
+        """An exact point's offset from A's, in units (the mesh's times 2^n)"""
+        return d_float(d_sub(point, self.anchor_point()), self.n)
+
+    def key_units(self, key, level):
+        return self.units(self.topology.key_point(key, level))
+
+    def camera_point(self, q):
+        """The exact point at q units from A's (q floats)"""
+        return d_add(self.anchor_point(), d_of(q, self.n))
+
+
+def rescaled(key, k):
+    """A key of a level as a key of the level k finer (k >= 0) or -k coarser (it must be a point of that one)"""
+    kind, a, b, c = key
+    if kind == VERTEX:
+        return key
+    if k >= 0:
+        return kind, a, b << k, c << k
+    assert b % (1 << -k) == 0 and c % (1 << -k) == 0, "not a point of the coarser lattice"
+    return kind, a, b >> -k, c >> -k
+
+
+def dive(world, k):
+    """A dive loop by 2^k: the unit halves k times; everything in map units doubles, the mesh too"""
+    world.__init__(world.n + k, rescaled(world.A, k), world.rho, world.topology)
+
+
+def can_climb(world, k):
+    return world.n >= k
+
+
+def climb(world, k, p):
+    """A climb loop by 2^k: first the anchor moves to the nearest point of the 2^k times coarser lattice below map point
+    p, then the unit doubles k times. Returns the move of the map's origin before the loop (map units, at the old
+    scale: the drone moves by minus it first)."""
+    assert can_climb(world, k)
+    key, offset = Below(world, p).lattice_point(world.n - k)
+    world.__init__(world.n - k, key, world.rho, world.topology)
+    return world.rho * offset
+
+
+def recenter(world, p, reach):
+    """If the drone at map point p is more than reach units from the anchor's point, move the anchor to the level-n
+    point nearest the point below it. Returns the move of the map's origin (map units: the drone moves by minus it),
+    or None."""
+    if float(np.linalg.norm(p)) / world.rho < reach:
+        return None
+    key, offset = Below(world, p).lattice_point(world.n)
+    if key == world.A:
+        return None
+    world.__init__(world.n, key, world.rho, world.topology)
+    return world.rho * offset
+
+
+def exact_factor(factor):
+    return sphere.exact_factor(factor)
+
+
+# ----- the point below -----
+
+def nearest_in_face(a, b, w, inv_n, r, box):
+    """In a face whose points from a base are X(d) = d0 a + d1 b + d0 d1 w / 2^n (d in units, inv_n = 2^-n), within box
+    (lo_u, hi_u, lo_v, hi_v, any of them infinite), the d of its point nearest r: (d, the d nearest r on the face's
+    whole patch, which box sides that one's past (0..3, -1 for none, the furthest first)). Newton's steps: Gauss-Newton
+    converges by the height over the patch's curvature radius a step, slowly on a curved quad (a sphere's, Suzanne's)
+    with the drone high over it, so a twisted patch's steps take its one second derivative (d^2 X / d0 d1 = w / 2^n)
+    against the residual too, while that keeps the step a descent."""
+    tw = w * inv_n
+    d0 = d1 = 0.0
+    # The steps in plain floats: a 2 x 2 system a step, which numpy's calls took 0.5 ms a face for (2026-11-13)
+    (ax, ay, az), (bx, by, bz), (tx, ty, tz), (rx, ry, rz) = a.tolist(), b.tolist(), tw.tolist(), r.tolist()
+    for _ in range(NEWTON_STEPS):
+        ux, uy, uz = ax + d1 * tx, ay + d1 * ty, az + d1 * tz
+        vx, vy, vz = bx + d0 * tx, by + d0 * ty, bz + d0 * tz
+        dd = d0 * d1
+        ex = d0 * ax + d1 * bx + dd * tx - rx
+        ey = d0 * ay + d1 * by + dd * ty - ry
+        ez = d0 * az + d1 * bz + dd * tz - rz
+        g11, g12, g22 = ux * ux + uy * uy + uz * uz, ux * vx + uy * vy + uz * vz, vx * vx + vy * vy + vz * vz
+        c1, c2 = ux * ex + uy * ey + uz * ez, vx * ex + vy * ey + vz * ez
+        twist = ex * tx + ey * ty + ez * tz
+        h12 = g12 + twist
+        det = g11 * g22 - h12 * h12
+        if abs(twist) > 1e-12 * (g11 + g22) and g11 > 0.0 and det > 0.0:
+            s0, s1 = -(g22 * c1 - h12 * c2) / det, -(g11 * c2 - h12 * c1) / det
+        else:
+            det = g11 * g22 - g12 * g12
+            if det > 1e-24 * (g11 + g22) ** 2:
+                s0, s1 = -(g22 * c1 - g12 * c2) / det, -(g11 * c2 - g12 * c1) / det
+            else:
+                J = np.array([[ux, vx], [uy, vy], [uz, vz]])
+                s0, s1 = np.linalg.lstsq(J, -np.array([ex, ey, ez]), rcond=None)[0].tolist()
+        d0, d1 = d0 + s0, d1 + s1
+        if not (abs(s0) > 1e-15 * (1.0 + abs(d0)) or abs(s1) > 1e-15 * (1.0 + abs(d1))):
+            break
+    d = np.array([d0, d1])
+    free = d.copy()
+    lo_u, hi_u, lo_v, hi_v = box
+    # How far past each side, in units along the surface (side 0: v = lo_v, 1: u = hi_u, 2: v = hi_v, 3: u = lo_u)
+    past = [(lo_v - d[1]) * np.linalg.norm(b), (d[0] - hi_u) * np.linalg.norm(a), (d[1] - hi_v) * np.linalg.norm(b),
+            (lo_u - d[0]) * np.linalg.norm(a)]
+    order = [s for s in sorted(range(4), key=lambda s: -past[s]) if past[s] > 0.0]
+    if not order:
+        return d, free, order
+    # On the box's boundary: each side's nearest point, the best of them (a side 2^1000 units off overflows: not it)
+    best, best_square = None, math.inf
+    for s in range(4):
+        fixed = (lo_v, hi_u, hi_v, lo_u)[s]
+        if not math.isfinite(fixed):
+            continue
+        if s in (0, 2):
+            origin, direction, lo, hi = fixed * b, a + fixed * tw, lo_u, hi_u
+        else:
+            origin, direction, lo, hi = fixed * a, b + fixed * tw, lo_v, hi_v
+        t = float((r - origin) @ direction) / max(float(direction @ direction), 1e-300)
+        t = min(max(t, lo), hi)
+        if not math.isfinite(t):
+            continue
+        candidate = np.array([t, fixed]) if s in (0, 2) else np.array([fixed, t])
+        with np.errstate(over="ignore", invalid="ignore"):
+            X = candidate[0] * a + candidate[1] * b + candidate[0] * candidate[1] * tw
+            square = float(np.sum((X - r) ** 2))
+        if not math.isfinite(square):
+            continue
+        if square < best_square:
+            best, best_square = candidate, square
+    return (best if best is not None else d), free, order
+
+
+def nearest_in_triangle(a, b, r, lo_u, lo_v, room):
+    """In a triangle face whose points from a base are X(d) = d0 a + d1 b (d in units), where d0 >= lo_u, d1 >= lo_v and
+    d0 + d1 <= room (any of them infinite), the d of its point nearest r, like nearest_in_face(): (d, the d nearest r on
+    the face's whole plane, which sides that one's past (0: d1 = lo_v, 1: d0 + d1 = room, 2: d0 = lo_u), the furthest
+    first)"""
+    jacobian = np.stack([a, b], axis=1)
+    d = np.linalg.lstsq(jacobian, r, rcond=None)[0]
+    free = d.copy()
+    # How far past each side, in units: across the long side, d0 + d1 changes by the length of its gradient on the
+    # face's plane per unit
+    slope = float(np.linalg.norm(np.linalg.pinv(jacobian).T @ np.ones(2)))
+    with np.errstate(invalid="ignore"):
+        past = [(lo_v - d[1]) * np.linalg.norm(b), (d[0] + d[1] - room) / max(slope, 1e-300),
+                (lo_u - d[0]) * np.linalg.norm(a)]
+    order = [s for s in sorted(range(3), key=lambda s: -past[s]) if past[s] > 0.0]
+    if not order:
+        return d, free, order
+    # On the boundary: each side's nearest point, the best of them (a side 2^1000 units off overflows: not it)
+    best, best_square = None, math.inf
+    for s, fixed in enumerate((lo_v, room, lo_u)):
+        if not math.isfinite(fixed):
+            continue
+        with np.errstate(over="ignore", invalid="ignore"):
+            # Each side as (its point at t = 0, its direction, t's range, (d0, d1) at t)
+            origin, direction, lo, hi, at = (
+                (lo_v * b, a, lo_u, room - lo_v, lambda t: (t, lo_v)),
+                (room * b, a - b, lo_u, room - lo_v, lambda t: (t, room - t)),
+                (lo_u * a, b, lo_v, room - lo_u, lambda t: (lo_u, t)))[s]
+            t = float((r - origin) @ direction) / max(float(direction @ direction), 1e-300)
+            t = min(max(t, lo), hi)
+            if not math.isfinite(t):
+                continue
+            candidate = np.array(at(t), dtype=float)
+            X = candidate[0] * a + candidate[1] * b
+            square = float(np.sum((X - r) ** 2))
+        if not math.isfinite(square):
+            continue
+        if square < best_square:
+            best, best_square = candidate, square
+    return (best if best is not None else d), free, order
+
+
+class Below:
+    """The point of the surface nearest map point p (from the anchor's point): its face, a lattice point of level n
+    there (base: its I, J, exactly, and its offset from the anchor's point in units, base_offset) and its offset from
+    that in units (d, floats); the point itself from the anchor's (foot, units), the surface's normal there, and p's
+    height over it (units, negative under: on the side away from the faces' normals). lattice_point() rounds it to any
+    level's lattice."""
+
+    def __init__(self, world, p):
+        self.world = world
+        top = world.topology
+        N, n = world.N, world.n
+        inv_n = math.ldexp(1.0, -n)
+        q = np.asarray(p, dtype=float) / world.rho
+        f, Ub, Vb = world.face, world.U, world.V
+        base_offset = np.zeros(3)
+        # The anchor's face's size in units (its Jacobian's least singular value, a face being N units of it across)
+        reach = min(WALK_REACH, WALK_SHARE * math.ldexp(float(top.sigma_lo[f]), n)) if n < GLOBAL_N else math.inf
+        if float(np.linalg.norm(q)) > reach:
+            f, Ub, Vb = self.global_face(world, q)
+            base_offset = world.units(top.point(f, Ub, Vb, n))
+        best = None
+        visited = set()
+        for _hop in range(WALK_HOPS):
+            visited.add(f)
+            a, b, w = top.frame(f, Ub, Vb, N)
+            r = q - base_offset
+            k = top._sides[f]
+            if k == 4:
+                box = (-big_float(Ub), big_float(N - Ub), -big_float(Vb), big_float(N - Vb))
+                d, free, past = nearest_in_face(a, b, w, inv_n, r, box)
+            else:
+                d, free, past = nearest_in_triangle(a, b, r, -big_float(Ub), -big_float(Vb), big_float(N - Ub - Vb))
+            X = d[0] * a + d[1] * b + d[0] * d[1] * w * inv_n
+            square = float(np.sum((X - r) ** 2))
+            if best is None or square < best[0]:
+                best = (square, f, Ub, Vb, d, base_offset, X)
+            if not past:
+                break
+            # Across the side the patch's nearest point is furthest past, if there's a face there not yet looked at,
+            # from the level-n point of that side nearest where it crosses
+            s = past[0]
+            g = top.across(f, s)
+            if g is None or g in visited:
+                break
+            # Where the patch's nearest point crosses the side, along it from its corner s
+            if k == 4:
+                t_float, t0 = (d[0], d[1], -d[0], -d[1])[s], (Ub, Vb, N - Ub, N - Vb)[s]
+            else:
+                t_float, t0 = (d[0], d[1], -d[1])[s], (Ub, Vb, N - Vb)[s]
+            t = min(max(t0 + round(t_float), 0), N)
+            I, J = side_point(k, s, t, N)
+            key = top.key(f, I, J, N)
+            Ub, Vb = top.param_in(key, N, g)
+            f = g
+            base_offset = world.units(top.point(f, Ub, Vb, n))
+        _square, f, Ub, Vb, d, base_offset, X = best
+        self.face, self.base, self.d, self.base_offset = f, (Ub, Vb), d, base_offset
+        self.foot = base_offset + X
+        u = quotient(Ub, N) + d[0] * inv_n
+        v = quotient(Vb, N) + d[1] * inv_n
+        self.normal = top.normal(f, min(max(u, 0.0), 1.0), min(max(v, 0.0), 1.0))
+        out = q - self.foot
+        distance = float(np.linalg.norm(out))
+        self.height = distance if float(out @ self.normal) >= 0.0 else -distance
+        self.q = q
+
+    @staticmethod
+    def global_face(world, q):
+        """The face nearest q (units from the anchor's point), among them all, in the mesh's own coordinates in
+        float64, and the level-n point of it nearest there"""
+        top = world.topology
+        N = world.N
+        s = d_float(world.anchor_point()) + q * math.ldexp(1.0, -world.n)
+        # Only the faces whose balls reach nearer than the nearest middle: a handful of a mesh's thousands, so a tick's
+        # few points below cost a fraction of a millisecond (all 1990 of the Penrose torus's were 1 ms each, 2026-11-13)
+        reach = np.linalg.norm(top.middle - s, axis=1)
+        faces = np.flatnonzero(reach - top.radius <= float(np.min(reach)))
+        f, (U, V) = Below.nearest_face(top, faces, s)
+        return (f, *nearest_point(top._sides[f], U * N, V * N, N))
+
+    @staticmethod
+    def nearest_face(top, faces, s):
+        """Among faces (indices), the one whose blend comes nearest the mesh point s, and (u, v) there, by a few
+        Gauss-Newton steps from each one's middle"""
+        P0, eu, ev, w = top.P0[faces], top.eu[faces], top.ev[faces], top.w[faces]
+        triangle = top.sides[faces] == 3
+        u = np.where(triangle, 1.0 / 3.0, 0.5)
+        v = np.where(triangle, 1.0 / 3.0, 0.5)
+        for _ in range(4):
+            X = P0 + u[:, None] * eu + v[:, None] * ev + (u * v)[:, None] * w
+            ju = eu + v[:, None] * w
+            jv = ev + u[:, None] * w
+            r = s - X
+            # The normal equations of the 2 x 2 least squares step, per face
+            a11, a12, a22 = np.sum(ju * ju, 1), np.sum(ju * jv, 1), np.sum(jv * jv, 1)
+            b1, b2 = np.sum(ju * r, 1), np.sum(jv * r, 1)
+            det = np.maximum(a11 * a22 - a12 * a12, 1e-300)
+            u = np.clip(u + (a22 * b1 - a12 * b2) / det, 0.0, 1.0)
+            v = np.clip(v + (a11 * b2 - a12 * b1) / det, 0.0, 1.0)
+            # Back into a triangle across its long side
+            over = np.where(triangle, np.maximum(u + v - 1.0, 0.0), 0.0) / 2.0
+            u, v = np.clip(u - over, 0.0, 1.0), np.clip(v - over, 0.0, 1.0)
+        X = P0 + u[:, None] * eu + v[:, None] * ev + (u * v)[:, None] * w
+        k = int(np.argmin(np.sum((X - s) ** 2, axis=1)))
+        return int(faces[k]), (float(u[k]), float(v[k]))
+
+    def cell_place(self, level):
+        """Where the point is in the level's cells of its face, (u, v) in cells as Fractions: the base's exactly, plus
+        d"""
+        shift = self.world.n - level
+        Ub, Vb = self.base
+        scale = Fraction(1, 1 << shift) if shift >= 0 else Fraction(1 << -shift)
+        return ((Fraction(Ub) + Fraction(float(self.d[0]))) * scale, (Fraction(Vb) + Fraction(float(self.d[1]))) * scale)
+
+    def lattice_point(self, level):
+        """The point of the level's lattice nearest it (in its face's parameters), and that one's offset from the
+        anchor's point in units: (key, offset)"""
+        M = 1 << level
+        u, v = self.cell_place(level)
+        top = self.world.topology
+        I, J = nearest_point(top._sides[self.face], u, v, M)
+        key = top.key(self.face, I, J, M)
+        return key, self.world.units(top.point(self.face, I, J, level))
+
+
+# ----- the map's object -----
+
+def is_surface(obj):
+    return (obj is not None and hasattr(obj, "get") and obj.get(STATE) is not None and obj.get(PROPERTY) is not None
+            and obj.get(SOURCE) is not None)
+
+
+def surface_objects(scene):
+    return [obj for obj in scene.objects if is_surface(obj)]
+
+
+_worlds = {}         # map object name -> (version, World)
+
+
+def world_of(obj):
+    """obj's World, read again if its properties changed under it (an undo)"""
+    cached = _worlds.get(obj.name)
+    version = obj.get(VERSION, 0)
+    topology = topology_of(obj)
+    if cached is None or cached[0] != version or cached[1].topology is not topology:
+        world = World.from_text(obj[STATE], float(setting(obj, "rho")), topology)
+        _worlds[obj.name] = cached = (version, world)
+    return cached[1]
+
+
+def save(obj, world):
+    obj[STATE] = world.text()
+    version = obj.get(VERSION, 0) + 1
+    obj[VERSION] = version
+    _worlds[obj.name] = (version, world)
+
+
+map_point = sphere.map_point
+world_vector = sphere.world_vector
+map_vector = sphere.map_vector
+
+
+# map object name -> [(world text, map point, Below)]: the last few, asked again in the same tick (a tick asks for the
+# camera's before and after its move, and the end of the move, each two or three times; and the parts, for where the
+# drone will be, a point or two more)
+_below = {}
+BELOW_KEPT = 6
+BELOW_SAME = 4 * 2.0 ** -24
+
+
+def below_of(obj, world, p):
+    p = np.asarray(p, dtype=float)
+    text = world.text()
+    kept = _below.setdefault(obj.name, [])
+    # The same point to within the camera's own float32 rounding: scaled about itself, or taken along with its map,
+    # the camera comes back a step or two off, and each of those was another point below, 2.6 a tick (2026-11-14)
+    near = BELOW_SAME * float(np.abs(p).max())
+    for cached in kept:
+        if cached[0] == text and float(np.abs(cached[1] - p).max()) <= near:
+            return cached[2]
+    below = Below(world, p)
+    kept.insert(0, (text, p.copy(), below))
+    del kept[BELOW_KEPT:]
+    return below
+
+
+# ----- what the flight asks (ER_OT_Fly) -----
+
+def surface_vector(obj, camera_world):
+    """From a camera (world space) to the nearest point of the surface (world space): what auto scale measures to, with
+    or without its Mesh setting (the map's origin moves with the anchor, and the mesh is 2^n times its size), and the
+    way down for tidal lock and the horizon"""
+    world = world_of(obj)
+    p = map_point(obj, camera_world)
+    below = below_of(obj, world, p)
+    return world_vector(obj, world.rho * below.foot - p)
+
+
+def center_vector(obj, camera_world):
+    """From a camera (world space) to the mesh's origin (world space), a torus's or a planet's center: what zoom and
+    orbit scale and turn the drone about, as they do about an ordinary object's origin, since the map's object's origin
+    is the anchor's point, which follows the drone. inf past a float's range."""
+    world = world_of(obj)
+    p = map_point(obj, camera_world)
+    with np.errstate(over="ignore", invalid="ignore"):
+        return world_vector(obj, world.rho * world.units(((0, 0, 0), 0)) - p)
+
+
+def crossing(obj, start_world, end_world):
+    """If a move from start to end (world space) crosses the surface, the heights of its ends over it (world units,
+    signed), else None (see ER_OT_Fly.stop_at_surface())"""
+    world = world_of(obj)
+    scale = float(np.linalg.norm(world_vector(obj, (1.0, 0.0, 0.0))))
+    h0 = below_of(obj, world, map_point(obj, start_world)).height
+    h1 = below_of(obj, world, map_point(obj, end_world)).height
+    h0, h1 = h0 * world.rho * scale, h1 * world.rho * scale
+    return (h0, h1) if h0 > 0.0 >= h1 else None
+
+
+def loop(obj, factor, camera_world):
+    """A loop by factor (a power of 2, see exact_factor()) about the map's origin: a dive, or after the anchor moves to
+    the coarser lattice under the camera, a climb. Returns the move of the map's origin the climb made first (world
+    units, before the loop: the drone moves by minus it), or None."""
+    world = world_of(obj)
+    power = round(math.log2(factor))
+    move = None
+    if power > 0:
+        dive(world, power)
+    elif power < 0:
+        move = world_vector(obj, climb(world, -power, map_point(obj, camera_world)))
+    save(obj, world)
+    return move
+
+
+def loop_factor(obj, factor):
+    """The loop the map makes for a loop by factor: the nearest power of 2, a climb no higher than the mesh's own size
+    (n = 0), 1.0 if there's no climbing left"""
+    world = world_of(obj)
+    power = round(math.log2(factor)) if factor > 0 else 0
+    if power == 0:
+        power = 1 if factor > 1.0 else -1
+    if power < 0:
+        power = max(power, -world.n)
+        if power == 0:
+            return 1.0
+    return 2.0 ** power
+
+
+def at_top(obj):
+    """Whether the map is at the mesh's own size, n = 0, with nothing coarser to climb into"""
+    return world_of(obj).n == 0
+
+
+def recenter_move(obj, camera_world):
+    """Move the anchor under the drone camera if it has moved off it (see recenter()): the move of the map's origin in
+    world units (the drone moves by minus it), or None"""
+    world = world_of(obj)
+    p = map_point(obj, camera_world)
+    below = below_of(obj, world, p)
+    reach = max(RECENTER_UNITS, abs(below.height) * RECENTER_HEIGHTS)
+    move = recenter(world, p, reach)
+    if move is None:
+        return None
+    save(obj, world)
+    return world_vector(obj, move)
+
+
+def drone_clip_end():
+    return sphere.drone_clip_end()
+
+
+# ----- the floor: the surface near the drone -----
+
+class FloorBuilt:
+    """The floor as built into its object (kept in memory, by map): the world it was built for, the window's middle (the
+    camera then, map units then: the mesh is from it) and half width, the level of its cells, and if any were split
+    near the camera (refine()), the drone's height then (map units then), else None"""
+
+    def __init__(self, world_text, n, center, window, level, split_height=None):
+        self.world_text, self.n, self.center, self.window, self.level = world_text, n, center, window, level
+        self.split_height = split_height
+        self.transform = None        # (world text, offset, scale) of the last transform worked out (transform())
+        self.placed = None           # the world text the object's transform is for
+
+
+_floors = {}         # map object name -> FloorBuilt
+
+
+def floor_object(obj):
+    """The map's floor's object, made the first time: a plain mesh, a child of the map's object, which clicking selects
+    the map through (scaling_target)"""
+    import bpy
+    found = next((o for o in obj.children if o.get(FLOOR_KEY) == obj.name), None)
+    if found is not None:
+        parts.no_shadow(found)
+        return found
+    name = f"{obj.name}.floor"
+    floor_obj = bpy.data.objects.new(name, bpy.data.meshes.new(name))
+    for c in obj.users_collection:
+        c.objects.link(floor_obj)
+    floor_obj.parent = obj
+    floor_obj[FLOOR_KEY] = obj.name
+    floor_obj["scaling_target"] = obj
+    floor_obj.data.materials.append(parts.parts_material())
+    # Built again as the drone flies, like the parts: no shadow (parts.no_shadow())
+    parts.no_shadow(floor_obj)
+    return floor_obj
+
+
+def transform(world, text, built):
+    """Where something built for another world (built.world_text) is in this one's map (world, its text): (offset,
+    scale), its map's origin then (the anchor it was built for) from this map's origin, and how much bigger map units
+    are now. Exact from the two anchors' places (World.anchor_point())."""
+    if built.transform is not None and built.transform[0] == text:
+        return built.transform[1], built.transform[2]
+    # The same pair of worlds for everything built in one: a Penrose level's patches (surface_penrose.patch_bars()),
+    # a hundred a build, each worked its transform out exactly again at every loop (2026-11-20)
+    key = (text, built.world_text, world.rho, id(world.topology))
+    found = _transforms.get(key)
+    if found is None:
+        then = World.from_text(built.world_text, world.rho, world.topology)
+        found = (world.rho * world.units(then.anchor_point()), 2.0 ** (world.n - then.n))
+        if len(_transforms) > 256:
+            _transforms.clear()
+        _transforms[key] = found
+    offset, scale = found
+    built.transform = (text, offset, scale)
+    return offset, scale
+
+
+_transforms = {}     # (text, then's text, rho, topology) -> transform()'s (offset, scale)
+
+
+def floor_level(world, below, window, cells):
+    """The level whose cells, where the drone is, are about window / cells across (map units), no coarser than 0"""
+    top = world.topology
+    f = below.face
+    a, b, _w = top.frame(f, *below.base, world.N)
+    cell = world.rho * math.sqrt(float(np.linalg.norm(a)) * float(np.linalg.norm(b)))     # a level-n cell, map units
+    wanted = window / cells
+    if cell <= 0.0 or not math.isfinite(cell):
+        return world.n
+    return max(0, world.n - math.floor(math.log2(wanted / cell)))
+
+
+def face_cells(k, grid, offsets, rem):
+    """A face's cells in a window of its lattice: grid (its points, (a, b, 3), from (I0, J0) on), offsets (their (I, J)
+    from there, (a, b, 2)) and, for a triangle, rem = M - I0 - J0 (how far its long side is, in steps of I + J): a
+    quad's cells, or a triangle's (pointing out and back), as (corners (m, k, 3), their offsets (m, k, 2))"""
+    if k == 4:
+        corner = lambda g: np.stack([g[:-1, :-1], g[1:, :-1], g[1:, 1:], g[:-1, 1:]], axis=-2)
+        return corner(grid).reshape(-1, 4, 3), corner(offsets).reshape(-1, 4, 2)
+    total = offsets[:-1, :-1, 0] + offsets[:-1, :-1, 1]
+    out, back = total + 1 <= rem, total + 2 <= rem
+    corners = np.concatenate([np.stack([grid[:-1, :-1], grid[1:, :-1], grid[:-1, 1:]], axis=-2)[out],
+                              np.stack([grid[1:, :-1], grid[1:, 1:], grid[:-1, 1:]], axis=-2)[back]])
+    at = np.concatenate([np.stack([offsets[:-1, :-1], offsets[1:, :-1], offsets[:-1, 1:]], axis=-2)[out],
+                         np.stack([offsets[1:, :-1], offsets[1:, 1:], offsets[:-1, 1:]], axis=-2)[back]])
+    return corners, at
+
+
+def refine(corners, faces, near):
+    """Quad cells of the floor (corners (m, 4, 3) from the camera, their faces), each split 2 x 2 while it bulges off the
+    two triangles it's drawn as by more than FLOOR_FLATNESS of its distance from the camera, or of near (the drone's
+    height) if that's more: a bent quad's cells are
+    its bilinear patch's, and a cell's sides lie on the patch (a bilinear patch is straight along u and along v) but its
+    middle doesn't, off by a quarter of its corners' twist. Cells the floor's level makes hundreds of drone heights
+    across bulge by more than the drone's height over a bent quad (Suzanne's), so near the camera they're split, into
+    their corners' blend at the halves (exactly the patch's points), and their sides still meet the cells next to them
+    unsplit on a straight line: no cracks. A flat face's cells never split (a trapezoid's corners twist, but within its
+    plane, which the triangles are in too: only the twist off the cell's plane counts)."""
+    out_corners, out_faces = [], []
+    for _ in range(FLOOR_SPLITS):
+        # Off the cell's plane (its diagonals'): a flat trapezoid's corners twist too, within its plane
+        across = np.cross(corners[:, 2] - corners[:, 0], corners[:, 3] - corners[:, 1])
+        across /= np.maximum(np.linalg.norm(across, axis=1, keepdims=True), 1e-300)
+        twist = corners[:, 0] - corners[:, 1] + corners[:, 2] - corners[:, 3]
+        bulge = np.abs(np.sum(twist * across, axis=1)) / 4.0
+        middle = corners.mean(axis=1)
+        radius = np.linalg.norm(corners - middle[:, None], axis=-1).max(axis=1)
+        distance = np.maximum(np.linalg.norm(middle, axis=1) - radius, near)
+        split = bulge > FLOOR_FLATNESS * distance
+        out_corners.append(corners[~split])
+        out_faces.append(faces[~split])
+        if not split.any():
+            break
+        c0, c1, c2, c3 = (corners[split, k] for k in range(4))
+        m01, m12, m23, m30 = (c0 + c1) / 2.0, (c1 + c2) / 2.0, (c2 + c3) / 2.0, (c3 + c0) / 2.0
+        mid = (c0 + c1 + c2 + c3) / 4.0
+        corners = np.concatenate([np.stack(c, axis=1) for c in ((c0, m01, mid, m30), (m01, c1, m12, mid),
+                                                                (mid, m12, c2, m23), (m30, mid, m23, c3))])
+        faces = np.tile(faces[split], 4)
+    else:
+        out_corners.append(corners)
+        out_faces.append(faces)
+    return np.concatenate(out_corners), np.concatenate(out_faces), len(out_corners) > 1
+
+
+def build_floor(world, camera, below, window, settings_cells):
+    """The cells of the floor's level within window of the camera (map units), each corner from the camera, as
+    (corners (m, 3), corners per face, colors, level, whether any cell was split). A coarse level's from its whole lattice (LevelLattice), at a
+    depth where float64 places the mesh to far under a float32 step of the window; a finer one's face by face from the
+    one below the camera out: in each face, one of its points exactly from the camera, rounded once, and the grid of
+    its cells within reach from that, all at once. A quad's cells are quads, a triangle's triangles, and a bent quad's
+    near the camera are split finer (refine())."""
+    top = world.topology
+    level = floor_level(world, below, window, settings_cells)
+    M = 1 << level
+    n = world.n
+    camera_point = world.camera_point(np.asarray(camera, dtype=float) / world.rho)
+    out = []                         # (corners (m, k, 3), faces (m,))
+    height = abs(below.height) * world.rho
+    split = False
+
+    def keep(corners, face_of):
+        nonlocal split
+        middle = corners.mean(axis=-2)
+        radius = np.linalg.norm(corners - middle[..., None, :], axis=-1).max(axis=-1)
+        near = (np.linalg.norm(middle, axis=-1) - radius <= window) & np.all(np.isfinite(corners), axis=(-1, -2))
+        cells, faces = corners[near], np.broadcast_to(face_of, near.shape)[near]
+        if cells.shape[-2] == 4 and len(cells):
+            cells, faces, refined = refine(cells, faces, height)
+            split |= refined
+        out.append((cells, faces))
+        return near
+
+    if is_whole(top, level) and n < GLOBAL_N:
+        whole = top.level_lattice(level)
+        from_camera = (whole.places - d_float(camera_point)) * (world.rho * math.ldexp(1.0, n))
+        for rows, faces in whole.cells:
+            keep(from_camera[rows], faces)
+    else:
+        scale = world.rho * math.ldexp(1.0, n - level)      # map units per the level's own (the mesh's times 2^level)
+        u, v = below.cell_place(level)
+        queue = [(below.face, *nearest_point(top._sides[below.face], u, v, M))]
+        done = set()
+        while queue and sum(len(c) for c, _ in out) < FLOOR_MAX_CELLS:
+            f, IR, JR = queue.pop(0)
+            if f in done:
+                continue
+            done.add(f)
+            k = top._sides[f]
+            ref = world.rho * d_float(d_sub(top.point(f, IR, JR, level), camera_point), n)
+            if not np.all(np.isfinite(ref)):
+                continue
+            a, b, w = top.frame(f, IR, JR, M)
+            sigma = max(float(top.sigma_lo[f]), 1e-12 * float(top.sigma_hi[f]), 1e-300) * scale
+            D = min(int(math.ceil((float(np.linalg.norm(ref)) + window) / sigma)) + 1, FLOOR_REACH)
+            I_lo, I_hi = max(0, IR - D), min(M, IR + D)
+            J_lo, J_hi = max(0, JR - D), min(M, JR + D)
+            if I_lo >= I_hi or J_lo >= J_hi:
+                continue
+            dI = np.arange(I_lo - IR, I_hi - IR + 1, dtype=np.float64)
+            dJ = np.arange(J_lo - JR, J_hi - JR + 1, dtype=np.float64)
+            gi, gj = np.meshgrid(dI, dJ, indexing="ij")
+            grid = ref + scale * (gi[..., None] * a + gj[..., None] * b
+                                  + (gi * gj * math.ldexp(1.0, -level))[..., None] * w)
+            offsets = np.stack([gi, gj], axis=-1).astype(np.int64)
+            # How far a triangle's long side is, in steps of I + J (past 2^60, out of reach anyway)
+            rem = min(M - IR - JR, 1 << 60)
+            cells, at = face_cells(k, grid, offsets, rem)
+            near = keep(cells, f)
+            if not near.any():
+                continue
+            # The faces across the sides its kept cells reach, from a kept cell's corner on that side: each side as
+            # an axis of the offsets from (IR, JR) (None: I + J, a triangle's long side) and where it is along it
+            kept = at[near].reshape(-1, 2)
+            if k == 4:
+                sides = ((1, -JR), (0, M - IR), (1, M - JR), (0, -IR))
+            else:
+                sides = ((1, -JR), (None, M - IR - JR), (0, -IR))
+            for s_, (axis, where) in enumerate(sides):
+                if abs(where) > D + 1:
+                    continue
+                g = top.across(f, s_)
+                if g is None or g in done:
+                    continue
+                along = kept.sum(axis=1) if axis is None else kept[:, axis]
+                rows = np.flatnonzero(along == where)
+                if not len(rows):
+                    continue
+                I, J = IR + int(kept[rows[0], 0]), JR + int(kept[rows[0], 1])
+                queue.append((g, *top.param_in(top.key(f, I, J, M), M, g)))
+    out = [(c, f) for c, f in out if len(c)]
+    if not out:
+        return np.zeros((0, 3)), np.zeros(0, dtype=np.int64), np.zeros((0, 4)), level, False
+    corners = np.concatenate([c.reshape(-1, 3) for c, _ in out])
+    sizes = np.concatenate([np.full(len(c), c.shape[1], dtype=np.int64) for c, _ in out])
+    colors = top.colors[np.concatenate([f for _, f in out])]
+    return corners, sizes, colors, level, split
+
+
+def settle_floor(obj, world, camera, below, clip_end):
+    """The floor in today's map: built again when the camera's view (clip_end) reaches past its window or it's grown far
+    wider than wanted (the drone has shrunk: its corners are float32 from its middle), or with cells split for where the
+    camera was (a bent quad's, refine()) once it's moved on FLOOR_FOLLOW of its heights or come down to half its height,
+    else only moved and scaled"""
+    window = float(setting(obj, "window")) * clip_end
+    floor_obj = floor_object(obj)
+    text = world.text()
+    built = _floors.get(obj.name)
+    rebuild = built is None
+    if not rebuild:
+        offset, scale = transform(world, text, built)
+        local = (camera - offset) / scale
+        moved = float(np.linalg.norm(local - built.center))
+        rebuild = moved + clip_end / scale > built.window or built.window > 4.0 * window / scale
+        if built.split_height is not None:
+            height = abs(below.height) * world.rho / scale
+            rebuild |= moved > FLOOR_FOLLOW * height or height < 0.5 * built.split_height
+    if rebuild:
+        corners, sizes, colors, level, split = build_floor(world, camera, below, window,
+                                                           float(setting(obj, "floor_cells")))
+        height = abs(below.height) * world.rho if split else None
+        built = _floors[obj.name] = FloorBuilt(text, world.n, np.array(camera, dtype=float), window, level, height)
+        tiling.write_mesh(floor_obj, corners, sizes, colors)
+        offset, scale = transform(world, text, built)
+    if built.placed != text:
+        built.placed = text
+        if "sub_push" in floor_obj:
+            # Under a Penrose map's levels (surface_penrose.py): its push drivers place it from its unpushed place
+            for key, value in zip(("sub_bx", "sub_by", "sub_bz"), offset + scale * built.center):
+                floor_obj[key] = float(value)
+            floor_obj["sub_bs"] = floor_obj["camera_push_scale"] = float(scale)
+            floor_obj.update_tag(refresh={'OBJECT'})
+        else:
+            from mathutils import Matrix, Vector
+            floor_obj.matrix_basis = Matrix.Translation(Vector(offset + scale * built.center)) @ Matrix.Scale(scale, 4)
+
+
+def settle(obj, camera_world):
+    """At the end of a tick (and when a flight starts): the floor where the camera ended up"""
+    if not is_surface(obj):
+        return
+    world = world_of(obj)
+    camera = map_point(obj, camera_world)
+    unit = float(np.linalg.norm(world_vector(obj, (1.0, 0.0, 0.0))))
+    clip_end = drone_clip_end() / unit
+    if clip_end <= 0.0:
+        return
+    settle_floor(obj, world, camera, below_of(obj, world, camera), clip_end)
+    if setting(obj, "rule") == "penrose":
+        try:
+            from . import surface_penrose
+        except ImportError:
+            import surface_penrose
+        surface_penrose.settle(obj, camera_world)
+
+
+# ----- the lattice for the 3D parts (parts.py) -----
+
+class LocalLattice:
+    """A level's lattice points near a point of it (center, a key) out to radius cells (the mean distance from center
+    to its neighbors) and a ring more, like parts.Lattice: their keys, places from center in the level's own units (the
+    mesh's times 2^level), normals, slopes (Topology.key_slope()), whether each is within radius (inner), each one's
+    neighbors (rows, -1 for none) and the edges between inner points (rows, the smaller key first). A coarse level's
+    are picked out of its whole lattice (LevelLattice); a finer one's, found face by face: in each face reached, the
+    grid of its points within reach of center, from a point of it already placed, all at once."""
+
+    def __init__(self, top, level, center, radius):
+        M = 1 << level
+        self.M = M
+        if is_whole(top, level):
+            rank = self.from_level(top, level, center, radius)
+        else:
+            rank = self.by_faces(top, level, center, radius)
+        # The edges between inner points, each once, the smaller key first
+        inner = np.flatnonzero(self.inner)
+        pairs = []
+        for slot in range(self.neighbors.shape[1]):
+            j = self.neighbors[inner, slot]
+            ok = j >= 0
+            i, j = inner[ok], j[ok]
+            ok = (j > i) & self.inner[j]
+            i, j = i[ok], j[ok]
+            swap = rank[i] > rank[j]
+            pairs.append(np.stack([np.where(swap, j, i), np.where(swap, i, j)], axis=1))
+        self.edges = np.concatenate(pairs).reshape(-1, 2) if pairs else np.zeros((0, 2), dtype=np.int64)
+
+    @staticmethod
+    def reach(top, M, center, radius):
+        """The radius in the level's own units (radius times the mean step from center to its neighbors) and the
+        reach a point has to be within to be a neighbor of one inside it"""
+        inv_m = math.ldexp(1.0, 1 - M.bit_length())
+        steps = []
+        for _key, f, (I0, J0), (I1, J1) in top.neighbors(center, M):
+            a, b, w = top.frame(f, I0, J0, M)
+            dI, dJ = I1 - I0, J1 - J0
+            steps.append(float(np.linalg.norm(dI * a + dJ * b + dI * dJ * w * inv_m)))
+        r_in = radius * sum(steps) / len(steps)
+        return r_in, r_in + 2.0 * float(top.sigma_hi.max())
+
+    def from_level(self, top, level, center, radius):
+        whole = top.level_lattice(level)
+        r_in, r_out = self.reach(top, self.M, center, radius)
+        c = whole.index[center]
+        places = (whole.places - whole.places[c]) * self.M
+        rows = np.flatnonzero(np.linalg.norm(places, axis=1) <= r_out)
+        self.keys = [whole.keys[r] for r in rows]
+        self.places = places[rows]
+        self.normals = whole.normals[rows]
+        self.slopes = whole.slopes[rows]
+        new = np.full(len(whole.keys) + 1, -1, dtype=np.int64)
+        new[rows] = np.arange(len(rows))
+        # -1 (none) indexes the extra -1 at the end
+        self.neighbors = new[whole.neighbors[rows]]
+        self.center_row = int(new[c])
+        self.inner = np.linalg.norm(self.places, axis=1) <= r_in
+        return whole.rank[rows]
+
+    def by_faces(self, top, level, center, radius):
+        M = self.M
+        inv_m = math.ldexp(1.0, -level)
+        r_in, r_out = self.reach(top, M, center, radius)
+        keys, places, normals = [], [], []
+        index = {}
+        grids = []                    # (rows grid, whether each of its points is inside the face, its sides)
+        queue = [(f, I, J, np.zeros(3)) for f, I, J in top.params(center, M)]
+        done = set()
+        while queue:
+            f, IR, JR, PR = queue.pop(0)
+            if f in done:
+                continue
+            done.add(f)
+            k = top._sides[f]
+            a, b, w = top.frame(f, IR, JR, M)
+            sigma = max(float(top.sigma_lo[f]), 1e-12 * float(top.sigma_hi[f]), 1e-300)
+            D = int(math.ceil((float(np.linalg.norm(PR)) + r_out) / sigma)) + 1
+            D = min(D, 4 * int(math.ceil(radius)) + 16)
+            I_lo, I_hi = max(0, IR - D), min(M, IR + D)
+            J_lo, J_hi = max(0, JR - D), min(M, JR + D)
+            if I_lo > I_hi or J_lo > J_hi:
+                continue
+            # Offsets from the reference, small; the parameters themselves can be any size (Python ints)
+            dI = np.arange(I_lo - IR, I_hi - IR + 1, dtype=np.float64)
+            dJ = np.arange(J_lo - JR, J_hi - JR + 1, dtype=np.float64)
+            gi, gj = np.meshgrid(dI, dJ, indexing="ij")
+            pos = (PR + gi[..., None] * a + gj[..., None] * b + (gi * gj * inv_m)[..., None] * w)
+            keep = np.linalg.norm(pos, axis=-1) <= r_out
+            rows = np.full(gi.shape, -1, dtype=np.int64)
+            # Inside the face: its own keys, no others' (vectorized); on its sides, the shared keys. A triangle's
+            # points are those with I + J <= M, its long side where that's M (past 2^60 steps, out of reach).
+            inner = np.ones(gi.shape, dtype=bool)
+            inner[0, :] &= I_lo != 0
+            inner[:, 0] &= J_lo != 0
+            if k == 4:
+                inner[-1, :] &= I_hi != M
+                inner[:, -1] &= J_hi != M
+            else:
+                rem = float(min(M - IR - JR, 1 << 60))
+                keep &= gi + gj <= rem
+                inner &= gi + gj < rem
+            inside = keep & inner
+            ii, jj = np.nonzero(inside)
+            start = len(keys)
+            keys.extend((FACE, f, IR + int(x), JR + int(y)) for x, y in zip(dI[ii], dJ[jj]))
+            places.append(pos[ii, jj])
+            uvals = quotient(IR, M) + dI[ii] * inv_m
+            vvals = quotient(JR, M) + dJ[jj] * inv_m
+            nrm = np.cross(top.eu[f] + vvals[:, None] * top.w[f], top.ev[f] + uvals[:, None] * top.w[f])
+            normals.append(nrm / np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-300))
+            rows[ii, jj] = np.arange(start, start + len(ii))
+            for kk in range(start, start + len(ii)):
+                index[keys[kk]] = kk
+            boundary = keep & ~inside
+            for x, y in zip(*np.nonzero(boundary)):
+                I, J = IR + int(dI[x]), JR + int(dJ[y])
+                key = top.key(f, I, J, M)
+                row = index.get(key)
+                if row is None:
+                    row = index[key] = len(keys)
+                    keys.append(key)
+                    places.append(pos[x, y][None, :])
+                    normals.append(top.key_normal(key, M)[None, :])
+                rows[x, y] = row
+                # Across the side it's on, to the faces not reached yet, from this point
+                for s in sides_on(k, I, J, M):
+                    g = top.across(f, s)
+                    if g is not None and g not in done:
+                        Ig, Jg = top.param_in(key, M, g)
+                        queue.append((g, Ig, Jg, pos[x, y].copy()))
+            grids.append((rows, inner, k))
+        self.keys = keys
+        self.places = np.concatenate(places) if places else np.zeros((0, 3))
+        self.normals = np.concatenate(normals) if normals else np.zeros((0, 3))
+        count = len(keys)
+        # How steeply the surface falls away from each (Topology.key_slope()): only on a face's sides
+        self.slopes = np.array([top.key_slope(key, M) if key[0] != FACE else 0.0 for key in keys])
+        self.center_row = index[center]
+        self.inner = np.linalg.norm(self.places, axis=1) <= r_in
+        # Neighbors: inside a face from its grid, shifted along its lattice's steps; a shared point's (on an edge or
+        # a corner) by key
+        shared = {row: top.neighbors(key, M) for row, key in enumerate(keys) if key[0] != FACE}
+        width = max([len(STEPS[k]) for _rows, _inner, k in grids] + [len(nbs) for nbs in shared.values()] + [4])
+        neighbors = np.full((count, width), -1, dtype=np.int64)
+        for rows, inner, k in grids:
+            padded = np.full((rows.shape[0] + 2, rows.shape[1] + 2), -1, dtype=np.int64)
+            padded[1:-1, 1:-1] = rows
+            mask = (rows >= 0) & inner
+            for slot, (sx, sy) in enumerate(STEPS[k]):
+                shifted = padded[1 + sx:padded.shape[0] - 1 + sx, 1 + sy:padded.shape[1] - 1 + sy]
+                neighbors[rows[mask], slot] = shifted[mask]
+        for row, nbs in shared.items():
+            for slot, (nb, *_rest) in enumerate(nbs):
+                neighbors[row, slot] = index.get(nb, -1)
+        self.neighbors = neighbors
+        rank = np.empty(count, dtype=np.int64)
+        rank[sorted(range(count), key=keys.__getitem__)] = np.arange(count)
+        return rank
+
+
+class MeshLocalPieces(parts.LaidOut):
+    """A level's pieces around a point of it, in the level's own units (the mesh's times 2^level, from the point): what
+    doesn't depend on the map's anchor, kept for every point looked at (parts._local), like parts.LocalPieces"""
+
+    def __init__(self, top, level, center, radius, settings, shape):
+        lattice = self.lattice = LocalLattice(top, level, center, radius)
+        self.lay_out(lattice.inner, lattice.neighbors, lattice.edges, lattice.center_row, lattice.places,
+                     lattice.normals, settings, shape, lattice.slopes)
+        self.keys = lattice.keys
+
+
+class MeshPieces:
+    """A level's pieces around center (a key of the level's lattice) out to radius cells, like parts.Pieces: placed in
+    the level's own units from center (MeshLocalPieces), each `scale` of the map's units (rho 2^(n - level)), and center
+    itself origin() in the map, exactly from the anchor"""
+
+    def __init__(self, world, level, center, radius, settings, shape):
+        self.world, self.level, self.center = world, level, center
+        self.scale_log2 = world.n - level
+        key = ("mesh", id(world.topology), level, center, radius, parts._has(settings, "vertex"),
+               parts._has(settings, "edge"), tuple(shape.heights))
+        local = parts._local.get(key)
+        if local is None:
+            if len(parts._local) > parts.LOCAL_KEPT:
+                parts._local.clear()
+            local = parts._local[key] = MeshLocalPieces(world.topology, level, center, radius, settings, shape)
+        self.__dict__.update({k: v for k, v in local.__dict__.items()})
+        self.local = local
+        self._origin = None
+        self._point = None
+
+    def piece_rows(self, row):
+        return self.local.piece_rows(row)
+
+    def scale(self, rho):
+        try:
+            return math.ldexp(rho, self.scale_log2)
+        except OverflowError:
+            return math.inf
+
+    def center_point(self):
+        if self._point is None:
+            self._point = self.world.topology.key_point(self.center, self.level)
+        return self._point
+
+    def origin(self, placer=None):
+        """center in the map (map units from its origin), rounded once from its exact place"""
+        if self._origin is None:
+            self._origin = self.world.rho * self.world.units(self.center_point())
+        return self._origin
+
+    def camera(self, camera, placer=None):
+        """A camera (map units, float64) in the pieces' units from center, from its exact place: (that, 0.0)"""
+        world = self.world
+        point = world.camera_point(np.asarray(camera, dtype=float) / world.rho)
+        return d_float(d_sub(point, self.center_point()), self.level), 0.0
+
+
+def cell_sizes(world, levels):
+    """Each level's cells at the anchor (map units): its face's Jacobian there, the geometric mean of its columns, a
+    level's cells 2^(n - level) units"""
+    top = world.topology
+    a, b, _w = top.frame(world.face, world.U, world.V, world.N)
+    unit = world.rho * math.sqrt(float(np.linalg.norm(a)) * float(np.linalg.norm(b)))
+    out = {}
+    for level in levels:
+        try:
+            out[level] = math.ldexp(unit, world.n - level)
+        except OverflowError:
+            out[level] = math.inf
+    return out
+
+
+def vertex_size(top, key, level):
+    """A vertex piece's size on a key of a level: the mean distance to its neighbors, in the level's own units (the
+    mesh's times 2^level), from their exact differences (as LaidOut sizes them, from places)"""
+    M = 1 << level
+    P = top.key_point(key, level)
+    gaps = [np.linalg.norm(d_float(d_sub(top.key_point(nb, level), P), level)) for nb, *_ in top.neighbors(key, M)]
+    return float(np.mean(gaps))
+
+
+def exact_piece(world, level, kind, keys, camera_point, window, shape, settings, phases):
+    """A giant level's piece, the one of a kind on lattice keys (a vertex piece's vertex then its neighbors, an edge
+    piece's two vertices, the smaller key first) worked out for the window: its frame and size from the keys' places
+    in the level's own units (their exact differences, rounded once, so the same whatever the anchor), its place and
+    the camera's exactly, its faces cut to the window in Fractions (a cube 2 window / size of its own units across,
+    around the camera), each corner then from the camera in map units (parts.exact_piece()'s, for flat faces). None if
+    no face reaches the window."""
+    top = world.topology
+    M = 1 << level
+    points = [top.key_point(k, level) for k in keys]
+    P = points[0]
+    # The frame from the keys' places in the level's own units from P, and their normals (parts.piece_axes(): as the
+    # instanced pieces are laid out)
+    offsets = [tuple(d_float(d_sub(p, P), level).tolist()) for p in points]
+    normals = [tuple(top.key_normal(k, M).tolist()) for k in keys]
+    stretch = parts.foot_stretch(shape, top.key_slope(keys[0], M)) if kind == 0 else None
+    # An edge piece's ends at their vertex pieces' scales: each one's size (the mean distance to its neighbors) over
+    # the edge's length
+    scales = None
+    if kind == 1:
+        length = float(np.linalg.norm(offsets[1]))
+        scales = tuple(vertex_size(top, k, level) / length for k in keys)
+    return exact_piece_at(world, level, kind, offsets, normals, stretch, scales, d_fractions(d_sub(camera_point, P)),
+                          Fraction(1, M), window, shape, settings, parts.level_phase(level, phases))
+
+
+def exact_piece_at(world, level, kind, offsets, normals, stretch, scales, relative, unit, window, shape, settings,
+                   phase, scale=None):
+    """exact_piece()'s piece from what it's worked out of, for any lattice on the mesh's faces (a Penrose map's too,
+    parts_penrose.py): the offsets of the points it stands on from the first, P, in the level's own units (floats), their
+    normals, a vertex piece's stretch and an edge piece's scales (parts.piece_axes()), the camera's exact offset from P
+    (relative: three Fractions, the mesh's units) and the level's unit in the mesh's (unit, a Fraction: 2^-level, or a
+    Penrose level's phi^-d to as many bits as the depth needs), in the colors of phase (parts.level_phase()). With
+    scale (a level unit in map units) instead of unit, relative is the camera's offset from P in the level's own units,
+    floats, and it's all worked out in float64, as parts.add_levels() does where that's exact to well under the drone's
+    height (parts.EXACT_SHARE): with Fractions, some 7 ms a piece, and a fast climb's hundreds of pieces took seconds
+    a tick (2026-11-19)."""
+    place, size, axes = parts.piece_axes(kind, offsets, normals, shape.meet, stretch, shape.heights[0], scales)
+    frame = np.array([[axes[c][i] for c in range(3)] for i in range(3)])
+    # The camera in the piece's own units, exactly: frame^-1 (camera - place) 2^level / size. Its exact inverse, not
+    # its transpose (an edge piece's frame isn't a rotation, and a vertex piece's of floats is orthonormal only to a
+    # float's step, and the camera's way back through it then misses by that share of the way from P, a cell, which a
+    # hundred loops down is far past the drone's height).
+    if scale is None:
+        number = Fraction
+        relative = [r / unit - Fraction(o) for r, o in zip(relative, place)]
+        own = Fraction(size) * unit                # the piece's unit, in the mesh's
+        size_map = own * Fraction(world.rho) * (1 << world.n)
+    else:
+        number = float
+        relative = [float(r) - float(o) for r, o in zip(relative, place)]
+        size_map = float(size) * scale
+    inverse = parts.inverse_3x3([[number(float(frame[r, c])) for c in range(3)] for r in range(3)])
+    u = [sum(inverse[c][r] * relative[r] for r in range(3)) / number(size) for c in range(3)]
+    half = number(window) / size_map
+    u_float = np.array([float(c) for c in u])
+    slack = 4e-16 * (1.0 + float(np.abs(u_float).max()))
+    half_float = float(half)
+    corners = []
+    # Every face against the window at once (face_stack()): those wholly outside it left out, and in floats, those
+    # wholly inside it (most of them: near the boundary a piece is a few hundredths of the window across) taken as
+    # they are; only the rest cut (one at a time, face by face, the float path's pieces took 1.4 ms each, 2026-11-19)
+    stacked, starts, ends = face_stack(shape, kind)
+    near_all = stacked - u_float
+    lo = np.minimum.reduceat(near_all, starts, axis=0)
+    hi = np.maximum.reduceat(near_all, starts, axis=0)
+    reaching = ~(np.any(lo > half_float + slack, axis=1) | np.any(hi < -half_float - slack, axis=1))
+    inside = np.maximum(hi, -lo).max(axis=1) < half_float - slack
+    for f in np.flatnonzero(reaching):
+        face, index = shape.faces[kind][f]
+        if number is float and inside[f]:
+            corners.append((near_all[starts[f]:ends[f]] * size_map, index))
+            continue
+        cut = parts.cut_to_window([[number(float(c)) - u[i] for i, c in enumerate(corner)] for corner in face.tolist()],
+                                  half)
+        if len(cut) >= 3:
+            corners.append((np.array([[float(c * size_map) for c in corner] for corner in cut]), index))
+    if not corners:
+        return None
+    distance = min(prism.distance_one(u_float.tolist()) for prism in shape.prisms[kind])
+    faces = [face @ frame.T for face, _ in corners]
+    colors = [parts.piece_color(settings["pieces"][index], phase) for _, index in corners]
+    return parts.ExactPiece(level, kind, frame, float(size_map), tuple(u_float), None, faces, colors,
+                            float(distance) * float(size_map))
+
+
+def face_stack(shape, kind):
+    """A kind's faces (shape.faces) as one array of their corners, with where each face's start and end, made once"""
+    stacks = shape.__dict__.setdefault("_face_stacks", {})
+    if kind not in stacks:
+        faces = [face for face, _index in shape.faces[kind]]
+        lengths = np.array([len(face) for face in faces], dtype=np.int64)
+        ends = np.cumsum(lengths)
+        stacks[kind] = (np.concatenate(faces).astype(float), ends - lengths, ends)
+    return stacks[kind]
+
+
+# A giant level is ruled in or out from where the drone is in its cells while the window's reach is under this share of
+# a cell; past it (the finest giant levels) its pieces near the drone are placed in float64 to see
+QUICK_LIMIT = 0.45
+
+
+def cell_at(k, u, v, M):
+    """The cell of a face of k sides' lattice of M cells across that (u, v) is in (in cells, Fractions or floats), with how far (u, v)
+    is from each of its corners and sides in cells of its parameters: ([((I, J), distance)], [((I, J), (I, J),
+    distance)]), or None off the face's cells"""
+    I0, J0 = min(max(math.floor(u), 0), M - 1), min(max(math.floor(v), 0), M - 1)
+    fa, fb = float(u - I0), float(v - J0)
+    if not (0.0 <= fa <= 1.0 and 0.0 <= fb <= 1.0):
+        return None
+    if k == 4:
+        corners = [((I0 + x, J0 + y), math.hypot(fa - x, fb - y)) for x in (0, 1) for y in (0, 1)]
+        sides = (((I0, J0), (I0 + 1, J0), fb), ((I0 + 1, J0), (I0 + 1, J0 + 1), 1.0 - fa),
+                 ((I0, J0 + 1), (I0 + 1, J0 + 1), 1.0 - fb), ((I0, J0), (I0, J0 + 1), fa))
+        return corners, sides
+    # A triangle's: pointing out from (I0, J0), or back, past its diagonal (none past the long side)
+    if fa + fb <= 1.0 or I0 + J0 + 2 > M:
+        if I0 + J0 + 1 > M or fa + fb > 1.0 + 1e-9:
+            return None
+        a, b, c = (I0, J0), (I0 + 1, J0), (I0, J0 + 1)
+        corners = [(a, math.hypot(fa, fb)), (b, math.hypot(fa - 1.0, fb)), (c, math.hypot(fa, fb - 1.0))]
+        sides = ((a, b, fb), (b, c, (1.0 - fa - fb) / math.sqrt(2.0)), (c, a, fa))
+        return corners, sides
+    a, b, c = (I0 + 1, J0), (I0 + 1, J0 + 1), (I0, J0 + 1)
+    corners = [(a, math.hypot(fa - 1.0, fb)), (b, math.hypot(fa - 1.0, fb - 1.0)), (c, math.hypot(fa, fb - 1.0))]
+    sides = ((a, b, 1.0 - fa), (b, c, 1.0 - fb), (c, a, (fa + fb - 1.0) / math.sqrt(2.0)))
+    return corners, sides
+
+
+def add_levels(world, camera, q, h, window, levels, settings, shape, phases, placer=None):
+    """The giant levels' pieces within window of the camera (map units), as parts.ExactPieces, like parts.add_levels():
+    - where the point below the drone is in the level's cells of its face, against how far each kind of piece reaches,
+      the face's Jacobian bounding how far a cell is: far from every piece, or deep inside a vertex piece, the level
+      has nothing in the window; else the pieces on the cell's corners and sides that might reach it
+    - once the window is a fair share of a cell, the level's pieces around the vertex nearest the drone, placed in
+      float64 (MeshPieces), the camera against each one's solid
+    - and those worked out again exactly (exact_piece()) and cut to the window"""
+    found = []
+    if not levels:
+        return found
+    top = world.topology
+    below = Below(world, q)
+    f = below.face
+    camera_point = world.camera_point(np.asarray(camera, dtype=float) / world.rho)
+    has_vertex, has_edge = bool(shape.prisms[0]), bool(shape.prisms[1])
+    reach_v, reach_e = shape.plan[0], shape.plan[1]
+    core = shape.core[0]
+    sigma_lo, sigma_hi = float(top.sigma_lo[f]), float(top.sigma_hi[f])
+    done = set()
+
+    def add(kind, keys, level):
+        if (level, kind, keys) in done:
+            return
+        done.add((level, kind, keys))
+        piece = exact_piece(world, level, kind, keys, camera_point, window, shape, settings, phases)
+        if piece is not None:
+            found.append(piece)
+
+    def vertex_keys(key, M):
+        return (key,) + tuple(nb for nb, *_rest in top.neighbors(key, M))
+
+    for level in reversed(levels):
+        M = 1 << level
+        c_lo = world.rho * math.ldexp(sigma_lo, world.n - level)
+        c_hi = world.rho * math.ldexp(sigma_hi, world.n - level)
+        if not math.isfinite(c_hi):
+            c_hi = math.inf
+        reach = (window + max(reach_v, reach_e, shape.past) * c_hi) / c_lo if c_lo > 0.0 else math.inf
+        u, v = below.cell_place(level)
+        cell = cell_at(top._sides[f], u, v, M) if reach <= QUICK_LIMIT else None
+        if cell is not None:
+            # Edge pieces start above the floor (an arch's springing): a drone lower than that by the window, none
+            edges = has_edge and not shape.floor[1] * c_lo > h + window
+            corners, sides = cell
+            for (I, J), d in corners:
+                if d * c_lo > window + max(reach_v, reach_e, shape.past) * c_hi:
+                    continue
+                key = top.key(f, I, J, M)
+                deep = (core is not None and d * c_hi + window < core[0] * c_lo and core[1] * c_lo + window < 0.0
+                        and h + window < core[2] * c_lo)
+                if has_vertex and not deep:
+                    add(0, vertex_keys(key, M), level)
+                if edges:
+                    for nb, *_rest in top.neighbors(key, M):
+                        add(1, tuple(sorted((key, nb))), level)
+            if edges:
+                for p0, p1, d in sides:
+                    if d * c_lo <= window + reach_e * c_hi:
+                        add(1, tuple(sorted((top.key(f, *p0, M), top.key(f, *p1, M)))), level)
+            continue
+        # The window a fair share of a cell (or the point below off its face's cells): every piece near the vertex
+        # nearest it, placed in float64, against the camera
+        center = top.key(f, *nearest_point(top._sides[f], u, v, M), M)
+        radius = int(min(math.ceil(1.5 + 1.25 * reach + 1.0), 64))
+        pieces = MeshPieces(world, level, center, radius, settings, shape)
+        local, _rounding = pieces.camera(camera)
+        scale = pieces.scale(world.rho)
+        distances = parts.piece_distances(shape, pieces.frames, pieces.places, pieces.sizes, pieces.kinds, local)
+        distances = distances * pieces.sizes
+        tolerance = 1e-14 * (np.linalg.norm(pieces.places, axis=1) + pieces.sizes + np.linalg.norm(local))
+        within = np.abs(distances) <= window / scale + tolerance
+        for row in np.flatnonzero(within):
+            rows = pieces.piece_rows(int(row))
+            keys = tuple(pieces.keys[r] for r in rows)
+            kind = int(pieces.kinds[row])
+            if kind == 1:
+                keys = tuple(sorted(keys))
+            add(kind, keys, level)
+    return found
+
+
+class MeshLattice:
+    """parts.py's view of a surface map's lattice (see parts.SphereLattice)"""
+
+    ratio = 2.0
+
+    def world(self, obj):
+        return world_of(obj)
+
+    def unit_level(self, world):
+        return world.n + world.level_shift
+
+    def camera(self, obj, world, camera_world):
+        camera = map_point(obj, camera_world)
+        below = below_of(obj, world, camera)
+        return camera, camera, max(abs(below.height) * world.rho, 1e-300)
+
+    world_vector = staticmethod(world_vector)
+
+    def placer(self, world, h):
+        return None
+
+    def below(self, obj, world, q):
+        return below_of(obj, world, q)
+
+    def center(self, world, below, level):
+        return below.lattice_point(level)[0]
+
+    def ground(self, obj, world, camera, q):
+        """What a level's center is measured from: the point of the surface below the camera (map units). Not the
+        camera itself: the faces turn by up to 33 degrees at their folds, and over a fold (or off to the side of a
+        center whose normal is a fold's mean) the camera's offset from the center along the center's surface was a
+        share of its height, many of a fine level's cells, so those levels were built again every tick."""
+        return world.rho * below_of(obj, world, q).foot
+
+    def first_radius(self, world, level, build, wanted):
+        """How far the coarsest level is built, in its cells, wanted to reach the window: nothing coarser goes on past
+        it. A level kept whole (is_whole()) is built whole, once, and stays as the drone moves; a finer one, out to
+        the next power of 2 of the cells wanted (so it's rarely built again for a new radius), at most FIRST_REACH."""
+        if is_whole(world.topology, level):
+            return math.inf
+        if not wanted > build:
+            return build
+        return float(min(2 ** math.ceil(math.log2(min(wanted, 2.0 ** 30))), max(FIRST_REACH, build)))
+
+    def pieces(self, world, level, center, radius, settings, shape):
+        return MeshPieces(world, level, center, radius, settings, shape)
+
+    def pieces_job(self, world, level, center, radius, settings, shape):
+        """A level's build for the worker thread (parts.SphereLattice.pieces_job()); None: built here"""
+        return None
+
+    def cell_sizes(self, world, levels):
+        return cell_sizes(world, levels)
+
+    def transform(self, world, text, built):
+        return transform(world, text, built)
+
+    def add_levels(self, world, camera, q, h, window, levels, settings, shape, phases, placer):
+        return add_levels(world, camera, q, h, window, levels, settings, shape, phases, placer)
+
+
+LATTICE = MeshLattice()
+
+
+def forget(_dummy=None):
+    """After loading a file: another file's floors, worlds and meshes don't apply"""
+    _floors.clear()
+    _worlds.clear()
+    _below.clear()
+    _topologies.clear()
+    import sys
+    penrose_module = sys.modules.get(__name__.rpartition(".")[0] + ".surface_penrose")
+    if penrose_module is not None:
+        penrose_module.forget()
+
+
+def register():
+    import bpy
+    handler = bpy.app.handlers.persistent(forget)
+    if not any(getattr(h, "__name__", "") == "forget" and getattr(h, "__module__", "") == __name__
+               for h in bpy.app.handlers.load_post):
+        bpy.app.handlers.load_post.append(handler)
+
+
+def unregister():
+    import bpy
+    for h in list(bpy.app.handlers.load_post):
+        if getattr(h, "__name__", "") == "forget" and getattr(h, "__module__", "") == __name__:
+            bpy.app.handlers.load_post.remove(h)

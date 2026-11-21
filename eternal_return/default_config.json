@@ -1,0 +1,58 @@
+{
+    "loop": false,
+    "loop_factor": 10.0,
+
+    "wrap": false,
+    "wrap_config": {
+        "wrap_split_axes": false,
+        "wrap_range": [-10.0, 10.0],
+
+        "wrap_split_axes_x": true,
+        "wrap_range_x": [-10.0, 10.0],
+
+        "wrap_split_axes_y": true,
+        "wrap_range_y": [-10.0, 10.0],
+
+        "wrap_split_axes_z": true,
+        "wrap_range_z": [-10.0, 10.0],
+
+        "wrap_rotation": [0.0, 0.0, 0.0],
+        "wrap_pivot": null
+    },
+
+    "auto_scale": false,
+    "auto_scale_config": {
+        "auto_scale_mesh": false,
+        "auto_scale_split_axes": false,
+
+        "auto_scale_x": true,
+        "auto_scale_y": true,
+        "auto_scale_z": true,
+
+        "auto_scale_rotation": [0.0, 0.0, 0.0]
+    },
+
+    "tidal_lock": false,
+    "tidal_lock_config": {
+        "tidal_lock_mesh": false,
+        "tidal_lock_split_axes": false,
+
+        "tidal_lock_x": true,
+        "tidal_lock_y": true,
+        "tidal_lock_z": true,
+
+        "tidal_lock_rotation": [0.0, 0.0, 0.0]
+    },
+
+    "horizon": false,
+    "horizon_config": {
+        "horizon_mesh": false
+    },
+
+    "gravity_config": {
+        "gravity_mesh": false
+    },
+
+    "min_scale": 0.000001,
+    "max_scale": 33000000.0
+}
