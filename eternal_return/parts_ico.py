@@ -3,7 +3,8 @@ tilings"): parts.py's pieces, a vertex piece on each lattice point and an edge p
 sphere_ico.py's lattice, each of the 20 faces split 2 x 2 at every level. Six edges meet at a lattice point, and five
 at the icosahedron's 12 corners, where the rosettes close up into suns.
 
-What parts.py asks of the lattice (see parts.SphereLattice) is answered here for the icosahedron:
+The icosahedron's chart for parts_sphere.SphereLattice (IcoChart; the cube's is parts_sphere.CubeChart), which lays
+the pieces out and finds the giant levels' for both layouts the same way:
 - Which points are near which, and their edges: the 20 faces as a surface.Topology of triangles, whose keys name a
   point the same from every face it's on (surface.LocalLattice finds a level's points near a point, by the flat
   icosahedron's distances). A key is a lattice point: a face's corners and whole weights on them.
@@ -18,8 +19,7 @@ What parts.py asks of the lattice (see parts.SphereLattice) is answered here for
   the chart's series in decimals and the walls' normals to as many digits. The anchor's fold G is irrational, so the
   placer works in the folded anchor's frame and leaves G (its "turn") to parts.exact_piece(), which turns only the
   camera, near the anchor, and the window's faces, a window across.
-- The giant levels' pieces in the window (add_levels()): parts.add_levels()' tests on where the drone is in a level's
-  triangles, from the anchor's weights.
+- Where the drone is in a level's triangles, from the anchor's weights (IcoChart.cell_place()), for the giant levels.
 """
 
 import decimal
@@ -30,14 +30,14 @@ from fractions import Fraction
 import numpy as np
 
 try:
-    from . import parts
+    from . import parts_sphere
     from . import sphere
     from . import sphere_chart as chart
     from . import sphere_exact
     from . import sphere_ico
     from . import surface
 except ImportError:          # tests import it by itself
-    import parts
+    import parts_sphere
     import sphere
     import sphere_chart as chart
     import sphere_exact
@@ -45,7 +45,6 @@ except ImportError:          # tests import it by itself
     import surface
 
 ROOT3_HALF = chart.ROOT3_HALF
-REDUCED = parts.REDUCED
 WALLS = chart.ICO_WALLS
 
 
@@ -427,182 +426,6 @@ def placer(world, digits):
     return value
 
 
-# ----- a level's pieces around a lattice point -----
-
-class IcoLocalPieces(parts.LaidOut):
-    """A level's pieces around a lattice point (a key of the level), in the level's own world (n = level + REDUCED,
-    anchored at the point, its cells 2^REDUCED units, rho 1): what doesn't depend on the map's anchor, kept for every
-    point looked at (parts._local), as parts.LocalPieces"""
-
-    def __init__(self, level, center, radius, settings, shape):
-        M = 1 << level
-        lattice = self.lattice = surface.LocalLattice(topology(), level, center, radius)
-        grow = 1 << REDUCED
-        local = sphere_ico.IcoWorld(level + REDUCED, scaled(key_point(center, M), grow), 1.0)
-        points = [scaled(key_point(key, M), grow) for key in lattice.keys]
-        places, normals = placed(local, points)
-        self.lay_out(lattice.inner, lattice.neighbors, lattice.edges, lattice.center_row, places, normals, settings,
-                     shape)
-        self.keys = lattice.keys
-
-
-class IcoPieces(parts.Pieces):
-    """A level's pieces around center (a key of the level's lattice) out to radius cells, as parts.Pieces: placed in
-    the level's own world (IcoLocalPieces), each `scale` of the map's units, center origin() in the map"""
-
-    def __init__(self, world, level, center, radius, settings, shape):
-        self.world, self.level, self.center = world, level, center
-        M = 1 << level
-        self.M = M
-        # A level's cell in the map's units: N / 2^level
-        self.C = Fraction(world.N, M)
-        self.scale_log2 = world.n - (level + REDUCED)
-        key = ("ico", level, center, radius, parts._has(settings, "vertex"), parts._has(settings, "edge"),
-               tuple(shape.heights))
-        local = parts._local.get(key)
-        if local is None:
-            if len(parts._local) > parts.LOCAL_KEPT:
-                parts._local.clear()
-            local = parts._local[key] = IcoLocalPieces(level, center, radius, settings, shape)
-        self.__dict__.update(local.__dict__)
-        self.local = local
-        self._origin = None
-        self._folded = None
-
-    def world_point(self, key):
-        """A key of the level as a lattice point of the map's world"""
-        return scaled(key_point(key, self.M), self.C)
-
-    def near(self):
-        """Whether center is near enough the map's anchor to be placed from it in float64: within N >> NEAR_SHIFT units
-        of it along the face, deep enough to need no digits past float64's"""
-        world = self.world
-        if world.n >= parts.NEAR_N:
-            return False
-        m = offsets(world, [self.world_point(self.center)])
-        return bool(np.isfinite(m).all()) and float(np.linalg.norm(m)) <= math.ldexp(1.0, world.n - parts.NEAR_SHIFT)
-
-    def origin(self, placer):
-        """center in the map (map units from its origin, the map's axes): float64 if near(), else with placer's digits
-        as Decimals (turned to the map's axes by G's floats: a place to build a level object at, not to measure from:
-        camera() measures in the folded frame)"""
-        if self._origin is None:
-            if self.near():
-                self._origin = placed(self.world, [self.world_point(self.center)])[0][0]
-            else:
-                exact = placer()
-                self._folded = exact.placed_points([self.world_point(self.center)])[0][0]
-                with exact.context():
-                    self._origin = exact.unfold(self._folded)
-        return self._origin
-
-    def exact_placed(self, rows, exact):
-        """The lattice points rows and their normals with a placer's digits, in its folded frame"""
-        return exact.placed_points([self.world_point(self.keys[r]) for r in rows])
-
-    def camera(self, camera, placer):
-        """A camera (map units, float64) in the pieces' units from center, as floats, and float64's rounding of center's
-        place in them (parts.Pieces.camera()); with digits, measured in the folded frame, the difference turned back"""
-        origin = self.origin(placer)
-        if isinstance(origin, np.ndarray):
-            return parts.Pieces.camera(self, camera, placer)
-        exact = placer()
-        folded = exact.turn @ np.asarray(camera, dtype=float)
-        with exact.context():
-            scale = Decimal(self.world.rho) * Decimal(2) ** self.scale_log2
-            relative = np.array([float((Decimal(float(c)) - o) / scale) for c, o in zip(folded, self._folded)])
-        return exact.turn.T @ relative, 0.0
-
-
-# ----- the giant levels -----
-
-def distortion(n, level, to_corner):
-    """parts.distortion() for the icosahedron's cells (N / 2^level units): the pinch at its corners (the chart's
-    conformal factor changes by about 1 / 5 of the distance from V, taken as the cube's 1 / 3) and the face's own"""
-    if to_corner == 0.0:
-        return math.inf
-    pinch = 0.0
-    if math.isfinite(to_corner):
-        exponent = (n - level) - math.log2(3.0 * to_corner)
-        pinch = math.inf if exponent > 60 else 2.0 ** exponent
-    return 2.0 * (pinch + 6.0 * 2.0 ** -level) + 1e-9
-
-
-def add_levels(world, camera, q, h, window, levels, settings, shape, phases, placer):
-    """The giant levels' pieces within window of the camera (map units), as parts.ExactPieces, finest first, as
-    parts.add_levels() (which see): where the drone is in each level's triangles, from the anchor's weights, against
-    how far each kind of piece reaches, rules most levels out; the rest are placed in float64 (IcoPieces) and the
-    pieces within the window worked out exactly"""
-    found = []
-    if not levels:
-        return found
-    below = Below(world, q)
-    N, n = world.N, world.n
-    base_i, base_j = below.base
-    Di, Dj = below.di, below.dj
-    # From V, in units (the skew place as x + i y)
-    vi, vj = sphere.wall_float(base_i) + Di, sphere.wall_float(base_j) + Dj
-    to_corner = math.hypot(vi + vj / 2.0, ROOT3_HALF * vj)
-    reference = levels[-1] + 1
-    c_reference = cell_sizes(world, [reference])[reference]
-    has_vertex, has_edge = bool(shape.prisms[0]), bool(shape.prisms[1])
-    reach_v, reach_e = shape.plan[0], shape.plan[1]
-    core = shape.core[0]
-    for level in reversed(levels):
-        C = Fraction(N, 1 << level)
-        k = reference - level
-        rho = math.ldexp(window / c_reference, -k)
-        hc = math.ldexp(h / c_reference, -k)
-        eps = distortion(n, level, to_corner)
-        fI = float((Fraction(base_i) % C) / C) + math.ldexp(Di, level - n)
-        fJ = float((Fraction(base_j) % C) / C) + math.ldexp(Dj, level - n)
-        fI, fJ = fI - math.floor(fI), fJ - math.floor(fJ)
-        uncertain = eps > parts.DISTORTION_LIMIT
-        check = False
-        if has_vertex:
-            if uncertain or rho + reach_v > 0.45:
-                check = True
-            else:
-                # The lattice corners round the point (triangle sides from it)
-                corners = sorted(math.hypot(fI - a + (fJ - b) / 2.0, ROOT3_HALF * (fJ - b))
-                                 for a in (-1, 0, 1, 2) for b in (-1, 0, 1, 2))
-                nearest = corners[0]
-                deep = (core is not None and nearest < core[0] * (1.0 - eps) - rho - eps
-                        and core[1] + rho + eps + parts.SAG < 0.0 and hc * (1.0 + eps) + rho + eps < core[2])
-                if deep:
-                    corners = corners[1:]
-                check = any(d < (reach_v + rho) * (1.0 + eps) + eps for d in corners)
-        if has_edge and not check:
-            if shape.floor[1] * (1.0 - eps) - eps > hc * (1.0 + eps) + rho:
-                pass
-            elif uncertain or rho + reach_e > 0.45:
-                check = True
-            else:
-                # The three lattice lines' families: J, I and I + J whole, each a triangle's height (sqrt 3 / 2) apart
-                lines = min(abs(x - round(x)) for x in (fI, fJ, fI + fJ)) * ROOT3_HALF
-                check = lines < (reach_e + rho) * (1.0 + eps) + eps
-        if not check:
-            continue
-        M = 1 << level
-        center = point_key(*below.lattice_point(C), C, M)
-        radius = math.ceil(1.5 + 1.25 * rho + max(reach_v, reach_e, shape.past))
-        pieces = IcoPieces(world, level, center, radius, settings, shape)
-        local, rounding = pieces.camera(camera, placer)
-        scale = pieces.scale(world.rho)
-        distances = parts.piece_distances(shape, pieces.frames, pieces.places, pieces.sizes, pieces.kinds, local)
-        distances = distances * pieces.sizes
-        tolerance = (parts.FLOAT_ERROR * (np.linalg.norm(pieces.places, axis=1) + pieces.sizes + np.linalg.norm(local))
-                     + rounding)
-        reach = window / scale
-        for row in np.flatnonzero(np.abs(distances) <= reach + tolerance):
-            exact = not tolerance[row] * scale < parts.EXACT_SHARE * h
-            piece = parts.exact_piece(pieces, int(row), level, camera, local, window, shape, settings, phases,
-                                      placer if exact else None)
-            if piece is not None:
-                found.append(piece)
-    return found
-
-
 # ----- parts.py's view of the icosahedron's lattice -----
 
 _sizes = {}
@@ -634,52 +457,105 @@ def cell_sizes(world, levels):
     return sizes
 
 
-class IcoLattice(parts.SphereLattice):
-    """parts.py's view of the icosahedron sphere's lattice (parts.SphereLattice is the cube's)"""
+class IcoChart:
+    """The icosahedron sphere's chart for parts_sphere.SphereLattice (parts_sphere.CubeChart is the cube's): its
+    polyhedron the icosahedron's 20 triangles, its world points (corners, weights)"""
 
-    def placer(self, world, h):
-        return lambda: placer(world, sphere_exact.digits_for(world.n, h / world.rho))
+    name = "ico"
+    shift = 0                    # a level's cells are N / 2^level units
 
-    def below(self, obj, world, q):
+    @staticmethod
+    def topology():
+        return topology()
+
+    @staticmethod
+    def world(n, A, rho):
+        return sphere_ico.IcoWorld(n, A, rho)
+
+    @staticmethod
+    def cell(world, level):
+        return Fraction(world.N, 1 << level)
+
+    key_point = staticmethod(key_point)
+    scaled = staticmethod(scaled)
+    placed = staticmethod(placed)
+    placer = staticmethod(placer)
+
+    @staticmethod
+    def key_of(point, C, M):
+        return point_key(*point, C, M)
+
+    @staticmethod
+    def local_placed(level, center, lattice):
+        """A LocalLattice's points round center on the sphere, in the level's own world (n = level + REDUCED, anchored
+        at center, its cells 2^REDUCED units): (places, normals), each point placed from its whole weights (the flat
+        icosahedron's places aren't the chart's)"""
+        M, grow = 1 << level, 1 << parts_sphere.REDUCED
+        local = sphere_ico.IcoWorld(level + parts_sphere.REDUCED, scaled(key_point(center, M), grow), 1.0)
+        return placed(local, [scaled(key_point(key, M), grow) for key in lattice.keys])
+
+    @staticmethod
+    def on_level(world, point, C):
+        """Whether a world point is a lattice point of the level of cells C units: its weights whole multiples of C"""
+        return all((Fraction(w) / C).denominator == 1 for w in point[1])
+
+    @staticmethod
+    def near(world, point):
+        """Whether a world point is near enough the map's anchor to be placed from it in float64: within N >>
+        NEAR_SHIFT units of it, deep enough to need no digits past float64's"""
+        if world.n >= parts_sphere.NEAR_N:
+            return False
+        m = offsets(world, [point])
+        return bool(np.isfinite(m).all()) and float(np.linalg.norm(m)) <= math.ldexp(1.0, world.n
+                                                                                     - parts_sphere.NEAR_SHIFT)
+
+    @staticmethod
+    def exact_placed(exact, world, points):
+        """World points and their normals with a placer's digits, in its folded frame"""
+        return exact.placed_points(points)
+
+    @staticmethod
+    def below(world, q):
         return Below(world, q)
 
-    def center(self, world, below, level):
-        C = Fraction(world.N, 1 << level)
-        return point_key(*below.lattice_point(C), C, 1 << level)
+    @staticmethod
+    def center_point(below, C):
+        return below.lattice_point(C)
 
-    def first_radius(self, world, level, build, wanted):
-        """The coarsest level is built whole once, if its points are few (surface.is_whole(): to level 5), else to
-        "build" of its cells"""
-        return math.inf if surface.is_whole(topology(), level) else build
+    @staticmethod
+    def to_corner(world, below):
+        """The point below's distance from the domain's corner V, in units (the skew place as x + i y)"""
+        vi = sphere.wall_float(below.base[0]) + below.di
+        vj = sphere.wall_float(below.base[1]) + below.dj
+        return math.hypot(vi + vj / 2.0, ROOT3_HALF * vj)
 
-    def pieces(self, world, level, center, radius, settings, shape):
-        return IcoPieces(world, level, center, radius, settings, shape)
+    @staticmethod
+    def cell_place(world, below, C, level):
+        """Where the point below is in its triangle of the level of cells C units: its distances from the lattice
+        corners round it (sorted, triangle sides) and from the nearest lattice line (the three families: J, I and
+        I + J whole, each a triangle's height, sqrt 3 / 2, apart)"""
+        n = world.n
+        fI = float((Fraction(below.base[0]) % C) / C) + math.ldexp(below.di, level - n)
+        fJ = float((Fraction(below.base[1]) % C) / C) + math.ldexp(below.dj, level - n)
+        fI, fJ = fI - math.floor(fI), fJ - math.floor(fJ)
+        corners = sorted(math.hypot(fI - a + (fJ - b) / 2.0, ROOT3_HALF * (fJ - b))
+                         for a in (-1, 0, 1, 2) for b in (-1, 0, 1, 2))
+        return corners, min(abs(x - round(x)) for x in (fI, fJ, fI + fJ)) * ROOT3_HALF
 
-    def cell_sizes(self, world, levels):
+    @staticmethod
+    def distortion(n, level, to_corner):
+        """parts_sphere.CubeChart.distortion() for the icosahedron's cells (N / 2^level units): the pinch at its
+        corners (the chart's conformal factor changes by about 1 / 5 of the distance from V, taken as the cube's 1 / 3)
+        and the face's own"""
+        return parts_sphere._distortion(n - level, to_corner, level)
+
+    @staticmethod
+    def cell_sizes(world, levels):
         return cell_sizes(world, levels)
 
-    def transform(self, world, text, built):
-        """Where a level built for another world is in this one's map (parts.transform()): the anchor it was built for,
-        scaled to today's units, placed from today's"""
-        if built.transform is not None and built.transform[0] == text:
-            return built.transform[1], built.transform[2]
-        then = sphere.World.from_text(built.world_text, world.rho)
-        shift = world.n - then.n
-        factor = Fraction(2) ** shift
-        point = scaled(then.A, factor)
-        if then.A == world.A and shift == 0:
-            offset = np.zeros(3)
-        else:
-            offset = placed(world, [point])[0][0]
-        scale = 2.0 ** shift
-        built.transform = (text, offset, scale)
-        return offset, scale
 
-    def add_levels(self, world, camera, q, h, window, levels, settings, shape, phases, placer):
-        return add_levels(world, camera, q, h, window, levels, settings, shape, phases, placer)
-
-
-LATTICE = IcoLattice()
+ICO = IcoChart()
+LATTICE = parts_sphere.SphereLattice(ICO)
 
 
 def forget():

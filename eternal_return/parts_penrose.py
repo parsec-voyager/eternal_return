@@ -631,12 +631,9 @@ class PenroseLattice(surface.MeshLattice):
                 pieces = PenrosePieces(world, faces, tiles, foot, radius, settings, shape)
             except ValueError:
                 continue
-            local, _rounding = pieces.camera(camera)
+            local, rounding = pieces.camera(camera)
             scale = pieces.scale()
-            distances = parts.piece_distances(shape, pieces.frames, pieces.places, pieces.sizes, pieces.kinds, local)
-            distances = distances * pieces.sizes
-            tolerance = 1e-14 * (np.linalg.norm(pieces.places, axis=1) + pieces.sizes + np.linalg.norm(local))
-            rows = np.flatnonzero(np.abs(distances) <= window / scale + tolerance)
+            rows, distances, tolerance = parts.window_rows(shape, pieces, local, rounding, scale, window)
             if not len(rows):
                 least = float(np.abs(distances).min()) * scale if len(distances) else math.inf
                 st.no_pieces[d] = (shape, SP.Drawn(text, world.n, camera.copy(),

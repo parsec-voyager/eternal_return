@@ -98,11 +98,12 @@ Settings, the map object's "parts" property (written by the map's build script):
 - window: how far the giant levels' pieces are built, in drone camera clip ends
 - count: how many level objects the map may use, at most
 
-What's asked of the lattice the parts stand on goes through an object of its own (lattice_of()): SphereLattice for a
-sphere map, everything above; surface.MeshLattice for a surface map, whose faces are flat, so its pieces are placed
-from the anchor without a chart, and its giant levels' pieces worked out with Fractions (surface.add_levels()).
+What's asked of the lattice the parts stand on goes through an object of its own (lattice_of()):
+parts_sphere.SphereLattice for a sphere map, everything above, with its layout's chart (the cube's, or the
+icosahedron's: parts_ico.IcoChart); surface.MeshLattice for a surface map, whose faces are flat, so its pieces are
+placed from the anchor without a chart, and its giant levels' pieces worked out with Fractions (surface.add_levels()).
 
-2026-11-16, the icosahedron sphere's lattice (parts_ico.IcoLattice: triangles, 5 edges at its 12 corners) and the
+2026-11-16, the icosahedron sphere's lattice (parts_ico.py: triangles, 5 edges at its 12 corners) and the
 Penrose surface maps' (parts_penrose.PenroseLattice: each level's rhombs' corners and edges, levels phi times finer, so
 a lattice says how much finer each level is, its ratio). Same day, at the user's request, the Penrose frames are on
 every other level only (phi^2 apart, less dense): a lattice's level_step, 1 for the rest, says which levels have parts
@@ -115,7 +116,6 @@ import json
 import math
 import time
 import traceback
-from fractions import Fraction
 
 import numpy as np
 
@@ -163,12 +163,6 @@ SUNK = 1.05
 # drone's height off (float64 places a point to about FLOAT_ERROR of its distance from the anchor)
 EXACT_SHARE = 1e-7
 FLOAT_ERROR = 1e-14
-# How far the chart takes a cell from a square: under this share, the drone's place in a giant level's cells rules
-# pieces in and out; over it (the coarsest levels, and near a cube corner) the level is placed in float64 to see
-DISTORTION_LIMIT = 0.25
-# How far the sphere curves away under a piece's base, at most, in its cells: a pillar 0.065 cells across on a level's
-# cells a fifth of the sphere's radius (level 3), with room
-SAG = 0.002
 # Builds on the worker thread land a while after they're asked for, and the drone flies on meanwhile; and it looks
 # the way it flies. So a level is measured from a point ahead of where the drone will be when a build asked for now
 # lands (the latency: from asking to writing, smoothed, the map's schedule.Motion's, as is the velocity), ahead along
@@ -216,13 +210,13 @@ def _surface():
 
 
 def lattice_of(obj):
-    """The lattice a map's parts stand on: a cube sphere map's (SphereLattice) or an icosahedron one's
-    (parts_ico.IcoLattice), a surface map's (surface.MeshLattice) or a Penrose surface map's
+    """The lattice a map's parts stand on: a sphere map's (parts_sphere.SphereLattice, with the cube's chart or the
+    icosahedron's, parts_ico.IcoChart), a surface map's (surface.MeshLattice) or a Penrose surface map's
     (parts_penrose.PenroseLattice)"""
     if sphere.is_sphere(obj):
         if sphere.world_of(obj).layout == "ico":
             return _module("parts_ico").LATTICE
-        return SPHERE
+        return _module("parts_sphere").SPHERE
     surface = _surface()
     if surface.setting(obj, "rule") == "penrose":
         return _module("parts_penrose").LATTICE
@@ -247,86 +241,6 @@ def smoothstep(a, b, x):
 
 
 # ----- the lattice near a point: its vertices and edges, from the cube's -----
-
-class Lattice:
-    """A level's lattice points near a lattice point (center, exactly, on the cube) of a world, out to radius cells
-    and a ring more (their neighbors): the points as offsets from center in cells along the cube's axes (whole numbers,
-    int64), their offsets from the anchor in units (floats), each inner point's neighbors (indices, -1 for none) and the
-    edges between inner points (pairs of indices).
-
-    A level's points are where X = (P + N) / C is whole on every axis (C = 2N / 2^level its cells), on the cube's
-    surface: some X at 0 or 2^level. A point's neighbors along the surface, a cell away: in a face, along both of its
-    axes either way; on an edge, along it either way and off it into each of its two faces; at a cube corner, into
-    each of its three faces. Edges are the pairs of neighbors, so an edge on the cube's edge, in two faces, is one."""
-
-    def __init__(self, world, level, center, radius):
-        N = world.N
-        cells = 1 << level
-        C = Fraction(2 * N, cells)
-        X0 = [(c + N) / C for c in center]
-        assert all(x.denominator == 1 for x in X0), "the center isn't a point of the level's lattice"
-        X0 = [int(x) for x in X0]
-        r = int(math.ceil(radius)) + 1
-        # Where the cube's faces are, from the center along each axis, in cells (beyond reach as far as it matters)
-        far = r + 4
-        lo = np.array([max(-far, -x) for x in X0], dtype=np.int64)
-        hi = np.array([min(far, cells - x) for x in X0], dtype=np.int64)
-        keys = []
-        for k in range(3):
-            for plane in (lo[k], hi[k]):
-                if abs(plane) > r:
-                    continue
-                a, b = [axis for axis in range(3) if axis != k]
-                ua = np.arange(max(lo[a], -r), min(hi[a], r) + 1)
-                ub = np.arange(max(lo[b], -r), min(hi[b], r) + 1)
-                grid = np.zeros((len(ua), len(ub), 3), dtype=np.int64)
-                grid[:, :, k] = plane
-                grid[:, :, a] = ua[:, None]
-                grid[:, :, b] = ub[None, :]
-                keys.append(grid.reshape(-1, 3))
-        keys = np.unique(np.concatenate(keys), axis=0)
-        self.keys = keys
-        self.inner = np.abs(keys).max(axis=1) <= radius
-        width = 2 * far + 1
-        code = lambda k: ((k[..., 0] + far) * width + (k[..., 1] + far)) * width + (k[..., 2] + far)
-        codes = code(keys)
-        order = np.argsort(codes)
-        sorted_codes = codes[order]
-
-        def index_of(candidate):
-            c = code(candidate)
-            at = np.clip(np.searchsorted(sorted_codes, c), 0, len(sorted_codes) - 1)
-            return np.where(sorted_codes[at] == c, order[at], -1)
-
-        # Neighbors: with one coordinate on a face (inside a face), both other axes either way; with two (an edge),
-        # along the third either way and each of the two off the face it's on; with three (a corner), each off
-        on_low, on_high = keys == lo, keys == hi
-        saturated = on_low | on_high
-        count = saturated.sum(axis=1)
-        inward = np.where(on_low, 1, -1)
-        neighbors = np.full((len(keys), 4), -1, dtype=np.int64)
-        slot = np.zeros(len(keys), dtype=np.int64)
-        for axis in range(3):
-            unit = np.zeros(3, dtype=np.int64)
-            unit[axis] = 1
-            free = ~saturated[:, axis]
-            off = saturated[:, axis] & (count >= 2)
-            for step, where in ((unit, free), (-unit, free), (unit * inward[:, axis:axis + 1], off)):
-                rows = np.flatnonzero(where)
-                if not len(rows):
-                    continue
-                found = index_of(keys[rows] + (step if step.ndim == 1 else step[rows]))
-                neighbors[rows, slot[rows]] = found
-                slot[rows] += 1
-        self.neighbors = neighbors
-        pairs = [(i, j) for i, row in zip(np.flatnonzero(self.inner), neighbors[self.inner]) for j in row
-                 if j > i and self.inner[j]]
-        self.edges = np.array(pairs, dtype=np.int64).reshape(-1, 2)
-        # Offsets from the anchor, in units: dyadic, with few bits, so exact as floats
-        base = np.array([float(c - a) for c, a in zip(center, world.A)])
-        self.deltas = base[None, :] + keys.astype(float) * float(C)
-        self.C = C
-
 
 # ----- the pieces' meshes, and the node group that instances them -----
 
@@ -757,6 +671,17 @@ def piece_distances(shape, frames, places, sizes, kinds, camera):
 _built = {}          # level object name -> Built
 
 
+def window_rows(shape, pieces, local, rounding, scale, window):
+    """Which of a level's pieces laid out round a vertex (in their own units, scale map units each) are within window
+    (map units) of the camera, there local, float64's rounding of their place rounding: (rows, each piece's distance
+    outside it in its own units, negative inside, and how far float64's rounding could take that). Every lattice's
+    giant levels check the pieces near the drone this way before working the ones in reach out exactly."""
+    distances = piece_distances(shape, pieces.frames, pieces.places, pieces.sizes, pieces.kinds, local) * pieces.sizes
+    tolerance = (FLOAT_ERROR * (np.linalg.norm(pieces.places, axis=1) + pieces.sizes + np.linalg.norm(local))
+                 + rounding)
+    return np.flatnonzero(np.abs(distances) <= window / scale + tolerance), distances, tolerance
+
+
 def upright_frames(toward, up):
     """Vertex pieces' frames: z up their vertex's normal (up, unit), just as it is, and x toward toward (a neighbor)
     made perpendicular to it, their axes as columns, (n, 3, 3). (Keeping x along toward instead, with z made
@@ -836,16 +761,6 @@ def foot_stretch(shape, slope):
     return stretch if stretch.ndim else float(stretch)
 
 
-# A level's pieces are placed in a world of the level's own, anchored at the vertex they're around, its cells 2^REDUCED
-# units: their lattice points' offsets from it are then a few bits, exact as floats, at any depth and in any level
-REDUCED = 40
-# The vertex's own place, from the map's anchor, is placed in float64 within N >> NEAR_SHIFT of it and a world under
-# 2^NEAR_N (float64's rounding is a share of the offset, about 1e-14 of it, and past 2^NEAR_N units the globe's offsets
-# near a float's range), else with digits (sphere_exact)
-NEAR_SHIFT = 6
-NEAR_N = 990
-
-
 class LaidOut:
     """A level's pieces as laid out on its lattice points near a vertex (lay_out()): each a place (its vertex, or by its
     edge's first vertex: edge_frames()), up, size, frame (axes as columns), kind, height and the point its distance is
@@ -914,106 +829,6 @@ class LaidOut:
         return [int(v) for v in self.edge_rows[row - self.vertex_count]]
 
 
-class LocalPieces(LaidOut):
-    """A level's pieces around a vertex, in the level's own world (Pieces): what doesn't depend on the map's anchor,
-    kept for every vertex looked at (_local), so a giant level's pieces near the drone are placed once, not every
-    loop"""
-
-    def __init__(self, level, cells, radius, settings, shape):
-        n_local = level - 1 + REDUCED
-        N_local = 1 << n_local
-        V = [c * (1 << REDUCED) - N_local for c in cells]
-        local = sphere.World(n_local, V, 1.0)
-        lattice = self.lattice = Lattice(local, level, V, radius)
-        view = max(1.0, float(np.abs(lattice.deltas).max()) * 2.0)
-        points, normals = sphere.placed(local, lattice.deltas, view)
-        middle = int(np.flatnonzero(np.all(lattice.keys == 0, axis=1))[0])
-        self.lay_out(lattice.inner, lattice.neighbors, lattice.edges, middle, points, normals, settings, shape)
-
-
-_local = {}          # (level, vertex in cells, radius, kinds, heights) -> LocalPieces
-LOCAL_KEPT = 256
-
-
-class Pieces:
-    """A level's pieces around center (a lattice point of the level, on the cube), out to radius cells: its vertices'
-    and edges' pieces, each a place (its vertex, or by its edge's first vertex), up, size, frame (axes as columns), kind,
-    height and the point its distance is measured from, and the lattice rows it stands on (a vertex piece's vertex then
-    its neighbors, an edge piece's two vertices).
-
-    They're placed in float64 in the level's own world (REDUCED), from center, so their places and sizes are in its
-    map units, each `scale` of the map's (scale_log2 its power of 2 times rho), and center itself is origin() in the
-    map. That keeps a coarse level's pieces exact whatever the chart does between the map's anchor and them, and a
-    giant one's in floats however deep a dive goes (its cells in map units can be far past a float's range)."""
-
-    def __init__(self, world, level, center, radius, settings, shape):
-        N = world.N
-        C = Fraction(2 * N, 1 << level)
-        self.world, self.level, self.center, self.C = world, level, [Fraction(c) for c in center], C
-        # Where center is in the level's cells, the same at every depth (a dive loop doubles N and center alike)
-        cells = tuple(int((c + N) / C) for c in self.center)
-        self.scale_log2 = world.n - (level - 1 + REDUCED)
-        key = (level, cells, radius, _has(settings, "vertex"), _has(settings, "edge"), tuple(shape.heights))
-        local = _local.get(key)
-        if local is None:
-            if len(_local) > LOCAL_KEPT:
-                _local.clear()
-            local = _local[key] = LocalPieces(level, cells, radius, settings, shape)
-        self.__dict__.update(local.__dict__)
-        self.local = local
-        self._origin = None
-
-    def piece_rows(self, row):
-        return self.local.piece_rows(row)
-
-    def scale(self, rho):
-        """The map's units per unit of the pieces' places and sizes, as a float (inf past a float's range)"""
-        try:
-            return math.ldexp(rho, self.scale_log2)
-        except OverflowError:
-            return math.inf
-
-    def near(self):
-        """Whether center is near enough the map's anchor to be placed from it in float64 (NEAR_SHIFT, NEAR_N)"""
-        world = self.world
-        return world.n < NEAR_N and max(abs(c - a) for c, a in zip(self.center, world.A)) <= world.N >> NEAR_SHIFT
-
-    def origin(self, placer):
-        """center in the map (map units from its origin): float64 if near(), else with placer's digits (placer() makes
-        it, called only then) as Decimals"""
-        if self._origin is None:
-            world = self.world
-            delta = [c - a for c, a in zip(self.center, world.A)]
-            if self.near():
-                d = np.array([[float(v) for v in delta]])
-                self._origin = sphere.placed(world, d, max(1.0, float(np.abs(d).max()) * 2.0))[0][0]
-            else:
-                self._origin = placer().placed([delta])[0][0]
-        return self._origin
-
-    def exact_deltas(self, rows):
-        """The offsets from the map's anchor of the lattice points rows, exactly: three Fractions each"""
-        base = [c - a for c, a in zip(self.center, self.world.A)]
-        return [[base[k] + int(self.lattice.keys[r][k]) * self.C for k in range(3)] for r in rows]
-
-    def exact_placed(self, rows, exact):
-        """The lattice points rows and their normals placed with a placer's digits (sphere_exact.Placer.placed())"""
-        return exact.placed(self.exact_deltas(rows))
-
-    def camera(self, camera, placer):
-        """A camera (map units, float64) in the pieces' units from center, as floats, and float64's rounding of center's
-        place in them"""
-        origin = self.origin(placer)
-        if isinstance(origin, np.ndarray):
-            scale = self.scale(self.world.rho)
-            return (camera - origin) / scale, FLOAT_ERROR * float(np.linalg.norm(origin)) / scale
-        from decimal import Decimal
-        exact = placer()
-        with exact.context():
-            scale = Decimal(self.world.rho) * Decimal(2) ** self.scale_log2
-            return np.array([float((Decimal(float(c)) - o) / scale) for c, o in zip(camera, origin)]), 0.0
-
-
 def build_level(lattice, obj, level_obj, world, level, center, settings, phases, shape, placer, radius=None):
     """Build a level into its object, around center (a lattice point of the level): its vertices and edges out to
     radius cells ("build" unless given; infinite for the whole level), placed exactly (lattice.pieces(): Pieces on a
@@ -1075,26 +890,6 @@ def _has(settings, kind):
     return any(p.get("on", "vertex") == kind for p in settings["pieces"])
 
 
-def transform(world, text, built):
-    """Where a level built for another world is in this one's map (world, its text): (offset, scale), its map's origin
-    then (the anchor it was built for) from this map's origin, and how much bigger map units are now. Exact from the
-    two anchors: the one it was built for, scaled to today's units (2^(n - n then) times, a Fraction after a climb), on
-    the cube, placed from today's (sphere.surface_offsets())."""
-    if built.transform is not None and built.transform[0] == text:
-        return built.transform[1], built.transform[2]
-    then = sphere.World.from_text(built.world_text, world.rho)
-    shift = world.n - then.n
-    A_then = [Fraction(c) * Fraction(2) ** shift for c in then.A]
-    delta = np.array([[float(c - a) for c, a in zip(A_then, world.A)]])
-    if not delta.any():
-        offset = np.zeros(3)
-    else:
-        offset = sphere.placed(world, delta, max(1.0, float(np.abs(delta).max()) * 2.0))[0][0]
-    scale = 2.0 ** shift
-    built.transform = (text, offset, scale)
-    return offset, scale
-
-
 def wanted_levels(lattice, world, settings, h, high):
     """The levels with cells from 1 / fade[1] (or with no fade, 1 / fine) of the drone's height h (map units) to high,
     at the anchor, one more
@@ -1147,37 +942,11 @@ def drawn(lattice, level, first):
 # Levels measured at a time (cell_sizes()), going finer
 LEVEL_BATCH = 8
 
-_sizes = {}          # world text -> {level: its cells at the anchor, map units}
-
-
-def cell_sizes(world, levels):
-    """Each level's cells at the anchor (map units), measured, as {level: size} (kept for the world, with every level
-    measured for it before): from the level's lattice point nearest the anchor on the cube to the next one along the
-    surface, placed exactly"""
-    text = world.text()
-    sizes = _sizes.get(text)
-    if sizes is None:
-        if len(_sizes) > 64:
-            _sizes.clear()
-        sizes = _sizes[text] = {}
-    levels = [k for k in levels if k not in sizes]
-    if levels:
-        N = world.N
-        deltas = []
-        for level in levels:
-            C = Fraction(2 * N, 1 << level)
-            # A level's points are where (P + N) / C is whole; the face's own axis (+-N) always is
-            X = [C * round((a + N) / C) - N for a in world.A]
-            # The next one along the surface: along an axis off the face, toward the face's middle (at a cube corner,
-            # every axis is a face's)
-            axis = min(range(3), key=lambda k: abs(X[k]))
-            Y = list(X)
-            Y[axis] += -C if X[axis] > 0 else C
-            deltas += [[float(x - a) for x, a in zip(X, world.A)], [float(y - a) for y, a in zip(Y, world.A)]]
-        deltas = np.array(deltas)
-        points, _normals = sphere.placed(world, deltas, max(1.0, float(np.abs(deltas).max()) * 2.0))
-        sizes.update(zip(levels, np.linalg.norm(points[1::2] - points[0::2], axis=1).tolist()))
-    return sizes
+# A level's pieces laid out round a lattice point, in the level's own units (a lattice's LocalPieces: what doesn't depend
+# on the map's anchor), kept for every point looked at, so a giant level's pieces near the drone are placed once, not
+# every loop: (lattice, level, point, radius, kinds, heights) -> its LocalPieces
+_local = {}
+LOCAL_KEPT = 256
 
 
 class MapState:
@@ -1716,114 +1485,6 @@ def write_exact(exact_obj, built):
                       np.concatenate(colors))
 
 
-def distortion(n, level, to_corner):
-    """How far, at most, the chart takes a cell of a level from a square (a share of its size), for a drone to_corner
-    units from the cube's corner: the conformal factor's change over the cell, from the corner's pinch (|dlog| ~ 1 /
-    3 the distance from it) and the face's own (~2 / N), twice that for the turn"""
-    pinch = 0.0
-    if to_corner == 0.0:
-        return math.inf
-    if math.isfinite(to_corner):
-        exponent = (n + 1 - level) - math.log2(3.0 * to_corner)
-        pinch = math.inf if exponent > 60 else 2.0 ** exponent
-    return 2.0 * (pinch + 6.0 * 2.0 ** -level) + 1e-9
-
-
-def add_levels(world, camera, q, h, window, levels, settings, shape, phases, placer):
-    """The giant levels' pieces within window of the camera (map units), as ExactPieces, finest level first:
-    - the drone's place in the level's cells from the anchor's digits and the point below it (sphere.Below), in cells
-      from the cell's corners and sides, against how far each kind of piece reaches (Shape), with room for how far the
-      chart is from a similarity over a cell (distortion()): far from every piece, or deep inside a vertex piece, the
-      level has nothing in the window
-    - otherwise the level's pieces around the vertex nearest the drone, placed in float64 (Pieces), the camera against
-      each one's solid: those within the window (or float64's rounding of it) are kept
-    - and those worked out again exactly (exact_piece()) and cut to the window
-    Deep inside a vertex piece, the drone is deep inside that vertex's piece at every coarser level the vertex is on
-    (the same vertex, a piece at least twice as big), so those aren't looked at again."""
-    found = []
-    if not levels:
-        return found
-    below = sphere.Below(world, q)
-    N, n = world.N, world.n
-    base_a, base_b = below.base
-    Da, Db = below.D.real, below.D.imag
-    to_corner = math.hypot(sphere.wall_float(N - base_a) - Da, sphere.wall_float(N - base_b) - Db)
-    # Cells next to the drone, from the finest instanced level's: twice as big every level up
-    reference = levels[-1] + 1
-    c_reference = cell_sizes(world, [reference])[reference]
-    has_vertex, has_edge = bool(shape.prisms[0]), bool(shape.prisms[1])
-    reach_v, reach_e = shape.plan[0], shape.plan[1]
-    core = shape.core[0]
-    nested = None                    # the vertex (a, b folded, Fractions) the drone is deep inside the piece of
-    for level in reversed(levels):
-        C = Fraction(2 * N, 1 << level)
-        k = reference - level
-        rho = math.ldexp(window / c_reference, -k)
-        hc = math.ldexp(h / c_reference, -k)
-        eps = distortion(n, level, to_corner)
-        on_nested = nested is not None and nested[0] % C == 0 and nested[1] % C == 0
-        fa = float((Fraction(base_a) % C) / C) + math.ldexp(Da, level - n - 1)
-        fb = float((Fraction(base_b) % C) / C) + math.ldexp(Db, level - n - 1)
-        fa, fb = fa - math.floor(fa), fb - math.floor(fb)
-        uncertain = eps > DISTORTION_LIMIT
-        check = False
-        if has_vertex and not on_nested:
-            if uncertain or rho + reach_v > 0.45:
-                check = True
-            else:
-                corners = [math.hypot(x, y) for x in (fa, 1.0 - fa) for y in (fb, 1.0 - fb)]
-                nearest = min(corners)
-                deep = (core is not None and nearest < core[0] * (1.0 - eps) - rho - eps
-                        and core[1] + rho + eps + SAG < 0.0 and hc * (1.0 + eps) + rho + eps < core[2])
-                if deep:
-                    nested = nested_vertex(base_a, base_b, Da, Db, C, N)
-                    on_nested = True
-                    corners.remove(nearest)
-                check = any(d < (reach_v + rho) * (1.0 + eps) + eps for d in corners)
-        if has_edge and not check:
-            if shape.floor[1] * (1.0 - eps) - eps > hc * (1.0 + eps) + rho:
-                pass
-            elif uncertain or rho + reach_e > 0.45:
-                check = True
-            else:
-                check = min(fa, 1.0 - fa, fb, 1.0 - fb) < (reach_e + rho) * (1.0 + eps) + eps
-        if not check:
-            continue
-        center = below.lattice_point(C)
-        # The drone is within half a cell of the center on each axis; a vertex piece in reach is within its plan reach
-        # and the window of it, an edge piece's edge within that, past the edge's ends, of a cell next to it
-        radius = math.ceil(1.5 + 1.25 * rho + max(reach_v, reach_e, shape.past))
-        pieces = Pieces(world, level, center, radius, settings, shape)
-        # In the pieces' own units (their level's world, Pieces), which stay floats however deep
-        local, rounding = pieces.camera(camera, placer)
-        scale = pieces.scale(world.rho)
-        distances = piece_distances(shape, pieces.frames, pieces.places, pieces.sizes, pieces.kinds, local)
-        distances = distances * pieces.sizes
-        tolerance = (FLOAT_ERROR * (np.linalg.norm(pieces.places, axis=1) + pieces.sizes + np.linalg.norm(local))
-                     + rounding)
-        reach = window / scale
-        for row in np.flatnonzero(np.abs(distances) <= reach + tolerance):
-            # float64 is enough while its rounding is well under the drone's height
-            exact = not tolerance[row] * scale < EXACT_SHARE * h
-            piece = exact_piece(pieces, int(row), level, camera, local, window, shape, settings, phases,
-                                placer if exact else None)
-            if piece is not None:
-                found.append(piece)
-        here = pieces.middle_piece
-        if not on_nested and core is not None and here is not None and distances[here] < -(reach + tolerance[here]):
-            nested = nested_vertex(base_a, base_b, Da, Db, C, N)
-    return found
-
-
-def nested_vertex(base_a, base_b, Da, Db, C, N):
-    """The vertex of the lattice of C units nearest the point below the drone, in the drone's folded frame (as
-    sphere.Below.lattice_point() rounds it, before unfolding)"""
-    Pa = C * round((Fraction(base_a) + Fraction(Da)) / C)
-    Pb = C * round((Fraction(base_b) + Fraction(Db)) / C)
-    Pa = max(Fraction(0), min(Fraction(N), Pa))
-    return Pa, max(Fraction(0), min(Pa, Pb))
-
-
 def exact_piece(pieces, row, level, camera, local, window, shape, settings, phases, placer):
     """A giant level's piece (row of pieces) worked out for the window: its frame and size from the lattice points it
     stands on, the camera in its own units, how far it's outside the piece, and its faces cut to the window (a cube
@@ -1871,13 +1532,7 @@ def exact_piece(pieces, row, level, camera, local, window, shape, settings, phas
         if scale is not None:
             # The pieces' units to the map's
             size = size * scale
-        corners = []
-        for face, index in shape.faces[kind]:
-            cut = cut_to_window([[number(c) - u[i] for i, c in enumerate(corner)] for corner in face.tolist()], half)
-            if len(cut) >= 3:
-                # From the camera, in map units, before they're floats: a giant piece's own units can be far past a
-                # float's range, the window's corners never
-                corners.append((np.array([[float(c * size) for c in corner] for corner in cut]), index))
+        corners = window_faces(shape, kind, u, half, size, number)
         frame = np.array([[float(axes[c][i]) for c in range(3)] for i in range(3)])
         distance = float(distance * size)
     if not corners:
@@ -1943,6 +1598,48 @@ class _no_context:
         return False
 
 
+def window_faces(shape, kind, u, half, size, number):
+    """A piece's faces cut to the window, a cube 2 half of its own units across round the camera (u, in its units, as
+    numbers of type number: floats, Fractions or Decimals, which the cut is worked out in): [(corners from the camera in
+    map units (m, 3, floats: size map units a piece unit), the piece's index)]. Every face against the window at once
+    (face_stack()) in floats: those wholly outside it left out, and with floats, those wholly inside it (most of them:
+    near the boundary a piece is a few hundredths of the window across) taken as they are; only the rest cut (one at a
+    time, face by face, the float path's pieces took 1.4 ms each, 2026-11-19). The corners are scaled to map units
+    before they're floats: a giant piece's own units can be far past a float's range, the window's corners never."""
+    u_float = np.array([float(c) for c in u])
+    half_float = float(half)
+    slack = 4e-16 * (1.0 + float(np.abs(u_float).max()))
+    stacked, starts, ends = face_stack(shape, kind)
+    if not len(starts):
+        return []
+    near_all = stacked - u_float
+    lo = np.minimum.reduceat(near_all, starts, axis=0)
+    hi = np.maximum.reduceat(near_all, starts, axis=0)
+    reaching = ~(np.any(lo > half_float + slack, axis=1) | np.any(hi < -half_float - slack, axis=1))
+    inside = np.maximum(hi, -lo).max(axis=1) < half_float - slack
+    corners = []
+    for f in np.flatnonzero(reaching):
+        face, index = shape.faces[kind][f]
+        if number is float and inside[f]:
+            corners.append((near_all[starts[f]:ends[f]] * float(size), index))
+            continue
+        cut = cut_to_window([[number(float(c)) - u[i] for i, c in enumerate(corner)] for corner in face.tolist()], half)
+        if len(cut) >= 3:
+            corners.append((np.array([[float(c * size) for c in corner] for corner in cut]), index))
+    return corners
+
+
+def face_stack(shape, kind):
+    """A kind's faces (shape.faces) as one array of their corners, with where each face's start and end, made once"""
+    stacks = shape.__dict__.setdefault("_face_stacks", {})
+    if kind not in stacks:
+        faces = [face for face, _index in shape.faces[kind]]
+        lengths = np.array([len(face) for face in faces], dtype=np.int64)
+        ends = np.cumsum(lengths)
+        stacks[kind] = (np.concatenate(faces).astype(float) if faces else np.zeros((0, 3)), ends - lengths, ends)
+    return stacks[kind]
+
+
 def cut_to_window(polygon, half):
     """A convex polygon (corners, lists of three numbers of one type) cut to the cube from -half to half on every
     axis (Sutherland and Hodgman's), in the corners' own type, so with Decimals as exact as their precision"""
@@ -1999,74 +1696,6 @@ def _perpendicular(v, axis):
     return _unit(out)
 
 
-class SphereLattice:
-    """What settle() asks of the lattice the parts stand on, for a sphere map's (sphere.py): its world, the camera in
-    map units (and lifted, for 3D tiles) and its height, the point below it and any level's lattice point nearest that,
-    a level's pieces around a lattice point (Pieces), each level's cells' size, where something built for another world
-    is in today's map (transform()), and the giant levels' pieces in the window (add_levels(), with digits from
-    placer()). A surface map's is surface.MeshLattice."""
-
-    # How many times smaller a level's cells are than the next coarser's
-    ratio = 2.0
-    # Parts on every level_step-th level only (drawn())
-    level_step = 1
-
-    def world(self, obj):
-        return sphere.world_of(obj)
-
-    def unit_level(self, world):
-        """A level whose cells are about a unit at the anchor (wanted_levels() works out from it)"""
-        return world.n + world.level_shift
-
-    def camera(self, obj, world, camera_world):
-        camera = sphere.map_point(obj, camera_world)
-        q = sphere.lifted(world, camera, sphere.lift_of(obj))
-        return camera, q, max(abs(float(sphere.height(world, q))), 1e-300)
-
-    world_vector = staticmethod(sphere.world_vector)
-
-    def placer(self, world, h):
-        """What's placed with more digits than float64's has them for the world and the drone's height (made when
-        first needed, and kept)"""
-        return lambda: sphere_exact.placer(world, sphere_exact.digits_for(world.n, h / world.rho))
-
-    def below(self, obj, world, q):
-        return sphere.Below(world, q)
-
-    def center(self, world, below, level):
-        return below.lattice_point(Fraction(2 * world.N, 1 << level))
-
-    def ground(self, obj, world, camera, q):
-        """What a level's center is measured from: the camera (the sphere's normals turn smoothly, so its offset along
-        the surface is the point below's)"""
-        return camera
-
-    def first_radius(self, world, level, build, wanted):
-        """How far the coarsest level is built, in its cells: "build" (at first_level 3, that's the whole globe)"""
-        return build
-
-    def pieces(self, world, level, center, radius, settings, shape):
-        return Pieces(world, level, center, radius, settings, shape)
-
-    def pieces_job(self, world, level, center, radius, settings, shape):
-        """A level's build for the worker thread (background.py), as (function, *args): function(*args), touching
-        nothing of Blender's or of this tick's, returns (world, pieces, origin, radius) for write_level(). None: built
-        here (a sphere's levels are a few ms, mostly kept, see Pieces)."""
-        return None
-
-    def cell_sizes(self, world, levels):
-        return cell_sizes(world, levels)
-
-    def transform(self, world, text, built):
-        return transform(world, text, built)
-
-    def add_levels(self, world, camera, q, h, window, levels, settings, shape, phases, placer):
-        return add_levels(world, camera, q, h, window, levels, settings, shape, phases, placer)
-
-
-SPHERE = SphereLattice()
-
-
 def _clear(level_obj):
     level_obj.data.clear_geometry()
     level_obj.data.update()
@@ -2077,7 +1706,6 @@ def forget(_dummy=None):
     """After loading a file: another file's levels don't apply; each is built again at its first settle (and builds
     under way on the worker thread are thrown away)"""
     _built.clear()
-    _sizes.clear()
     for name in _maps:
         background.forget("parts:" + name)
     _maps.clear()
@@ -2086,7 +1714,7 @@ def forget(_dummy=None):
     sphere_exact.forget()
     import sys
     package = __name__.rpartition(".")[0]
-    for name in ("parts_ico", "parts_penrose"):
+    for name in ("parts_sphere", "parts_ico", "parts_penrose"):
         module = sys.modules.get(f"{package}.{name}" if package else name)
         if module is not None:
             module.forget()

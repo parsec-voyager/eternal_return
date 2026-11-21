@@ -588,32 +588,34 @@ class LevelLattice:
                                np.concatenate([np.repeat(triangles, len(ui)), np.repeat(triangles, len(di))])))
 
     def _around(self):
-        """The points' slopes and neighbors, worked out when first asked for (by the 3D parts: the floor needs
-        neither). Inside a face a point's slope is 0 and its neighbors are the grid's, along the face's lattice's
-        directions; only the points on edges and corners are asked for one at a time."""
+        """The points' neighbors, worked out when first asked for (by the 3D parts: the floor needs none). Inside a
+        face they're the grid's, along the face's lattice's directions; only the points on edges and corners are asked
+        for one at a time."""
         top, M, key_rows, keys = self._top, self._M, self._key_rows, self.keys
         count = len(keys)
         inside = key_rows[:, 0] == FACE
-        slopes = np.zeros(count)
         around = {row: top.neighbors(keys[row], M) for row in np.flatnonzero(~inside).tolist()}
         inside_sides = top.sides[np.where(inside, key_rows[:, 1], 0)]
         inside_rows = {k: np.flatnonzero(inside & (inside_sides == k)) for k in set(top._sides)}
         width = max([len(a) for a in around.values()] + [len(STEPS[k]) for k, at in inside_rows.items() if len(at)])
         neighbors = np.full((count, width), -1, dtype=np.int64)
         for row, nbs in around.items():
-            slopes[row] = top.key_slope(keys[row], M)
             for slot, (nb, *_rest) in enumerate(nbs):
                 neighbors[row, slot] = self.index.get(nb, -1)
         for k, at in inside_rows.items():
             # (None at a coarse level of triangles: level 0's points are all corners, level 1's all on edges)
             for slot, (dI, dJ) in enumerate(STEPS[k] if len(at) else ()):
                 neighbors[at, slot] = self._rows[key_rows[at, 1], key_rows[at, 2] + dI, key_rows[at, 3] + dJ]
-        self._slopes, self._neighbors = slopes, neighbors
+        self._neighbors = neighbors
 
     @property
     def slopes(self):
+        """The points' slopes (Topology.key_slope()): 0 inside a face, the others' asked for one at a time, when first
+        needed (by the 3D parts on a mesh: a sphere's stand on its chart, which has no folds)"""
         if self._slopes is None:
-            self._around()
+            self._slopes = np.zeros(len(self.keys))
+            for row in np.flatnonzero(self._key_rows[:, 0] != FACE).tolist():
+                self._slopes[row] = self._top.key_slope(self.keys[row], self._M)
         return self._slopes
 
     @property
@@ -1417,6 +1419,14 @@ class LocalLattice:
             pairs.append(np.stack([np.where(swap, j, i), np.where(swap, i, j)], axis=1))
         self.edges = np.concatenate(pairs).reshape(-1, 2) if pairs else np.zeros((0, 2), dtype=np.int64)
 
+    @property
+    def slopes(self):
+        """How steeply the surface falls away from each point (Topology.key_slope()), worked out when first asked for
+        (a mesh's 3D parts; a sphere's have none) and kept"""
+        if callable(self._slopes):
+            self._slopes = self._slopes()
+        return self._slopes
+
     @staticmethod
     def reach(top, M, center, radius):
         """The radius in the level's own units (radius times the mean step from center to its neighbors) and the
@@ -1439,7 +1449,7 @@ class LocalLattice:
         self.keys = [whole.keys[r] for r in rows]
         self.places = places[rows]
         self.normals = whole.normals[rows]
-        self.slopes = whole.slopes[rows]
+        self._slopes = lambda: whole.slopes[rows]
         new = np.full(len(whole.keys) + 1, -1, dtype=np.int64)
         new[rows] = np.arange(len(rows))
         # -1 (none) indexes the extra -1 at the end
@@ -1516,7 +1526,7 @@ class LocalLattice:
         self.normals = np.concatenate(normals) if normals else np.zeros((0, 3))
         count = len(keys)
         # How steeply the surface falls away from each (Topology.key_slope()): only on a face's sides
-        self.slopes = np.array([top.key_slope(key, M) if key[0] != FACE else 0.0 for key in keys])
+        self._slopes = lambda: np.array([top.key_slope(key, M) if key[0] != FACE else 0.0 for key in keys])
         self.center_row = index[center]
         self.inner = np.linalg.norm(self.places, axis=1) <= r_in
         # Neighbors: inside a face from its grid, shifted along its lattice's steps; a shared point's (on an edge or
@@ -1677,46 +1687,15 @@ def exact_piece_at(world, level, kind, offsets, normals, stretch, scales, relati
     inverse = parts.inverse_3x3([[number(float(frame[r, c])) for c in range(3)] for r in range(3)])
     u = [sum(inverse[c][r] * relative[r] for r in range(3)) / number(size) for c in range(3)]
     half = number(window) / size_map
-    u_float = np.array([float(c) for c in u])
-    slack = 4e-16 * (1.0 + float(np.abs(u_float).max()))
-    half_float = float(half)
-    corners = []
-    # Every face against the window at once (face_stack()): those wholly outside it left out, and in floats, those
-    # wholly inside it (most of them: near the boundary a piece is a few hundredths of the window across) taken as
-    # they are; only the rest cut (one at a time, face by face, the float path's pieces took 1.4 ms each, 2026-11-19)
-    stacked, starts, ends = face_stack(shape, kind)
-    near_all = stacked - u_float
-    lo = np.minimum.reduceat(near_all, starts, axis=0)
-    hi = np.maximum.reduceat(near_all, starts, axis=0)
-    reaching = ~(np.any(lo > half_float + slack, axis=1) | np.any(hi < -half_float - slack, axis=1))
-    inside = np.maximum(hi, -lo).max(axis=1) < half_float - slack
-    for f in np.flatnonzero(reaching):
-        face, index = shape.faces[kind][f]
-        if number is float and inside[f]:
-            corners.append((near_all[starts[f]:ends[f]] * size_map, index))
-            continue
-        cut = parts.cut_to_window([[number(float(c)) - u[i] for i, c in enumerate(corner)] for corner in face.tolist()],
-                                  half)
-        if len(cut) >= 3:
-            corners.append((np.array([[float(c * size_map) for c in corner] for corner in cut]), index))
+    corners = parts.window_faces(shape, kind, u, half, size_map, number)
     if not corners:
         return None
+    u_float = np.array([float(c) for c in u])
     distance = min(prism.distance_one(u_float.tolist()) for prism in shape.prisms[kind])
     faces = [face @ frame.T for face, _ in corners]
     colors = [parts.piece_color(settings["pieces"][index], phase) for _, index in corners]
     return parts.ExactPiece(level, kind, frame, float(size_map), tuple(u_float), None, faces, colors,
                             float(distance) * float(size_map))
-
-
-def face_stack(shape, kind):
-    """A kind's faces (shape.faces) as one array of their corners, with where each face's start and end, made once"""
-    stacks = shape.__dict__.setdefault("_face_stacks", {})
-    if kind not in stacks:
-        faces = [face for face, _index in shape.faces[kind]]
-        lengths = np.array([len(face) for face in faces], dtype=np.int64)
-        ends = np.cumsum(lengths)
-        stacks[kind] = (np.concatenate(faces).astype(float), ends - lengths, ends)
-    return stacks[kind]
 
 
 # A giant level is ruled in or out from where the drone is in its cells while the window's reach is under this share of
@@ -1817,13 +1796,9 @@ def add_levels(world, camera, q, h, window, levels, settings, shape, phases, pla
         center = top.key(f, *nearest_point(top._sides[f], u, v, M), M)
         radius = int(min(math.ceil(1.5 + 1.25 * reach + 1.0), 64))
         pieces = MeshPieces(world, level, center, radius, settings, shape)
-        local, _rounding = pieces.camera(camera)
-        scale = pieces.scale(world.rho)
-        distances = parts.piece_distances(shape, pieces.frames, pieces.places, pieces.sizes, pieces.kinds, local)
-        distances = distances * pieces.sizes
-        tolerance = 1e-14 * (np.linalg.norm(pieces.places, axis=1) + pieces.sizes + np.linalg.norm(local))
-        within = np.abs(distances) <= window / scale + tolerance
-        for row in np.flatnonzero(within):
+        local, rounding = pieces.camera(camera)
+        rows, _distances, _tolerance = parts.window_rows(shape, pieces, local, rounding, pieces.scale(world.rho), window)
+        for row in rows:
             rows = pieces.piece_rows(int(row))
             keys = tuple(pieces.keys[r] for r in rows)
             kind = int(pieces.kinds[row])
