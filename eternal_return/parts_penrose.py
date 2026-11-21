@@ -33,9 +33,11 @@ import numpy as np
 
 from . import parts
 from . import penrose
+from . import schedule
 from . import surface
 from . import surface_penrose as SP
-from .cyclotomic import RING10 as RING, float_sqrt
+from .cyclotomic import (RING10 as RING, im_pair, phi_power_float, q_add, q_float, q_fraction, q_mul, q_phi, q_scale,
+                         q_sub, re2_pair, ring_im, ring_re2)
 
 RULE = SP.RULE
 PHI = SP.PHI
@@ -68,26 +70,6 @@ REROOT = 64
 NO_PIECES_SHARE = 0.5
 # The level 0 a parts map shows whole while its corners are this few (and the map shallow: surface_penrose.FLOAT_N)
 WHOLE_POINTS = 20000
-
-
-def im_pair(c):
-    """Im(z) / sin 36 for ring coefficients c (..., 4) as p + q phi, whole numbers: (p, q)"""
-    return c[..., 1], c[..., 2] + c[..., 3]
-
-
-def re2_pair(c):
-    """2 Re(z) for ring coefficients c as p + q phi: (p, q)"""
-    return 2 * c[..., 0] - c[..., 2] + c[..., 3], c[..., 1] + c[..., 2] - c[..., 3]
-
-
-def ring_im(z):
-    """im_pair() of one ring element (four Python ints)"""
-    return z[1], z[2] + z[3]
-
-
-def ring_re2(z):
-    """re2_pair() of one ring element"""
-    return 2 * z[0] - z[2] + z[3], z[1] + z[2] - z[3]
 
 
 def turned(z, a):
@@ -232,7 +214,7 @@ def lattice_near(world, faces, level, center, reach):
     ideal = np.stack([rel @ RULE.basis_x, rel @ RULE.basis_y], axis=-1)                # (t, 3, 2)
     maps = level.map_points(world, faces, rows, ideal) if T else np.zeros((0, 3, 3))
     _place, ur, vr = level.face_params(world, faces, rows) if T else (None, np.zeros(0), np.zeros(0))
-    small = SP.phi_power_float(level.d)
+    small = phi_power_float(level.d)
     sin, cos = faces.sin[face], faces.cos[face]
     dv = ideal[..., 1] / sin[:, None]
     du = ideal[..., 0] - dv * cos[:, None]
@@ -383,20 +365,10 @@ def exact_point(world, faces, level, f, rel):
     u, v = faces.uv_exact(f, z, level.d)
     top = world.topology
     p0, eu, ev, tw = top.exact[f]
-    uv = SP.q_mul(u, v)
+    uv = q_mul(u, v)
     scale = Fraction(1, 1 << top.E)
-    return [SP.q_scale(SP.q_add(SP.q_add((Fraction(p0[k]), Fraction(0)), SP.q_scale(u, eu[k])),
-                                SP.q_add(SP.q_scale(v, ev[k]), SP.q_scale(uv, tw[k]))), scale) for k in range(3)]
-
-
-def q_float(x):
-    return float_sqrt(x[0], x[1], 5)
-
-
-def q_fraction(x, bits):
-    """a + b sqrt 5 as a Fraction, sqrt 5 to bits bits"""
-    root = Fraction(math.isqrt(5 << (2 * bits)), 1 << bits)
-    return x[0] + x[1] * root
+    return [q_scale(q_add(q_add((Fraction(p0[k]), Fraction(0)), q_scale(u, eu[k])),
+                                q_add(q_scale(v, ev[k]), q_scale(uv, tw[k]))), scale) for k in range(3)]
 
 
 def camera_exact(world, camera):
@@ -461,9 +433,9 @@ class PenrosePieces(parts.LaidOut):
         0.0)"""
         if self._point is None:
             self._point = self.point(self.middle_row)
-        grow = SP.q_phi(self.d)
+        grow = q_phi(self.d)
         cam = camera_exact(self.world, camera)
-        return np.array([q_float(SP.q_mul(SP.q_sub((c, Fraction(0)), p), grow)) for c, p in zip(cam, self._point)]), 0.0
+        return np.array([q_float(q_mul(q_sub((c, Fraction(0)), p), grow)) for c, p in zip(cam, self._point)]), 0.0
 
 
 def exact_piece(world, pieces, row, camera_point, window, shape, settings, phases, h, local=None):
@@ -491,14 +463,14 @@ def exact_piece(world, pieces, row, camera_point, window, shape, settings, phase
                                       window, shape, settings, phase, scale=pieces.scale())
     exact = [pieces.point(r) for r in rows]
     P = exact[0]
-    grow = SP.q_phi(pieces.d)
-    offsets = [tuple(q_float(SP.q_mul(SP.q_sub(p, q), grow)) for p, q in zip(point, P)) for point in exact]
+    grow = q_phi(pieces.d)
+    offsets = [tuple(q_float(q_mul(q_sub(p, q), grow)) for p, q in zip(point, P)) for point in exact]
     # Enough bits of sqrt 5: a point's a + b sqrt 5 has a and b about phi^2d (its ring point's coefficients, times
     # phi^-d's), cancelling to the mesh's size, and the drone is 2^-n h of the mesh's units (h map units, rho about 1)
     grown = int(2 * pieces.d * LOG_PHI / math.log(2.0))
     bits = grown + world.n + max(0, int(-math.log2(max(h, 1e-300)))) + 128
-    relative = [q_fraction(SP.q_sub((c, Fraction(0)), p), bits) for c, p in zip(camera_point, P)]
-    unit = q_fraction(SP.q_phi_inv(pieces.d), bits)
+    relative = [q_fraction(q_sub((c, Fraction(0)), p), bits) for c, p in zip(camera_point, P)]
+    unit = q_fraction(q_phi(-pieces.d), bits)
     return surface.exact_piece_at(world, pieces.d, kind, offsets, normals, stretch, scales, relative, unit, window,
                                   shape, settings, phase)
 
@@ -616,7 +588,7 @@ class PenroseLattice(surface.MeshLattice):
             return tiles
         tiles = kept.copy()
         keep = window * SP.SLACK
-        if len(tiles.face) > SP.TRIM_MIN and tiles.window > SP.OVERBUILT * keep:
+        if len(tiles.face) > SP.TRIM_MIN and tiles.window > schedule.OVERBUILT * keep:
             centers = SP.Centers(world, faces, below, foot, keep) if world.n >= SP.FLOAT_N else None
             tiles.keep_near(world, faces, centers, keep, foot)
         st.giant_tiles[d] = (SP.origin_of(kept), tiles)
@@ -630,7 +602,7 @@ class PenroseLattice(surface.MeshLattice):
     def cell_sizes(self, world, levels):
         """Each level's tile edge at the anchor's face (map units): rho 2^n phi^-d times its edge"""
         edge = self.edge(world)
-        return {d: world.rho * edge * SP.phi_power_float(d, world.n) for d in levels}
+        return {d: world.rho * edge * phi_power_float(d, world.n) for d in levels}
 
     def add_levels(self, world, camera, q, h, window, levels, settings, shape, phases, placer):
         """The giant levels' pieces within window of the camera (map units), as parts.ExactPieces, finest first: each

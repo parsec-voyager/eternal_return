@@ -72,6 +72,7 @@ from mathutils import Matrix, Vector
 
 from . import background
 from . import darb_imam
+from . import loops
 from . import penrose
 from . import tiling
 
@@ -1563,9 +1564,7 @@ def exact_factor(obj, factor):
     power). A factor that isn't near one (more than 1% off) can't loop the floor seamlessly: said once, and the nearest
     power taken anyway, rather than stopping the flight."""
     rule = rule_of(obj[PROPERTY])
-    power = round(math.log(factor) / rule.log_loop)
-    if power == 0:
-        power = 1 if factor > 1.0 else -1
+    power = loops.nearest_power(factor, rule.log_loop)
     if abs(math.log(factor) - power * rule.log_loop) > 0.01 and not _warned.get((obj.name, "factor")):
         print(f"substitution: {obj.name} loops by powers of {rule.loop:.6f}; the loop factor {factor} is taken as "
               f"{rule.loop:.6f}^{power}")

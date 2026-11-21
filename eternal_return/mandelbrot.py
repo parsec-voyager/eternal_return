@@ -46,12 +46,11 @@ The object's custom properties:
   the distance estimate's derivative overflows a float32
 - skip_ahead: jump many iterations at once while a pixel's orbit stays close to the reference's (see bla_tables())
 - resolution: the share of the view's pixels, across and down, the set is worked out at, scaled up to the view
-- auto_resolution: lower the resolution, down to MIN_RESOLUTION, while frames miss the display's refresh, and raise it
-  back up to resolution once they've kept up for a while
+- auto_resolution: lower the resolution while frames miss the display's refresh, and raise it back up to resolution
+  once they've kept up for a while (auto_resolution.py)
 - show_info: the zoom, iterations, resolution and frame time in the corner of each view
 """
 
-import collections
 import math
 import time
 from fractions import Fraction
@@ -62,6 +61,11 @@ import gpu
 import numpy as np
 from gpu_extras.batch import batch_for_shader
 from mathutils import Vector
+
+try:
+    from . import auto_resolution
+except ImportError:          # tests import it by itself
+    import auto_resolution
 
 CENTER = "mandelbrot_c"
 ANCHOR = "mandelbrot_anchor"
@@ -107,18 +111,6 @@ SEARCH_ZOOM = 2.0
 # further than REFERENCE_LIMIT is replaced at once: a pixel's offset from it, in float32, would blur the view
 REFERENCE_REACH = 30.0
 REFERENCE_LIMIT = 200.0
-# auto_resolution: a frame slower than MISSED_FRAME missed the display's refresh (it took two, 33 ms at 60 Hz; flight
-# jitters a few ms around 16.7 without missing any). MISSED_TO_LOWER of the last RECENT_FRAMES lower the resolution a
-# step (a lone hitch doesn't; missed frames come between ones that make it, so not in a row), and FAST_FRAMES_TO_RAISE
-# in a row without a miss raise it a step. A step up that turns out too slow doubles the wait before trying it again
-# (up to MAX_RAISE_WAIT), so a resolution on the edge doesn't pulse.
-MISSED_FRAME = 0.025
-RECENT_FRAMES = 12
-MISSED_TO_LOWER = 2
-FAST_FRAMES_TO_RAISE = 60
-MAX_RAISE_WAIT = 480
-RESOLUTION_STEP = 0.05
-MIN_RESOLUTION = 0.2
 # Skip-ahead (bilinear approximation): a jump is taken while the orbit's offset from the reference is small enough that
 # its square, the part a jump leaves out, is under BLA_EPSILON of the rest (2^-22: as close as float32 rounding
 # leaves plain iterations). The tables hold for offsets of the pixel's c from the reference's up to BLA_NEAR drone
@@ -854,19 +846,13 @@ class Floor:
         self.composite_batch = batch_for_shader(self.composite_shader, 'TRIS', {"pos": positions}, indices=indices)
         self.offscreens = {}       # by size, for the lower resolution pass
         self.values_buffer = None  # the shader's values for the last draw (see FLOOR_VALUES)
-        self.resolution = None     # auto_resolution's, a multiple of RESOLUTION_STEP
-        self.fast_frames = 0
-        self.recent_missed = collections.deque(maxlen=RECENT_FRAMES)
-        self.raise_wait = FAST_FRAMES_TO_RAISE
-        self.raised = False        # the last step was up, so slowing down now means it was one too far
+        self.auto = auto_resolution.AutoResolution()
         self.reference = None
         self.job = None            # the next reference's orbit, being iterated
         self.job_needed = False    # the current reference can't stay (too far, short or imprecise), so take the next
         self.search = None
         self.searched = None       # where the last finished search was, so a still drone doesn't keep searching
         self.last_update = None
-        self.last_draw = None
-        self.frame_time = None
         self.max_iterations = DEFAULTS["iterations"]
         self.zoom_log10 = 0.0
 
@@ -949,33 +935,7 @@ class Floor:
     # ----- resolution -----
 
     def current_resolution(self, obj):
-        top = min(1.0, max(MIN_RESOLUTION, float(setting(obj, "resolution"))))
-        if not setting(obj, "auto_resolution"):
-            return top
-        if self.resolution is None or self.resolution > top:
-            self.resolution = top
-        return self.resolution
-
-    def adjust_resolution(self, obj, interval):
-        """auto_resolution, after each frame of interval seconds (see MISSED_FRAME)"""
-        if not setting(obj, "auto_resolution"):
-            return
-        top = min(1.0, max(MIN_RESOLUTION, float(setting(obj, "resolution"))))
-        current = self.current_resolution(obj)
-        missed = interval > MISSED_FRAME
-        self.recent_missed.append(missed)
-        self.fast_frames = 0 if missed else self.fast_frames + 1
-        if sum(self.recent_missed) >= MISSED_TO_LOWER and current > MIN_RESOLUTION:
-            lower = round((current - RESOLUTION_STEP) / RESOLUTION_STEP) * RESOLUTION_STEP
-            self.resolution = max(MIN_RESOLUTION, lower)
-            self.raise_wait = min(MAX_RAISE_WAIT, self.raise_wait * 2) if self.raised else FAST_FRAMES_TO_RAISE
-            self.raised = False
-            self.recent_missed.clear()
-            self.fast_frames = 0
-        elif self.fast_frames >= self.raise_wait and current < top:
-            self.resolution = min(top, current + RESOLUTION_STEP)
-            self.raised = True
-            self.fast_frames = 0
+        return self.auto.current(setting(obj, "resolution"), setting(obj, "auto_resolution"))
 
     # ----- per view -----
 
@@ -984,17 +944,8 @@ class Floor:
         self.update(scene, obj, mapping)
         if self.reference is None:
             return
-        # Frame time, between draws of the view looking through the drone camera (or any view, without one)
-        if region_data.view_perspective == 'CAMERA' or not self.frame_time:
-            now = time.perf_counter()
-            if self.last_draw is not None:
-                interval = now - self.last_draw
-                self.frame_time = interval if self.frame_time is None or interval > 0.5 else (
-                    0.9 * self.frame_time + 0.1 * interval)
-                # Only frames drawn one after another, as in flight: not a redraw after a pause
-                if interval < 0.1:
-                    self.adjust_resolution(obj, interval)
-            self.last_draw = now
+        self.auto.drawn(region_data.view_perspective == 'CAMERA', setting(obj, "resolution"),
+                        setting(obj, "auto_resolution"))
 
         view = region_data.view_matrix
         camera_location = view.inverted().translation
@@ -1098,7 +1049,7 @@ class Floor:
     def draw_info(self, obj):
         if not setting(obj, "show_info") or self.reference is None:
             return
-        frame = f"{self.frame_time * 1000:.1f} ms/frame" if self.frame_time else ""
+        frame = f"{self.auto.frame_time * 1000:.1f} ms/frame" if self.auto.frame_time else ""
         if self.zoom_log10 > math.log10(FLOAT64_ZOOM):
             frame += "  past float64's range: climb back up"
         text = (f"Mandelbrot  zoom 1e{self.zoom_log10:.1f}  iterations {self.max_iterations}  "

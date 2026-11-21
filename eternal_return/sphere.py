@@ -31,7 +31,7 @@ else in map units around A's point on the sphere, the map's origin, in floats th
 radius is R = rho N (rho, map units per unit, a setting), its center at -R n(A) in map coordinates, which are the
 cube's axes: the map's object never turns, flying around the globe or not.
 - A dive loop by 2^k doubles N and A k times (dive()): a pure change of units, about the map's origin, so the view
-  doesn't change at all, at any scale, the whole globe in view or not. Loops are by powers of 2 only (exact_factor()).
+  doesn't change at all, at any scale, the whole globe in view or not. Loops are by powers of 2 only (loop_factor()).
 - A climb loop first moves the anchor to the nearest point of the 2^k times coarser lattice, then halves (climb()). At
   N = 1, the globe, there's nothing coarser: climb loops stop there (can_climb()).
 - The anchor follows the point below the drone (recenter()), so the drone stays near the map's origin.
@@ -61,7 +61,9 @@ from fractions import Fraction
 import numpy as np
 
 try:
+    from . import auto_resolution
     from . import background
+    from . import loops
     from . import planet as planets
     from . import sphere_chart as chart
     from . import sphere_ico
@@ -69,7 +71,9 @@ try:
     from . import sphere_sierpinski
     from . import tiles3d
 except ImportError:          # tests import it by itself
+    import auto_resolution
     import background
+    import loops
     import planet as planets
     import sphere_chart as chart
     import sphere_ico
@@ -85,8 +89,8 @@ LIFT = "sphere_lift"
 # The "sphere" property's keys:
 # - rho: map units per unit (the lattice's finest whole step), so the sphere's radius is rho * 2^n
 # - resolution: the share of the view's pixels, across and down, the sphere is worked out at, scaled up to the view
-# - auto_resolution: lower the resolution, down to MIN_RESOLUTION, while frames miss the display's refresh, and raise it
-#   back up to resolution once they've kept up for a while
+# - auto_resolution: lower the resolution while frames miss the display's refresh, and raise it back up to resolution
+#   once they've kept up for a while (auto_resolution.py)
 # - show_info: N, the levels drawn and the frame time in the corner of each view
 # - motif: what's drawn on the lattice, "sierpinski" or "stars" (see the module's docstring)
 # - planet: a planet's tile pyramid (a folder made by tools/make_planet.py, "//" for the .blend's), the sphere's
@@ -111,15 +115,6 @@ DEFAULTS = {"rho": 1.0, "resolution": 1.0, "auto_resolution": True, "show_info":
             "motif": sphere_sierpinski.MOTIF, "planet": "", "planet_handoff": 2.0, "planet_level_bias": 0.5,
             "tiles": "", "tiles_error": tiles3d.ERROR, "tiles_motion": True, "tiles_floor": 1.1, "tiles_base": -430.0,
             "tiles_valley": 2.0}
-# auto_resolution, as the Mandelbrot floor's (see mandelbrot.py): a frame slower than MISSED_FRAME missed the display's
-# refresh; MISSED_TO_LOWER of the last RECENT_FRAMES lower the resolution a step, FAST_FRAMES_TO_RAISE in a row raise it
-MISSED_FRAME = 0.025
-RECENT_FRAMES = 12
-MISSED_TO_LOWER = 2
-FAST_FRAMES_TO_RAISE = 60
-MAX_RAISE_WAIT = 480
-RESOLUTION_STEP = 0.05
-MIN_RESOLUTION = 0.2
 
 # The motif, in cell units of the cells centered on the lattice's corners (fx, fy from a cell's corner, which is the
 # middle of four of the lattice's cells), every line at a dyadic fraction with a few bits: the GPU puts a line exactly
@@ -410,14 +405,6 @@ def climb(world, k, p):
     A_new, offset = world.nearest_vertex(p, step)
     world.__init__(world.n - k, world.climbed_anchor(A_new, k), world.rho)
     return offset
-
-
-def exact_factor(factor):
-    """The power of 2 nearest a loop factor, as the float the drone is scaled by"""
-    power = round(math.log2(factor)) if factor > 0 else 1
-    if power == 0:
-        power = 1 if factor > 1.0 else -1
-    return 2.0 ** power
 
 
 # ----- points of the cube placed on the sphere, exactly: the forward direction, for what's built on it (parts.py) -----
@@ -2451,7 +2438,7 @@ def drone_clip_end():
 
 
 def loop(obj, factor, camera_world):
-    """A loop by factor (a power of 2, see exact_factor()) about the map's origin: N and A doubled (a dive, factor > 1)
+    """A loop by factor (a power of 2, see loop_factor()) about the map's origin: N and A doubled (a dive, factor > 1)
     or, after the anchor moves to the coarser lattice under the camera, halved (a climb). Returns the move of the map's
     origin the climb made first (world units, before the loop: the drone moves by minus it), or None."""
     world = world_of(obj)
@@ -2473,17 +2460,10 @@ def loop_factor(obj, factor):
     the top), 1.0 if there's no climbing left. With 3D tiles, a dive no deeper than map units of tiles3d.DEEPEST_UNIT
     meters, 1.0 if there's no diving left: past it there's no detail, and tiles' places would begin to jitter."""
     world = world_of(obj)
-    power = round(math.log2(factor)) if factor > 0 else 0
-    if power == 0:
-        power = 1 if factor > 1.0 else -1
-    if power < 0:
-        power = max(power, -world.n)
-    elif tiles_of(obj) is not None:
+    room = None
+    if tiles_of(obj) is not None:
         room = math.floor(math.log2(tiles3d.RADIUS / (world.rho * tiles3d.DEEPEST_UNIT))) - world.n
-        if room <= 0:
-            return 1.0
-        power = min(power, room)
-    return 2.0 ** power
+    return 2.0 ** loops.limited_power(factor, world.n, room)
 
 
 def at_top(obj):
@@ -2581,15 +2561,9 @@ class Floor:
         self.batch = batch_for_shader(cube[0], 'TRIS', triangle)
         self.composite_batch = batch_for_shader(cube[1], 'TRIS', triangle)
         self.offscreens = {}       # by size, for the lower resolution pass and the tile pass
-        self.resolution = None     # auto_resolution's, a multiple of RESOLUTION_STEP
-        self.fast_frames = 0
-        self.recent_missed = []
-        self.raise_wait = FAST_FRAMES_TO_RAISE
-        self.raised = False
+        self.auto = auto_resolution.AutoResolution()
         self.plans = {}            # object name -> (key, plan, level buffer)
         self.values = None         # kept until the next draw, past this one's use of it
-        self.frame_time = None
-        self.last_draw = None
         self.last_through = None   # when a view looking through the drone camera last drew
         self.plan_ms = 0.0
         self.empty_textures = None # for the planet's samplers without a planet
@@ -2643,46 +2617,13 @@ class Floor:
             self.last_through = now
         # The drone's ground (3D tiles) is the view's looking through the drone camera, any view's without one
         drone_view = looking_through or self.last_through is None or now - self.last_through > 0.5
-        # Frame time, between draws of the view looking through the drone camera (or any view, without one)
-        if looking_through or not self.frame_time:
-            if self.last_draw is not None:
-                interval = now - self.last_draw
-                self.frame_time = interval if self.frame_time is None or interval > 0.5 else (
-                    0.9 * self.frame_time + 0.1 * interval)
-                if interval < 0.1:
-                    self.adjust_resolution(obj, interval)
-            self.last_draw = now
+        self.auto.drawn(looking_through, setting(obj, "resolution"), setting(obj, "auto_resolution"), now)
         self.draw_view(scene, obj, region_data.view_matrix, region_data.window_matrix, context.region.width,
                        context.region.height, clip_end, drone_scale, self.current_resolution(obj),
                        drone_view=drone_view)
 
     def current_resolution(self, obj):
-        top = min(1.0, max(MIN_RESOLUTION, float(setting(obj, "resolution"))))
-        if not setting(obj, "auto_resolution"):
-            return top
-        if self.resolution is None or self.resolution > top:
-            self.resolution = top
-        return self.resolution
-
-    def adjust_resolution(self, obj, interval):
-        """auto_resolution, after each frame of interval seconds: as the Mandelbrot floor's (mandelbrot.py)"""
-        if not setting(obj, "auto_resolution"):
-            return
-        top = min(1.0, max(MIN_RESOLUTION, float(setting(obj, "resolution"))))
-        current = self.current_resolution(obj)
-        missed = interval > MISSED_FRAME
-        self.recent_missed = (self.recent_missed + [missed])[-RECENT_FRAMES:]
-        self.fast_frames = 0 if missed else self.fast_frames + 1
-        if sum(self.recent_missed) >= MISSED_TO_LOWER and current > MIN_RESOLUTION:
-            self.resolution = max(MIN_RESOLUTION, round((current - RESOLUTION_STEP) / RESOLUTION_STEP) * RESOLUTION_STEP)
-            self.raise_wait = min(MAX_RAISE_WAIT, self.raise_wait * 2) if self.raised else FAST_FRAMES_TO_RAISE
-            self.raised = False
-            self.recent_missed = []
-            self.fast_frames = 0
-        elif self.fast_frames >= self.raise_wait and current < top:
-            self.resolution = min(top, current + RESOLUTION_STEP)
-            self.raised = True
-            self.fast_frames = 0
+        return self.auto.current(setting(obj, "resolution"), setting(obj, "auto_resolution"))
 
     def draw_view(self, scene, obj, view_matrix, window_matrix, width, height, clip_end, drone_scale, resolution=1.0,
                   into=None, drone_view=True):

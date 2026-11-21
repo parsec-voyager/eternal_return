@@ -14,9 +14,11 @@ isn't in Q(sqrt 5)). xy_float() turns them into floats accurate to the last bit 
 a tile's place a few units from the map's origin is written with thousand-bit coefficients that cancel, and plain float
 arithmetic would make it garbage. The Ammann-Beenker prototype's exact.py (~/blender_tests/substitution) is the N = 8
 original; the girih prototype's test_penrose.py (~/blender_tests/girih) checks this agrees with it. Used by
-substitution.py's endless girih floors (penrose.py, darb_imam.py).
+substitution.py's endless girih floors (penrose.py, darb_imam.py), and with the Q(sqrt 5) numbers below by the Penrose
+surface maps (surface_penrose.py, parts_penrose.py).
 """
 
+import functools
 import math
 from fractions import Fraction
 
@@ -204,6 +206,99 @@ def float_sqrt(a, b, d, bits=64):
         return num / (den << shift)
     except OverflowError:
         return math.inf if num > 0 else -math.inf
+
+
+# ----- Q(sqrt 5), N = 10's coordinates: exact numbers (a, b), ints or Fractions, meaning a + b sqrt 5 -----
+
+def q_add(x, y):
+    return x[0] + y[0], x[1] + y[1]
+
+
+def q_sub(x, y):
+    return x[0] - y[0], x[1] - y[1]
+
+
+def q_mul(x, y):
+    return x[0] * y[0] + 5 * x[1] * y[1], x[0] * y[1] + x[1] * y[0]
+
+
+def q_scale(x, k):
+    return x[0] * k, x[1] * k
+
+
+def q_float(x):
+    return float_sqrt(x[0], x[1], 5)
+
+
+def q_fraction(x, bits):
+    """a + b sqrt 5 as a Fraction, sqrt 5 to bits bits"""
+    root = Fraction(math.isqrt(5 << (2 * bits)), 1 << bits)
+    return x[0] + x[1] * root
+
+
+Q_PHI = (Fraction(1, 2), Fraction(1, 2))               # phi = (1 + sqrt 5) / 2
+Q_PHI_INV = (Fraction(-1, 2), Fraction(1, 2))          # 1 / phi = (sqrt 5 - 1) / 2
+_phi_powers = {0: (Fraction(1), Fraction(0))}
+
+
+def q_phi(d):
+    """phi^d exactly, d of either sign. Every 16th power is kept, and the asked ones: a level asks for its own every
+    build."""
+    found = _phi_powers.get(d)
+    if found is None:
+        step, factor = (1, Q_PHI) if d > 0 else (-1, Q_PHI_INV)
+        nearest = max((k for k in list(_phi_powers) if 0 <= k * step <= d * step), key=abs)
+        found = _phi_powers[nearest]
+        for k in range(nearest + step, d + step, step):
+            found = q_mul(found, factor)
+            if k % 16 == 0 or k == d:
+                _phi_powers[k] = found
+    return found
+
+
+@functools.lru_cache(maxsize=4096)
+def phi_power_float(d, shift=0):
+    """2^shift phi^-d as a float, accurate to the last bit however big d and shift are (each alone overflows past
+    1000 or so): phi^d = (L + F sqrt 5) / 2, Lucas and Fibonacci numbers, in whole numbers. Kept: a settle asks for
+    the same few dozen some 200 times (1 ms of every tick deep down, 2026-11-14)."""
+    a, b = 2, 0                          # 2 phi^k = a + b sqrt 5
+    x, y, k = 1, 1, d                    # 2 phi = 1 + sqrt 5, squared as we go
+    while k:
+        if k & 1:
+            a, b = (a * x + 5 * b * y) // 2, (a * y + b * x) // 2
+        x, y = (x * x + 5 * y * y) // 2, (x * y + y * x) // 2
+        k >>= 1
+    # 2 phi^d = a + b sqrt 5 > 0; its float as mantissa and exponent
+    bits = 64
+    shift_bits = bits + 2 * max(a.bit_length(), b.bit_length())
+    big = (a << shift_bits) + math.isqrt(5 * b * b << (2 * shift_bits))          # (2 phi^d) 2^shift_bits
+    e = big.bit_length()
+    mantissa = (big >> max(e - 64, 0)) / 2.0 ** min(e, 64)                     # in [0.5, 1)
+    exponent = e - shift_bits - 1                                              # phi^d = mantissa 2^exponent
+    return math.ldexp(1.0 / mantissa, shift - exponent)
+
+
+# Z[zeta_10] coefficients (a0, a1, a2, a3) in Z[phi]: x = Re(z) and y = Im(z) / sin 36 as p + q phi, whole numbers
+# (phi = 1 + zeta^2 - zeta^3, so no halves: 2 Re(z) for x)
+
+def im_pair(c):
+    """Im(z) / sin 36 for ring coefficients c (..., 4), numpy arrays, as p + q phi: (p, q)"""
+    return c[..., 1], c[..., 2] + c[..., 3]
+
+
+def re2_pair(c):
+    """2 Re(z) for ring coefficients c (..., 4), numpy arrays, as p + q phi: (p, q)"""
+    return 2 * c[..., 0] - c[..., 2] + c[..., 3], c[..., 1] + c[..., 2] - c[..., 3]
+
+
+def ring_im(z):
+    """im_pair() of one ring element (four Python ints)"""
+    return z[1], z[2] + z[3]
+
+
+def ring_re2(z):
+    """re2_pair() of one ring element"""
+    return 2 * z[0] - z[2] + z[3], z[1] + z[2] - z[3]
 
 
 RING8, RING10 = Ring(8), Ring(10)

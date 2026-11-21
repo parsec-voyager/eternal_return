@@ -26,6 +26,36 @@ try:
 except ImportError:          # tests import it by itself
     import background
 
+# A built window is built again once it's this many times wider than a build now would make it (Window.overbuilt():
+# the drone has shrunk under it). Kept, a Penrose level built when it was small on screen kept all its bars out to far
+# past the view as the drone dived on, every level ever drawn (2026-11-13: 580k faces 36 loops down, and every line gone
+# further down, its objects scaled by every loop since past what float32 and the push drivers can place); and a floor's
+# or a giant parts window's corners are float32 from its middle, so they'd be a growing share of the drone's height off.
+OVERBUILT = 4.0
+
+
+class Window:
+    """What a build round the drone was for, as either engine keeps it: the world (its text and n), the window's middle
+    (the camera or the point below it then, map units then: what's built is from it) and half width; with where that is
+    in today's map, kept until the world changes (transform: surface.transform()'s or the lattice's, placed: the
+    engine's own)"""
+
+    def __init__(self, world_text, n, center, window):
+        self.world_text, self.n, self.center, self.window = world_text, n, center, window
+        self.transform = None
+        self.placed = None
+
+    def covers(self, distance, reach, scale=1.0):
+        """Whether the window still holds everything within reach of a point distance from its middle: in the build's
+        units, or in today's with scale, how much bigger map units are now. False for a NaN (a place past float
+        range)."""
+        return distance + reach <= scale * self.window
+
+    def overbuilt(self, wanted, scale=1.0):
+        """Whether the window is more than OVERBUILT times as wide as wanted (units as covers()'s). True for a NaN."""
+        return not scale * self.window <= OVERBUILT * wanted
+
+
 # What a build is worth (2026-11-20), for both engines, as the worker threads' priority (background.submit(): lower
 # first, so its value's negative): value = stake * urgency / cost
 # - stake: the share of the view it puts right (view_share() of what it adds, times how visible that is when it lands: a floor

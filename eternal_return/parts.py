@@ -1653,16 +1653,15 @@ class ExactPiece:
             return float(min(prism.distance_one(u) for prism in shape.prisms[self.kind]) * self.size)
 
 
-class Exact:
-    """The giant levels as built into the map's exact object (kept in memory, by map): the world they were built for,
-    the levels, the window's middle (the camera then, map units then: the object's mesh is from it) and half width,
-    and the pieces in the window"""
+class Exact(schedule.Window):
+    """The giant levels as built into the map's exact object (kept in memory, by map): its window (schedule.Window: the
+    object's mesh is from the camera then), the levels, and the pieces in the window. placed: the world text the
+    object's transform is for."""
 
     def __init__(self, world_text, n, levels, center, window):
-        self.world_text, self.n, self.levels, self.center, self.window = world_text, n, levels, center, window
+        super().__init__(world_text, n, center, window)
+        self.levels = levels
         self.pieces = []
-        self.transform = None        # (world text, offset, scale) of the last transform worked out (transform())
-        self.placed = None           # the world text the object's transform is for
 
 
 def settle_exact(lattice, obj, state, world, text, camera, q, h, clip_end, window, levels, settings, shape, phases,
@@ -1678,8 +1677,8 @@ def settle_exact(lattice, obj, state, world, text, camera, q, h, clip_end, windo
     if not rebuild:
         offset, scale = lattice.transform(world, text, built)
         local = (camera - offset) / scale
-        rebuild = (float(np.linalg.norm(local - built.center)) + clip_end / scale > built.window
-                   or built.window > 4.0 * window / scale)
+        rebuild = (not built.covers(float(np.linalg.norm(local - built.center)), clip_end / scale)
+                   or built.overbuilt(window / scale))
     if rebuild:
         built = state.exact = Exact(world.text(), world.n, (), np.array(camera, dtype=float), window)
         offset, scale = lattice.transform(world, text, built)

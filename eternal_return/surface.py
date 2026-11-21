@@ -52,11 +52,15 @@ from fractions import Fraction
 import numpy as np
 
 try:
+    from . import loops
     from . import parts
+    from . import schedule
     from . import sphere
     from . import tiling
 except ImportError:          # tests import it by itself
+    import loops
     import parts
+    import schedule
     import sphere
     import tiling
 
@@ -724,10 +728,6 @@ def recenter(world, p, reach):
     return world.rho * offset
 
 
-def exact_factor(factor):
-    return sphere.exact_factor(factor)
-
-
 # ----- the point below -----
 
 def nearest_in_face(a, b, w, inv_n, r, box):
@@ -1061,7 +1061,7 @@ def crossing(obj, start_world, end_world):
 
 
 def loop(obj, factor, camera_world):
-    """A loop by factor (a power of 2, see exact_factor()) about the map's origin: a dive, or after the anchor moves to
+    """A loop by factor (a power of 2, see loop_factor()) about the map's origin: a dive, or after the anchor moves to
     the coarser lattice under the camera, a climb. Returns the move of the map's origin the climb made first (world
     units, before the loop: the drone moves by minus it), or None."""
     world = world_of(obj)
@@ -1078,15 +1078,7 @@ def loop(obj, factor, camera_world):
 def loop_factor(obj, factor):
     """The loop the map makes for a loop by factor: the nearest power of 2, a climb no higher than the mesh's own size
     (n = 0), 1.0 if there's no climbing left"""
-    world = world_of(obj)
-    power = round(math.log2(factor)) if factor > 0 else 0
-    if power == 0:
-        power = 1 if factor > 1.0 else -1
-    if power < 0:
-        power = max(power, -world.n)
-        if power == 0:
-            return 1.0
-    return 2.0 ** power
+    return 2.0 ** loops.limited_power(factor, world_of(obj).n)
 
 
 def at_top(obj):
@@ -1114,16 +1106,14 @@ def drone_clip_end():
 
 # ----- the floor: the surface near the drone -----
 
-class FloorBuilt:
-    """The floor as built into its object (kept in memory, by map): the world it was built for, the window's middle (the
-    camera then, map units then: the mesh is from it) and half width, the level of its cells, and if any were split
-    near the camera (refine()), the drone's height then (map units then), else None"""
+class FloorBuilt(schedule.Window):
+    """The floor as built into its object (kept in memory, by map): its window (schedule.Window: the mesh is from the
+    camera then), the level of its cells, and if any were split near the camera (refine()), the drone's height then
+    (map units then), else None. placed: the world text the object's transform is for."""
 
     def __init__(self, world_text, n, center, window, level, split_height=None):
-        self.world_text, self.n, self.center, self.window, self.level = world_text, n, center, window, level
-        self.split_height = split_height
-        self.transform = None        # (world text, offset, scale) of the last transform worked out (transform())
-        self.placed = None           # the world text the object's transform is for
+        super().__init__(world_text, n, center, window)
+        self.level, self.split_height = level, split_height
 
 
 _floors = {}         # map object name -> FloorBuilt
@@ -1184,6 +1174,24 @@ def floor_level(world, below, window, cells):
     if cell <= 0.0 or not math.isfinite(cell):
         return world.n
     return max(0, world.n - math.floor(math.log2(wanted / cell)))
+
+
+def face_grid(top, f, IR, JR, M, ref, reach, cap, scale=1.0):
+    """The grid of face f's level points (M = 2^level a mesh edge) within reach of the origin, found from one of them,
+    (IR, JR), placed at ref: their offsets from it (gi, gj, floats, (a, b)) and places (a, b, 3), from ref along the
+    face's bilinear patch, scale times the level's own units (Topology.frame()). Out to the face's sides, and no more
+    than cap steps either way. Also the steps it reaches and, for a triangle, rem = M - IR - JR (how far its long side
+    is, in steps of I + J; past 2^60, out of reach anyway). The parameters can be any size (Python ints); the offsets
+    are small."""
+    a, b, w = top.frame(f, IR, JR, M)
+    sigma = max(float(top.sigma_lo[f]), 1e-12 * float(top.sigma_hi[f]), 1e-300) * scale
+    D = min(int(math.ceil((float(np.linalg.norm(ref)) + reach) / sigma)) + 1, cap)
+    dI = np.arange(max(0, IR - D) - IR, min(M, IR + D) - IR + 1, dtype=np.float64)
+    dJ = np.arange(max(0, JR - D) - JR, min(M, JR + D) - JR + 1, dtype=np.float64)
+    gi, gj = np.meshgrid(dI, dJ, indexing="ij")
+    inv_m = math.ldexp(1.0, 1 - M.bit_length())          # 1 / M, for an M past float range too
+    places = ref + scale * (gi[..., None] * a + gj[..., None] * b + (gi * gj * inv_m)[..., None] * w)
+    return D, gi, gj, places, min(M - IR - JR, 1 << 60)
 
 
 def face_cells(k, grid, offsets, rem):
@@ -1286,21 +1294,10 @@ def build_floor(world, camera, below, window, settings_cells):
             ref = world.rho * d_float(d_sub(top.point(f, IR, JR, level), camera_point), n)
             if not np.all(np.isfinite(ref)):
                 continue
-            a, b, w = top.frame(f, IR, JR, M)
-            sigma = max(float(top.sigma_lo[f]), 1e-12 * float(top.sigma_hi[f]), 1e-300) * scale
-            D = min(int(math.ceil((float(np.linalg.norm(ref)) + window) / sigma)) + 1, FLOOR_REACH)
-            I_lo, I_hi = max(0, IR - D), min(M, IR + D)
-            J_lo, J_hi = max(0, JR - D), min(M, JR + D)
-            if I_lo >= I_hi or J_lo >= J_hi:
+            D, gi, gj, grid, rem = face_grid(top, f, IR, JR, M, ref, window, FLOOR_REACH, scale)
+            if min(gi.shape) < 2:
                 continue
-            dI = np.arange(I_lo - IR, I_hi - IR + 1, dtype=np.float64)
-            dJ = np.arange(J_lo - JR, J_hi - JR + 1, dtype=np.float64)
-            gi, gj = np.meshgrid(dI, dJ, indexing="ij")
-            grid = ref + scale * (gi[..., None] * a + gj[..., None] * b
-                                  + (gi * gj * math.ldexp(1.0, -level))[..., None] * w)
             offsets = np.stack([gi, gj], axis=-1).astype(np.int64)
-            # How far a triangle's long side is, in steps of I + J (past 2^60, out of reach anyway)
-            rem = min(M - IR - JR, 1 << 60)
             cells, at = face_cells(k, grid, offsets, rem)
             near = keep(cells, f)
             if not near.any():
@@ -1347,7 +1344,7 @@ def settle_floor(obj, world, camera, below, clip_end):
         offset, scale = transform(world, text, built)
         local = (camera - offset) / scale
         moved = float(np.linalg.norm(local - built.center))
-        rebuild = moved + clip_end / scale > built.window or built.window > 4.0 * window / scale
+        rebuild = not built.covers(moved, clip_end / scale) or built.overbuilt(window / scale)
         if built.split_height is not None:
             height = abs(below.height) * world.rho / scale
             rebuild |= moved > FLOOR_FOLLOW * height or height < 0.5 * built.split_height
@@ -1466,31 +1463,22 @@ class LocalLattice:
                 continue
             done.add(f)
             k = top._sides[f]
-            a, b, w = top.frame(f, IR, JR, M)
-            sigma = max(float(top.sigma_lo[f]), 1e-12 * float(top.sigma_hi[f]), 1e-300)
-            D = int(math.ceil((float(np.linalg.norm(PR)) + r_out) / sigma)) + 1
-            D = min(D, 4 * int(math.ceil(radius)) + 16)
-            I_lo, I_hi = max(0, IR - D), min(M, IR + D)
-            J_lo, J_hi = max(0, JR - D), min(M, JR + D)
-            if I_lo > I_hi or J_lo > J_hi:
+            _D, gi, gj, pos, rem = face_grid(top, f, IR, JR, M, PR, r_out, 4 * int(math.ceil(radius)) + 16)
+            if not gi.size:
                 continue
-            # Offsets from the reference, small; the parameters themselves can be any size (Python ints)
-            dI = np.arange(I_lo - IR, I_hi - IR + 1, dtype=np.float64)
-            dJ = np.arange(J_lo - JR, J_hi - JR + 1, dtype=np.float64)
-            gi, gj = np.meshgrid(dI, dJ, indexing="ij")
-            pos = (PR + gi[..., None] * a + gj[..., None] * b + (gi * gj * inv_m)[..., None] * w)
+            dI, dJ = gi[:, 0], gj[0, :]
             keep = np.linalg.norm(pos, axis=-1) <= r_out
             rows = np.full(gi.shape, -1, dtype=np.int64)
             # Inside the face: its own keys, no others' (vectorized); on its sides, the shared keys. A triangle's
-            # points are those with I + J <= M, its long side where that's M (past 2^60 steps, out of reach).
+            # points are those with I + J <= M, its long side where that's M.
             inner = np.ones(gi.shape, dtype=bool)
-            inner[0, :] &= I_lo != 0
-            inner[:, 0] &= J_lo != 0
+            inner[0, :] &= IR + int(dI[0]) != 0
+            inner[:, 0] &= JR + int(dJ[0]) != 0
             if k == 4:
-                inner[-1, :] &= I_hi != M
-                inner[:, -1] &= J_hi != M
+                inner[-1, :] &= IR + int(dI[-1]) != M
+                inner[:, -1] &= JR + int(dJ[-1]) != M
             else:
-                rem = float(min(M - IR - JR, 1 << 60))
+                rem = float(rem)
                 keep &= gi + gj <= rem
                 inner &= gi + gj < rem
             inside = keep & inner

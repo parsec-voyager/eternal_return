@@ -51,7 +51,8 @@ from . import schedule
 from . import substitution
 from . import surface
 from . import tiling
-from .cyclotomic import RING10 as RING, float_sqrt
+from .cyclotomic import (RING10 as RING, Q_PHI, Q_PHI_INV, float_sqrt, phi_power_float, q_add, q_mul, q_phi, q_scale,
+                         q_sub)
 
 PROPERTY = "surface_penrose"
 KIND = "rhomb_kind"
@@ -139,65 +140,8 @@ def is_penrose(obj):
     return settings is not None and settings.get("rule") == "penrose"
 
 
-# ----- exact numbers of Q(sqrt 5): (a, b) Fractions, a + b sqrt 5 -----
-
-def q_add(x, y):
-    return x[0] + y[0], x[1] + y[1]
-
-
-def q_sub(x, y):
-    return x[0] - y[0], x[1] - y[1]
-
-
-def q_mul(x, y):
-    return x[0] * y[0] + 5 * x[1] * y[1], x[0] * y[1] + x[1] * y[0]
-
-
-def q_scale(x, k):
-    return x[0] * k, x[1] * k
-
-
-Q_PHI_INV = (Fraction(-1, 2), Fraction(1, 2))          # 1 / phi = (sqrt 5 - 1) / 2
 Q_COS = {penrose.THIN: (Fraction(-1, 4), Fraction(-1, 4)),     # cos 144 = -(1 + sqrt 5) / 4
          penrose.THICK: (Fraction(-1, 4), Fraction(1, 4))}     # cos 72 = (sqrt 5 - 1) / 4
-_phi_inv_powers = {0: (Fraction(1), Fraction(0))}
-
-
-def q_phi_inv(d):
-    """phi^-d, exactly"""
-    found = _phi_inv_powers.get(d)
-    if found is None:
-        nearest = max(k for k in list(_phi_inv_powers) if k <= d)
-        found = _phi_inv_powers[nearest]
-        for k in range(nearest + 1, d + 1):
-            found = q_mul(found, Q_PHI_INV)
-            if k % 16 == 0 or k == d:
-                _phi_inv_powers[k] = found
-    return found
-
-
-@functools.lru_cache(maxsize=4096)
-def phi_power_float(d, shift=0):
-    """2^shift phi^-d as a float, accurate to the last bit however big d and shift are (each alone overflows past
-    1000 or so): phi^d = (L + F sqrt 5) / 2, Lucas and Fibonacci numbers, in whole numbers. Kept: a settle asks for
-    the same few dozen some 200 times (1 ms of every tick deep down, 2026-11-14)."""
-    a, b = 2, 0                          # 2 phi^k = a + b sqrt 5
-    x, y, k = 1, 1, d                    # 2 phi = 1 + sqrt 5, squared as we go
-    while k:
-        if k & 1:
-            a, b = (a * x + 5 * b * y) // 2, (a * y + b * x) // 2
-        x, y = (x * x + 5 * y * y) // 2, (x * y + y * x) // 2
-        k >>= 1
-    # 2 phi^d = a + b sqrt 5 > 0; its float as mantissa and exponent
-    bits = 64
-    shift_bits = bits + 2 * max(a.bit_length(), b.bit_length())
-    big = (a << shift_bits) + math.isqrt(5 * b * b << (2 * shift_bits))          # (2 phi^d) 2^shift_bits
-    e = big.bit_length()
-    mantissa = (big >> max(e - 64, 0)) / 2.0 ** min(e, 64)                     # in [0.5, 1)
-    exponent = e - shift_bits - 1                                              # phi^d = mantissa 2^exponent
-    return math.ldexp(1.0 / mantissa, shift - exponent)
-
-
 # ----- each face's ideal rhomb -----
 
 class Faces:
@@ -245,7 +189,7 @@ class Faces:
         kind = int(self.kind[f])
         v = (ya, yb) if kind == penrose.THIN else q_mul((ya, yb), Q_PHI_INV)     # sin 72 = sin 36 phi
         u = q_sub((xa, xb), q_mul(v, Q_COS[kind]))
-        scale = q_phi_inv(d)
+        scale = q_phi(-d)
         return q_mul(u, scale), q_mul(v, scale)
 
     def uv_float(self, f, dx, dy):
@@ -352,24 +296,8 @@ class Centers:
             uq, vq = (Fraction(u), Fraction(0)), (Fraction(v), Fraction(0))
             kind = int(faces.kind[f])
             x = q_add(uq, q_mul(vq, Q_COS[kind]))
-            y = vq if kind == penrose.THIN else q_mul(vq, (Fraction(1, 2), Fraction(1, 2)))      # v phi
+            y = vq if kind == penrose.THIN else q_mul(vq, Q_PHI)      # v phi
             self.ideal[f] = (x, y)
-
-
-_phi_powers = {0: (Fraction(1), Fraction(0))}
-
-
-def q_phi(d):
-    """phi^d, exactly"""
-    found = _phi_powers.get(d)
-    if found is None:
-        nearest = max(k for k in list(_phi_powers) if k <= d)
-        found = _phi_powers[nearest]
-        for k in range(nearest + 1, d + 1):
-            found = q_mul(found, (Fraction(1, 2), Fraction(1, 2)))
-            if k % 16 == 0 or k == d:
-                _phi_powers[k] = found
-    return found
 
 
 # A level's tiles' places are whole-number coefficients from their face's root (int64): re-rooted at a tile near the
@@ -1161,11 +1089,6 @@ SPLIT_FOLLOW = 0.7
 SPLIT_AHEAD = 0.5
 # inside_bar() looks at the tiles within this many level units of the point
 INSIDE_REACH = 2.5
-# A drawn level is built again once its window is this many times wider than wanted (the drone has shrunk under it):
-# kept, a level built when it was small on screen kept all its bars out to far past the view as the drone dived on,
-# every level ever drawn (2026-11-13: 580k faces 36 loops down, and every line gone further down, its objects scaled
-# by every loop since past what float32 and the push drivers can place)
-OVERBUILT = 4.0
 # The finest levels fade in in this many steps: each step writes every corner's color again and has Blender send the
 # mesh to the GPU again, and with substitution.fade()'s 32, three or four levels fading in at once in a dive came to
 # 70 a second, more than one a tick (2026-11-14)
@@ -1340,20 +1263,19 @@ def split_along(corners, counts, spacing, seen, step, span=math.inf):
     return joined, np.concatenate([counts[whole], out_counts]), np.concatenate([whole, parent])
 
 
-class Drawn:
-    """What a level was built for (world, center, window: see covers()), how much of its colors it shows, which of
+class Drawn(schedule.Window):
+    """What a level was built for (its window, schedule.Window: see stale()), how much of its colors it shows, which of
     its faces are outline strips (edges), whether it was built coarse, and if so, whether a bar holds the whole window
-    (cover: its code, level_bars(), or None), and whether it came out empty"""
+    (cover: its code, level_bars(), or None), and whether it came out empty. placed: placed()'s."""
 
     def __init__(self, world_text, n, center, window, shown, cover=None, edges=None, coarse=False, camera=None,
                  split_height=None, empty=False, sizes=None):
-        self.world_text, self.n, self.center, self.window, self.shown = world_text, n, center, window, shown
+        super().__init__(world_text, n, center, window)
+        self.shown = shown
         self.cover, self.edges, self.coarse = cover, edges, coarse
         self.empty = empty           # built coarse, with no bar in its box (stale())
         self.split_height = split_height     # the drone's height if bars were cut into pieces for it (map units then)
         self.camera = camera         # where the camera was, if outlines were drawn for it (map units then), else None
-        self.transform = None
-        self.placed = None           # placed()'s
         self.sizes = sizes           # each face's corners, for recoloring
         self.corner_codes = None     # each corner's code, the first time it's recolored
 
@@ -1374,7 +1296,7 @@ def placed(world, text, record):
 
 def stale(world, text, record, foot, window, camera, outline_within, height, reach_wanted=None):
     """Whether a drawn level needs building again: its window no longer covering or far wider than a build now would
-    be (OVERBUILT times reach_wanted, window by default), its bars cut into pieces for a drone much higher
+    be (schedule.OVERBUILT times reach_wanted, window by default), its bars cut into pieces for a drone much higher
     (SPLIT_FOLLOW), or its outlines drawn for a camera half their reach away (or none drawn, and the drone now near
     enough for some). foot and camera as tuples: where they'll be once a build asked for now is drawn.
 
@@ -1384,12 +1306,11 @@ def stale(world, text, record, foot, window, camera, outline_within, height, rea
     smaller one (the coarse levels with no bar in sight, some 30 deep down, were each built again every 1.5 s as the
     sight shrank: 12 builds a second of nothing)."""
     _text, center, record_camera, scale = placed(world, text, record)
-    reach = scale * record.window
-    if not math.dist(center, foot) + window <= reach:
+    if not record.covers(math.dist(center, foot), window, scale):
         return True
     if record.empty:
         return False
-    if not reach <= OVERBUILT * (window if reach_wanted is None else reach_wanted):
+    if record.overbuilt(window if reach_wanted is None else reach_wanted, scale):
         return True
     if record.split_height is not None and height < SPLIT_FOLLOW * scale * record.split_height:
         return True
@@ -1926,7 +1847,7 @@ def built_level(world, faces, level, motifs, coarse, foot, center, reach, camera
     # tile it had when it was small on screen, and coarse builds went through tens of thousands of them deep down
     keep = (reach + float(np.linalg.norm(center - foot))) * SLACK
     with np.errstate(over="ignore", invalid="ignore"):
-        if level.window > OVERBUILT * keep and len(level.face) > TRIM_MIN:
+        if level.window > schedule.OVERBUILT * keep and len(level.face) > TRIM_MIN:
             centers = Centers(world, faces, below, foot, keep) if world.n >= FLOAT_N else None
             level.keep_near(world, faces, centers, keep, foot)
     if coarse and len(level.coef) and np.abs(level.coef).max() > COARSE_COEF:
