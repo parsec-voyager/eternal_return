@@ -220,7 +220,7 @@ def lattice_of(obj):
     surface = _surface()
     if surface.setting(obj, "rule") == "penrose":
         return _module("parts_penrose").LATTICE
-    return surface.LATTICE
+    return surface.lattice_of(obj)
 
 
 def _module(name):

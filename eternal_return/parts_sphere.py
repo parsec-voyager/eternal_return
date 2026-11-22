@@ -102,9 +102,9 @@ class CubeChart:
     def key_point(self, key, M):
         """A key of a level of M cells across as a point in the level's cells, from the cube's middle"""
         top = self.topology()
-        ints, e = top.key_point(key, M.bit_length() - 1)
+        ints, d = top.key_point(key, M)
         # The cube is 2 across, M cells
-        return tuple(Fraction(v * M, 1 << (e + 1)) for v in ints)
+        return tuple(Fraction(v * M, 2 * d) for v in ints)
 
     @staticmethod
     def scaled(point, factor):
@@ -252,7 +252,7 @@ class LocalPieces(parts.LaidOut):
     the map's anchor, kept for every point looked at (parts._local)"""
 
     def __init__(self, chart, level, center, radius, settings, shape):
-        lattice = self.lattice = surface.LocalLattice(chart.topology(), level, center, radius)
+        lattice = self.lattice = surface.LocalLattice(chart.topology(), 1 << level, center, radius)
         places, normals = chart.local_placed(level, center, lattice)
         self.lay_out(lattice.inner, lattice.neighbors, lattice.edges, lattice.center_row, places, normals, settings,
                      shape)
@@ -473,7 +473,7 @@ class SphereLattice:
     def first_radius(self, world, level, build, wanted):
         """The coarsest level is built whole once, if its points are few (surface.is_whole()), else to "build" of its
         cells"""
-        return math.inf if surface.is_whole(self.chart.topology(), level) else build
+        return math.inf if surface.is_whole(self.chart.topology(), 1 << level) else build
 
     def pieces(self, world, level, center, radius, settings, shape):
         return Pieces(self.chart, world, level, center, radius, settings, shape)

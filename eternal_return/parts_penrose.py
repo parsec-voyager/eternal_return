@@ -495,7 +495,6 @@ def tiles_pieces(world, faces, st, level, center, window, radius, settings, shap
 class PenroseLattice(surface.MeshLattice):
     """parts.py's view of a Penrose surface map's lattice (surface.MeshLattice is the square and triangle maps')"""
 
-    ratio = PHI
     # Frames on every other level, phi^2 apart: on every level they were dense (the user, 2026-11-16)
     level_step = 2
 
@@ -650,7 +649,7 @@ class PenroseLattice(surface.MeshLattice):
         return found
 
 
-LATTICE = PenroseLattice()
+LATTICE = PenroseLattice(PHI)
 
 
 def forget():

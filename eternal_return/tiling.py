@@ -1,7 +1,12 @@
 """Endless tilings: the parts an endless map's lattice draws in every cell of every level, at their full size forever.
 
 An endless map (endless.py) stands on a lattice of square cells on its floor plane, each level's cells a whole loop
-factor bigger than the next one's, so every cell splits factor x factor, at every level, forever. Its motif is a few
+factor bigger than the next one's, so every cell splits factor x factor, at every level, forever. Square in the map
+object's own coordinates, that is: everything here and in endless.py is worked out in them, so a map object with a shear
+in its matrix (a parent inverse can hold one) has parallelogram cells, and with a motif of two triangles a cell, an
+endless plane of equilateral triangles, each splitting factor x factor (2026-11-21: build_point_line_plane.py
+--triangles; a window or reach in its local units covers as far in the world as long as the shear's inverse has rows
+of unit length). Its motif is a few
 parts, each drawn in every cell of every level in cell units, so it scales with its level: flat ones on the floor
 plane, like the Inferno's star outlines and gold lines, or solid ones standing on it, like its pillars or 2d_time's
 octagon pillars. A part is convex pieces (polygons in plan, extruded from low to high for a solid part), colored by the

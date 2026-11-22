@@ -216,13 +216,13 @@ def exact_offset(world, f, u, v):
     top = world.topology
     p0, eu, ev, tw = top.exact[f]
     uv = q_mul(u, v)
-    ax, ae = world.anchor_point()
+    ax, ad = world.anchor_point()
     scale = 1 << top.E
     out = []
     for k in range(3):
         coordinate = q_add(q_add((Fraction(p0[k]), Fraction(0)), q_scale(u, eu[k])),
                            q_add(q_scale(v, ev[k]), q_scale(uv, tw[k])))
-        coordinate = q_sub(q_scale(coordinate, Fraction(1, scale)), (Fraction(ax[k], 1 << ae), Fraction(0)))
+        coordinate = q_sub(q_scale(coordinate, Fraction(1, scale)), (Fraction(ax[k], ad), Fraction(0)))
         out.append(float_sqrt(coordinate[0] * (1 << world.n), coordinate[1] * (1 << world.n), 5))
     return world.rho * np.array(out)
 

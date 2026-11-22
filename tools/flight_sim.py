@@ -270,7 +270,7 @@ def ray_cast_select(m, named=None):
     return click_center_of_viewport
 
 
-def make_operator(m, events, clock, snap, click_select=None, moved=None, out=None):
+def make_operator(m, events, clock, snap, click_select=None, moved=None, out=None, snap_world=None):
     """A plain class with ER_OT_Fly's methods (a registered operator can't be made outside an operator call),
     wrapped to log loops and wraps, and to measure their seams: the view rendered (by snap(), from the drone camera)
     just before and just after, at the same instant. moved(scale, before, after), if given, is told how each loop, wrap
@@ -282,14 +282,30 @@ def make_operator(m, events, clock, snap, click_select=None, moved=None, out=Non
 
     def snap():
         """The view as the add-on leaves it at the end of the tick: an endless fractal's level objects and eye are only
-        put in place then (its fractal.settle()), so a render just after a loop, mid-tick, has to do it first"""
+        put in place then (its fractal.settle()), and a sphere or surface map's floor and 3D parts (surface.settle(),
+        parts.settle(), 2026-11-21: after a loop they're still the size they were, the whole torus 8 times too small),
+        so a render just after a loop, mid-tick, has to do it first"""
         if hasattr(getattr(m, "fractal", None), "settle"):
             bpy.context.view_layer.update()
             for obj in bpy.context.scene.objects:
                 if m.fractal.is_fractal(obj):
                     m.fractal.settle(obj, m.drone_camera.matrix_world)
                     m.fractal.follow(obj, m.drone_camera.matrix_world)
+        if hasattr(m, "surface") and hasattr(m, "sphere"):
+            bpy.context.view_layer.update()
+            camera = m.drone_camera.matrix_world
+            for obj in m.sphere.sphere_objects(bpy.context.scene) + m.surface.surface_objects(bpy.context.scene):
+                m.surface.settle(obj, camera.translation)
+                if m.parts.is_parts(obj):
+                    m.parts.settle(obj, camera.translation, view=camera.to_3x3())
+            bpy.context.view_layer.update()
         return raw_snap()
+
+    def anchors(op):
+        """The sphere and surface maps' anchors, which a recenter moves (their state text)"""
+        if not hasattr(op, "sphere_maps"):
+            return {}
+        return {obj.name: obj.get(m.anchored_map(obj).STATE) for obj in op.sphere_maps()}
 
     # The operator's own methods and its mixins' (flight.FlightFeatures), not bpy's
     methods = {}
@@ -381,7 +397,23 @@ def make_operator(m, events, clock, snap, click_select=None, moved=None, out=Non
                 seam("WRAP", f"substitution recenter by {next(v for v in vectors if v is not None)}", before, snap())
                 return result
             if not any(any(s) for s in steps):
-                return original_recenter(self)
+                # A sphere or surface map moves its anchor under the drone and the drone back by as much: a recenter
+                # can't be foreseen cheaply, so the view before it is the map as it was, moved with the drone (the
+                # pop check had each one as a pop of the whole map). Measured as a seam, like the others.
+                held = anchors(self)
+                if not held or snap_world is None:
+                    return original_recenter(self)
+                old_world, start = world_snapshot(m, bpy.context.scene), camera.copy()
+                result = original_recenter(self)
+                if anchors(self) == held:
+                    return result
+                bpy.context.view_layer.update()
+                shift = m.drone_camera.matrix_world.translation - start
+                before = snap_world((({name: Matrix.Translation(shift) @ matrix
+                                       for name, matrix in old_world[0].items()}), old_world[1], old_world[2]))
+                tell(1.0, start)
+                seam("WRAP", f"anchor recenter by {tuple(round(c, 3) for c in shift)}", before, snap())
+                return result
             before, start = snap(), camera.copy()
             result = original_recenter(self)
             build_unbuilt(m)
@@ -855,6 +887,11 @@ def main():
         bpy.ops.render.render(write_still=True)
         return load_pixels(snap_path, width, height)
 
+    def snap_world(snapshot):
+        """The view with the map as in an earlier world_snapshot()"""
+        render_with_world(m, scene, snapshot, snap_path)
+        return load_pixels(snap_path, width, height)
+
     events = []
     # start.track: the point the harness keeps aiming at, in start_origin()'s coordinates, moved along with the drone
     # camera by loops, wraps and recenters (the same scaling and shift turns where it was looking into where it looks)
@@ -890,7 +927,7 @@ def main():
 
     if args.seed is not None:
         random.seed(args.seed)
-    op = make_operator(m, events, clock, snap, plan.get("start", {}).get("click_select"), moved, out)
+    op = make_operator(m, events, clock, snap, plan.get("start", {}).get("click_select"), moved, out, snap_world)
     # Real flights start wherever the timeline was left, not at the simulation's start frame, so a cleared simulation
     # has nothing to show for a moment
     scene.frame_set(int(plan.get("start_frame", 1000)))
