@@ -264,24 +264,30 @@ def q_phi(d):
 
 @functools.lru_cache(maxsize=4096)
 def phi_power_float(d, shift=0):
-    """2^shift phi^-d as a float, accurate to the last bit however big d and shift are (each alone overflows past
-    1000 or so): phi^d = (L + F sqrt 5) / 2, Lucas and Fibonacci numbers, in whole numbers. Kept: a settle asks for
-    the same few dozen some 200 times (1 ms of every tick deep down, 2026-11-14)."""
+    """2^shift phi^-d as a float, accurate to the last bit however big d (of either sign) and shift are (each alone
+    overflows past 1000 or so): phi^|d| = (L + F sqrt 5) / 2, Lucas and Fibonacci numbers, in whole numbers. Kept: a
+    settle asks for the same few dozen some 200 times (1 ms of every tick deep down, 2026-11-14). Past a float's range,
+    inf (an endless plane's level 0 is 2^3082 map units a tile) or 0."""
     a, b = 2, 0                          # 2 phi^k = a + b sqrt 5
-    x, y, k = 1, 1, d                    # 2 phi = 1 + sqrt 5, squared as we go
+    x, y, k = 1, 1, abs(d)               # 2 phi = 1 + sqrt 5, squared as we go (a negative k never shifted down to 0)
     while k:
         if k & 1:
             a, b = (a * x + 5 * b * y) // 2, (a * y + b * x) // 2
         x, y = (x * x + 5 * y * y) // 2, (x * y + y * x) // 2
         k >>= 1
-    # 2 phi^d = a + b sqrt 5 > 0; its float as mantissa and exponent
+    # 2 phi^|d| = a + b sqrt 5 > 0; its float as mantissa and exponent
     bits = 64
     shift_bits = bits + 2 * max(a.bit_length(), b.bit_length())
-    big = (a << shift_bits) + math.isqrt(5 * b * b << (2 * shift_bits))          # (2 phi^d) 2^shift_bits
+    big = (a << shift_bits) + math.isqrt(5 * b * b << (2 * shift_bits))          # (2 phi^|d|) 2^shift_bits
     e = big.bit_length()
     mantissa = (big >> max(e - 64, 0)) / 2.0 ** min(e, 64)                     # in [0.5, 1)
-    exponent = e - shift_bits - 1                                              # phi^d = mantissa 2^exponent
-    return math.ldexp(1.0 / mantissa, shift - exponent)
+    exponent = e - shift_bits - 1                                              # phi^|d| = mantissa 2^exponent
+    try:
+        if d >= 0:
+            return math.ldexp(1.0 / mantissa, shift - exponent)
+        return math.ldexp(mantissa, shift + exponent)
+    except OverflowError:
+        return math.inf
 
 
 # Z[zeta_10] coefficients (a0, a1, a2, a3) in Z[phi]: x = Re(z) and y = Im(z) / sin 36 as p + q phi, whole numbers

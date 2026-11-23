@@ -403,10 +403,12 @@ class Centers:
                 gap = foot - place
                 if not math.hypot(*gap) <= window:          # hypot: a far face's gap squared overflows
                     continue
-                jacobian = world.rho * math.ldexp(1.0, n) * np.stack(
-                    [top.eu[g] + float(ve) * top.w[g], top.ev[g] + float(ue) * top.w[g]], axis=1)
+                # The step solved in the mesh's units (map units over rho 2^n, as many as there are: 2^n alone is past
+                # a float's range 1024 levels down, an endless plane's from the start), then scaled exactly
+                jacobian = np.stack([top.eu[g] + float(ve) * top.w[g], top.ev[g] + float(ue) * top.w[g]], axis=1)
                 step = np.linalg.lstsq(jacobian, gap, rcond=None)[0]
-                self.uv[g] = (ue + Fraction(float(step[0])), ve + Fraction(float(step[1])))
+                unit = Fraction(world.rho) * (1 << n)
+                self.uv[g] = (ue + Fraction(float(step[0])) / unit, ve + Fraction(float(step[1])) / unit)
                 self.extra[g] = float(np.linalg.norm(jacobian @ step - gap))
                 queue.append(g)
         # Each one's ideal point (x, and y over sin 36: both Q(sqrt 5) pairs)
@@ -1792,7 +1794,10 @@ def inside_bar(obj, world, faces, below, level, centers, d):
     # How far the point is from its face's sides: past them, other faces' bars aren't looked at
     u, v = (float(x) for x in centers.uv[f])
     inside = min(u, v, 1.0 - u - v) if world.topology.sides[f] == 3 else min(u, 1.0 - u, v, 1.0 - v)
-    side = inside * world.rho * math.ldexp(float(world.topology.sigma_lo[f]), world.n)
+    try:
+        side = inside * world.rho * math.ldexp(float(world.topology.sigma_lo[f]), world.n)
+    except OverflowError:
+        side = math.inf                     # deep down (an endless plane's), the face's sides are past any sight
     clearance = min(side, level.window)
     if not len(rows) or f not in level.roots:
         return None, clearance
