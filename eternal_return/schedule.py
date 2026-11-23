@@ -1,5 +1,5 @@
 """What the endless engines build ahead of the drone, and in what order: one policy for the floor's strapwork
-(surface_penrose.py) and the 3D parts (parts.py), which share the worker threads (background.py).
+(surface_substitution.py) and the 3D parts (parts.py), which share the worker threads (background.py).
 
 2026-11-19 (the user, about the floor's strips and the arches: should they share their logic?): each engine had worked
 out for itself where the drone would be, how long its builds took and how urgent each was, and on a Penrose map with
@@ -9,7 +9,7 @@ the parts again in each of their builds on a worker thread (some 40% of their ti
   both build round the same point ahead; and how long each one's builds take to be taken (its latency), which says
   how far ahead that is
 - what a build is worth, both engines' by one rule (value(), below), the worker threads' priority
-And in surface_penrose.py, a Penrose map's tiles near the drone (tiles()): each level's cut once, for every build that
+And in surface_substitution.py, a Penrose map's tiles near the drone (tiles()): each level's cut once, for every build that
 needs it, floor or parts, on the worker thread, inside the first build that needs them, as wide as every build asking
 for the level wants (needs()).
 

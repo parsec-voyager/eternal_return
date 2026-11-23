@@ -1,5 +1,8 @@
-"""Endless Penrose on any surface (2026-11-13, step 4 of tiling any surface: "i want a general way of tiling a plane
-with penrose tiles regardless of the curvature of the plane, just like with square and triangle tilings").
+"""Endless substitution tilings on any surface: Penrose (2026-11-13, step 4 of tiling any surface: "i want a general
+way of tiling a plane with penrose tiles regardless of the curvature of the plane, just like with square and triangle
+tilings") and, since 2026-11-22, any substitution.Rule (Darb-i Imam's girih), each a plug-in to this one engine. Named
+surface_penrose.py until 2026-11-23. What follows is told for Penrose's rhombs; a girih mesh's pieces are labeled
+instead by the TILE and IDEAL attributes (Faces), its tiles clipped to their faces (Level.face_sides()).
 
 A surface map (surface.py) whose settings say "rule": "penrose" has a rhomb mesh as its source: every face a Penrose
 rhomb, its loop (B, A, C, A') counterclockwise from outside, and its kind (0 thin, 1 thick) in the face attribute
@@ -32,7 +35,7 @@ to its own half, so two halves' bars never overlap in one plane), on the surface
 - A level's color is the arch palette's in turn (palette[d mod 4]), the same from every face: rotation-based colors
   (substitution.py's classes) would change across a fold, since each face has its own frame.
 
-The map's object holds "surface_penrose": its settings (DEFAULTS); the level objects are its children, made as needed
+The map's object holds "surface_substitution": its settings (DEFAULTS); the level objects are its children, made as needed
 (LEVEL_KEY names the map), with "substitution_pool" so the flight harness treats them as substitution levels (rebuilt
 around the drone, not moved).
 """
@@ -53,12 +56,12 @@ from . import surface
 from . import tiling
 from .cyclotomic import RING10 as RING, float_sqrt, q_add, q_div, q_mul, q_scale, q_sub
 
-PROPERTY = "surface_penrose"
+PROPERTY = "surface_substitution"
 KIND = "rhomb_kind"
-LEVEL_KEY = "surface_penrose_level_of"
+LEVEL_KEY = "surface_substitution_level_of"
 POOL = "substitution_pool"
 
-# Settings ("surface_penrose" on the map's object):
+# Settings ("surface_substitution" on the map's object):
 # - style, half_width: the strapwork (substitution.Motif: "hankin54", or another contact angle), its bars' half width
 #   in tiles
 # - radius: a level is drawn within this many of its tiles of the point below (and at most sight: window clip ends)
@@ -131,11 +134,6 @@ def setting(obj, name):
     return DEFAULTS[name] if value is None else value
 
 
-def is_penrose(obj):
-    """Whether the map's floor is drawn here (surface.is_substitution(), whatever its rule)"""
-    return surface.PROPERTY in obj and surface.is_substitution(obj)
-
-
 def rule_of(obj):
     """The map's substitution rule (substitution.Rule)"""
     return substitution.RULES[surface.setting(obj, "rule")]
@@ -172,7 +170,7 @@ class Faces:
         elif mesh.attributes.get(TILE + "kind") is not None:
             self.pieces(top, mesh)
         else:
-            raise ValueError(f"surface_penrose: {mesh.name} has neither {KIND} nor {TILE}kind")
+            raise ValueError(f"surface_substitution: {mesh.name} has neither {KIND} nor {TILE}kind")
         assert len(self.tiles) == count
         # How far a step in the face's frame moves its point at least (its Jacobian from ideal coordinates, (u, v)'s
         # times the inverse of (u, v) -> u + v ev, on a 5 x 5 grid, its least singular value, less a tenth for between)
@@ -201,7 +199,7 @@ class Faces:
         kinds = np.empty(len(mesh.polygons), dtype=np.int32)
         mesh.attributes[KIND].data.foreach_get("value", kinds)
         if np.any(top.sides != 4):
-            raise ValueError(f"surface_penrose: {mesh.name} isn't all quads")
+            raise ValueError(f"surface_substitution: {mesh.name} isn't all quads")
         self.kind = kinds
         angle = np.where(kinds == penrose.THIN, math.radians(144.0), math.radians(72.0))
         self.ev_x, self.ev_y = np.cos(angle), np.sin(angle)
@@ -238,7 +236,7 @@ class Faces:
         self.ev_x, self.ev_y = np.zeros(count), np.zeros(count)
         self.q_ev_x, self.q_ev_y, self.tiles, self.polygon = [], [], [], []
         # Each face's corners' labels (ring points, the tiling's plane) and its frame's turn there: a point z of its
-        # frame is zeta^turn z + labels[0] (parts_penrose's girih frames join faces by them)
+        # frame is zeta^turn z + labels[0] (parts_substitution's girih frames join faces by them)
         self.labels, self.turn = [], np.zeros(count, np.int64)
         # Each face's sides' outward unit normals and lengths in its frame (Level.face_sides(), a triangle's last twice)
         self.side_normals, self.side_lengths = np.zeros((count, 4, 2)), np.zeros((count, 4))
@@ -248,15 +246,15 @@ class Faces:
             points = [tuple(int(c) for c in ideal[starts[f] + i]) for i in range(n)]
             k = units.get(R.sub(points[1], points[0]))
             if k is None:
-                raise ValueError(f"surface_penrose: {mesh.name} face {f}'s first side isn't a tile edge")
+                raise ValueError(f"surface_substitution: {mesh.name} face {f}'s first side isn't a tile edge")
             frame = [R.rot(R.sub(p, points[0]), -k % R.n) for p in points]
             self.labels.append(points)
             self.turn[f] = k
             if n == 4 and R.add(frame[1], frame[3]) != frame[2]:
-                raise ValueError(f"surface_penrose: {mesh.name} face {f} isn't a parallelogram in the tiling's plane")
+                raise ValueError(f"surface_substitution: {mesh.name} face {f} isn't a parallelogram in the tiling's plane")
             x, y = R.exact_xy(frame[-1])
             if not float_sqrt(y[0], y[1], 5) > 0.0:
-                raise ValueError(f"surface_penrose: {mesh.name} face {f} isn't counterclockwise in the tiling's plane")
+                raise ValueError(f"surface_substitution: {mesh.name} face {f} isn't counterclockwise in the tiling's plane")
             self.q_ev_x.append(x)
             self.q_ev_y.append(y)
             self.ev_x[f] = float_sqrt(x[0], x[1], 5)
@@ -763,8 +761,8 @@ class State:
         self.drawn = {}              # d -> (level object or None (a coarse level with nothing in sight), Drawn)
         self.giant = None            # giant_tint()'s answers: d -> (color, Drawn whose window is how far it holds)
         self.giant_walk = None       # its last walk's: (top, color, the level it's from, Drawn: how far it holds)
-        self.no_pieces = {}          # parts_penrose's giant levels with no 3D piece near the camera: d -> (shape, Drawn)
-        self.giant_tiles = {}        # parts_penrose's giant levels' tiles: d -> (the kept level's origin_of(), its own
+        self.no_pieces = {}          # parts_substitution's giant levels with no 3D piece near the camera: d -> (shape, Drawn)
+        self.giant_tiles = {}        # parts_substitution's giant levels' tiles: d -> (the kept level's origin_of(), its own
                                      # copy, trimmed)
         self.jobs = {}               # d -> a build under way on a worker thread: (when, priority, its middle, the
                                      # world's text, whether coarse, whether wanted by the time it lands)
@@ -1638,7 +1636,7 @@ def level_object(obj, st, d):
     for child in obj.children:
         if child.get(LEVEL_KEY) == obj.name and child.name not in used:
             return child
-    name = f"{obj.name}.penrose"
+    name = f"{obj.name}.substitution"
     level_obj = bpy.data.objects.new(name, bpy.data.meshes.new(name))
     for c in obj.users_collection:
         c.objects.link(level_obj)

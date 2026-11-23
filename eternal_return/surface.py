@@ -77,10 +77,10 @@ FLOOR_KEY = "surface_floor_of"       # on the floor object: its map's object's n
 # - floor_cells: the floor's cells are about the window over this, across (more: more, smaller cells)
 # - floor_color: linear RGBA for faces without a "Col" of the mesh's own
 # - rule: "square" (quads and triangles split factor x factor: this module's lattice) or a substitution rule
-#   (SUBSTITUTION_RULES: a labeled mesh, the rule's strapwork drawn on the floor at every level by surface_penrose.py,
+#   (SUBSTITUTION_RULES: a labeled mesh, the rule's strapwork drawn on the floor at every level by surface_substitution.py,
 #   whose mesh lattice splits 2 x 2)
 # - factor: how many ways a level's cell's sides split at the next, a whole number from 2 (the map loops by its powers)
-# The rules whose floors surface_penrose.py draws (substitution.RULES' names)
+# The rules whose floors surface_substitution.py draws (substitution.RULES' names)
 SUBSTITUTION_RULES = ("penrose", "darb_imam")
 DEFAULTS = {"rho": 1.0, "window": 1.25, "floor_cells": 4.0, "floor_color": [0.04, 0.03, 0.10, 1.0], "rule": "square",
             "factor": 2}
@@ -652,7 +652,7 @@ def factor(obj):
 
 
 def is_substitution(obj):
-    """Whether the map's floor is a substitution tiling's (surface_penrose.py), not a lattice's"""
+    """Whether the map's floor is a substitution tiling's (surface_substitution.py), not a lattice's"""
     return setting(obj, "rule") in SUBSTITUTION_RULES
 
 
@@ -1184,7 +1184,7 @@ def transform(world, text, built):
     are now. Exact from the two anchors' places (World.anchor_point())."""
     if built.transform is not None and built.transform[0] == text:
         return built.transform[1], built.transform[2]
-    # The same pair of worlds for everything built in one: a Penrose level's patches (surface_penrose.patch_bars()),
+    # The same pair of worlds for everything built in one: a Penrose level's patches (surface_substitution.patch_bars()),
     # a hundred a build, each worked its transform out exactly again at every loop (2026-11-20)
     key = (text, built.world_text, world.rho, id(world.topology), world.k)
     found = _transforms.get(key)
@@ -1396,7 +1396,7 @@ def settle_floor(obj, world, camera, below, clip_end):
     if built.placed != text:
         built.placed = text
         if "sub_push" in floor_obj:
-            # Under a Penrose map's levels (surface_penrose.py): its push drivers place it from its unpushed place
+            # Under a Penrose map's levels (surface_substitution.py): its push drivers place it from its unpushed place
             for key, value in zip(("sub_bx", "sub_by", "sub_bz"), offset + scale * built.center):
                 floor_obj[key] = float(value)
             floor_obj["sub_bs"] = floor_obj["camera_push_scale"] = float(scale)
@@ -1419,10 +1419,10 @@ def settle(obj, camera_world):
     settle_floor(obj, world, camera, below_of(obj, world, camera), clip_end)
     if is_substitution(obj):
         try:
-            from . import surface_penrose
+            from . import surface_substitution
         except ImportError:
-            import surface_penrose
-        surface_penrose.settle(obj, camera_world)
+            import surface_substitution
+        surface_substitution.settle(obj, camera_world)
 
 
 # ----- the lattice for the 3D parts (parts.py) -----
@@ -1686,7 +1686,7 @@ def exact_piece(world, level, kind, keys, camera_point, window, shape, settings,
 def exact_piece_at(world, level, kind, offsets, normals, stretch, scales, relative, unit, window, shape, settings,
                    phase, scale=None):
     """exact_piece()'s piece from what it's worked out of, for any lattice on the mesh's faces (a Penrose map's too,
-    parts_penrose.py): the offsets of the points it stands on from the first, P, in the level's own units (floats), their
+    parts_substitution.py): the offsets of the points it stands on from the first, P, in the level's own units (floats), their
     normals, a vertex piece's stretch and an edge piece's scales (parts.piece_axes()), the camera's exact offset from P
     (relative: three Fractions, the mesh's units) and the level's unit in the mesh's (unit, a Fraction: 1 / M, or a
     Penrose level's phi^-d to as many bits as the depth needs), in the colors of phase (parts.level_phase()). With
@@ -1917,9 +1917,9 @@ def forget(_dummy=None):
     _below.clear()
     _topologies.clear()
     import sys
-    penrose_module = sys.modules.get(__name__.rpartition(".")[0] + ".surface_penrose")
-    if penrose_module is not None:
-        penrose_module.forget()
+    substitution_module = sys.modules.get(__name__.rpartition(".")[0] + ".surface_substitution")
+    if substitution_module is not None:
+        substitution_module.forget()
 
 
 def register():

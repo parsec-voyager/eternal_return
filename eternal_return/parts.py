@@ -104,11 +104,11 @@ icosahedron's: parts_ico.IcoChart); surface.MeshLattice for a surface map, whose
 placed from the anchor without a chart, and its giant levels' pieces worked out with Fractions (surface.add_levels()).
 
 2026-11-16, the icosahedron sphere's lattice (parts_ico.py: triangles, 5 edges at its 12 corners) and the
-Penrose surface maps' (parts_penrose.SubstitutionLattice: each level's rhombs' corners and edges, levels phi times finer, so
+Penrose surface maps' (parts_substitution.SubstitutionLattice: each level's rhombs' corners and edges, levels phi times finer, so
 a lattice says how much finer each level is, its ratio). Same day, at the user's request, the Penrose frames are on
 every other level only (phi^2 apart, less dense): a lattice's level_step, 1 for the rest, says which levels have parts
 (drawn()); the levels between are left out of the instanced and giant levels alike. 2026-11-22: any substitution
-rule's (parts_penrose.SubstitutionLattice, one per rule): Darb-i Imam's girih tiles' corners and edges, on every level
+rule's (parts_substitution.SubstitutionLattice, one per rule): Darb-i Imam's girih tiles' corners and edges, on every level
 (LAMBDA = 8.5 apart).
 
 Not yet: maps with 3D tiles (the lift: parts stand on the sphere, not the tiles' ground).
@@ -214,14 +214,14 @@ def _surface():
 def lattice_of(obj):
     """The lattice a map's parts stand on: a sphere map's (parts_sphere.SphereLattice, with the cube's chart or the
     icosahedron's, parts_ico.IcoChart), a surface map's (surface.MeshLattice) or a substitution surface map's
-    (parts_penrose.SubstitutionLattice, one per rule)"""
+    (parts_substitution.SubstitutionLattice, one per rule)"""
     if sphere.is_sphere(obj):
         if sphere.world_of(obj).layout == "ico":
             return _module("parts_ico").LATTICE
         return _module("parts_sphere").SPHERE
     surface = _surface()
     if surface.is_substitution(obj):
-        return _module("parts_penrose").lattice_of(obj)
+        return _module("parts_substitution").lattice_of(obj)
     return surface.lattice_of(obj)
 
 
@@ -875,7 +875,7 @@ def write_level(level_obj, world, level, pieces, origin, phase, radius):
     built.radius = radius
 
 
-# How much of the view round them a level's pieces fill, against the floor's strapwork's (surface_penrose.INK): posts,
+# How much of the view round them a level's pieces fill, against the floor's strapwork's (surface_substitution.INK): posts,
 # beams and rings standing up, where the strapwork is thin bars on the ground
 INK = 1.0
 # What a build is guessed to take of the workers' time until one's measured (schedule.Costs): s a cell squared (a
@@ -1716,7 +1716,7 @@ def forget(_dummy=None):
     sphere_exact.forget()
     import sys
     package = __name__.rpartition(".")[0]
-    for name in ("parts_sphere", "parts_ico", "parts_penrose"):
+    for name in ("parts_sphere", "parts_ico", "parts_substitution"):
         module = sys.modules.get(f"{package}.{name}" if package else name)
         if module is not None:
             module.forget()

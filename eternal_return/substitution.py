@@ -103,7 +103,7 @@ CAPPED_SLACK = (1.0 + math.sqrt(5.0)) / 2.0
 OUTLINE = -1                # an outline strip's color class: colors_of()'s last row
 # A level is drawn outlined while its outline strips are at least this wide under the drone (px), as its bars' cores
 # alone once they're under half that (in between, as it was): narrower strips can't be seen, and outlined, a level has
-# some three times the faces (surface_penrose.py's OUTLINE_PX)
+# some three times the faces (surface_substitution.py's OUTLINE_PX)
 OUTLINE_PX = 2.0
 # A giant level whose bars fill this much of its window, in one color class, is the floor's tint (giant_levels())
 GIANT_COVER = 1.0 - 1e-9

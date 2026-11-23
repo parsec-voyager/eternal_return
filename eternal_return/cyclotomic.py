@@ -15,7 +15,7 @@ a tile's place a few units from the map's origin is written with thousand-bit co
 arithmetic would make it garbage. The Ammann-Beenker prototype's exact.py (~/blender_tests/substitution) is the N = 8
 original; the girih prototype's test_penrose.py (~/blender_tests/girih) checks this agrees with it. Used by
 substitution.py's endless girih floors (penrose.py, darb_imam.py), and with the Q(sqrt 5) numbers below by the Penrose
-surface maps (surface_penrose.py, parts_penrose.py).
+surface maps (surface_substitution.py, parts_substitution.py).
 """
 
 import functools

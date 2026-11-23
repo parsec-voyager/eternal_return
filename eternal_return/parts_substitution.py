@@ -1,5 +1,6 @@
-"""Endless 3D parts on a Penrose surface map (2026-11-16: "do the 3d parts for penrose and icosahedron tilings"): parts.py's
-pieces on the levels of the rhomb tiling surface_penrose.py draws, a vertex piece on each corner of its rhombs and an
+"""Endless 3D parts on a substitution surface map (named parts_penrose.py until 2026-11-23). First Penrose's
+(2026-11-16: "do the 3d parts for penrose and icosahedron tilings"): parts.py's
+pieces on the levels of the rhomb tiling surface_substitution.py draws, a vertex piece on each corner of its rhombs and an
 edge piece along each of their edges, from the mesh's own faces (level 0) down forever, each level phi times finer
 than the one above. Since the same day's flights they're on every other level only (level_step), phi^2 apart: on every
 level they were dense. The open frames (posts, beams and horseshoe rings) stand on the same lines the strapwork's levels
@@ -8,7 +9,7 @@ Since 2026-11-22 any rule's (one SubstitutionLattice each): on a girih mesh (Dar
 edges, on every level, LAMBDA = 8.5 times finer (pieces_near(), Atlas).
 
 What parts.py asks of the lattice (parts.SphereLattice, surface.MeshLattice) is answered here, from the tiles the
-strapwork already keeps near the drone (surface_penrose.State's levels, shared: the parts ask for the windows they need
+strapwork already keeps near the drone (surface_substitution.State's levels, shared: the parts ask for the windows they need
 and the strapwork's levels are cut wider if need be):
 - A level's corners and edges near a point (lattice_near()): each half's corners A, B, C, its legs AB and AC (the
   rhombs' edges; the base BC is a rhomb's inside). A corner inside a face is named by its ring coefficients from its
@@ -20,7 +21,7 @@ and the strapwork's levels are cut wider if need be):
   directions in its vertex's home face, the lowest numbered face it's on), so a level built again round another point
   turns no post. Normals and slopes are the faces', averaged at a side or corner, as surface.py's keys have them.
 - Places: from the map's anchor, the vertex the pieces are around rounded once from its exact point, the others in
-  float64 from the tiles' roots (surface_penrose.Level.map_points()); a level's own units are the mesh's times phi^d.
+  float64 from the tiles' roots (surface_substitution.Level.map_points()); a level's own units are the mesh's times phi^d.
 - The giant levels' pieces in the window: their tiles near the drone (kept for the window by the strapwork), the
   pieces within reach in float64, and those worked out exactly: their points are in Q(sqrt 5) over powers of 2 (the
   mesh's float32 corners and the ideal rhomb's coordinates), the camera dyadic, so their differences are exact, and
@@ -38,7 +39,7 @@ from . import penrose
 from . import schedule
 from . import substitution
 from . import surface
-from . import surface_penrose as SP
+from . import surface_substitution as SS
 from .cyclotomic import (RING10 as RING, im_pair, q_add, q_float, q_fraction, q_mul, q_scale,
                          q_sub, re2_pair, ring_im, ring_re2)
 
@@ -72,7 +73,7 @@ REROOT = 64
 NO_PIECES_SHARE = 0.5
 # Substitution levels with frames are at least this many times finer than the next coarser with them
 FRAME_SPACING = 2.5
-# The level 0 a parts map shows whole while its corners are this few (and the map shallow: surface_penrose.FLOAT_N)
+# The level 0 a parts map shows whole while its corners are this few (and the map shallow: surface_substitution.FLOAT_N)
 WHOLE_POINTS = 20000
 
 
@@ -144,18 +145,18 @@ def corner_keys(top, faces, f, sides, s, rel):
 def topology_arrays(top):
     """A rhomb mesh's sides as arrays, kept on its Topology: each face's sides' edges and whether each runs from its
     edge's smaller vertex (F, 4), each edge's vertices (E, 2), and the lowest numbered face on each edge and vertex"""
-    found = getattr(top, "_penrose_arrays", None)
+    found = getattr(top, "_substitution_arrays", None)
     if found is None:
         side_edge = np.array(top._side_edge, dtype=np.int64)
         side_forward = np.array(top._side_forward, dtype=bool)
         edges = np.array(top.edges, dtype=np.int64)
         edge_home = np.array([min(g for g, _s, _f in sides) for sides in top.edge_sides], dtype=np.int64)
         vertex_home = np.array([min((g for g, _c in vf), default=-1) for vf in top.vertex_faces], dtype=np.int64)
-        found = top._penrose_arrays = (side_edge, side_forward, edges, edge_home, vertex_home)
+        found = top._substitution_arrays = (side_edge, side_forward, edges, edge_home, vertex_home)
     return found
 
 
-unique_rows = SP.unique_rows
+unique_rows = SS.unique_rows
 
 def fits(*values):
     return all(abs(v) < FIT for v in values)
@@ -384,7 +385,7 @@ class Atlas:
     they share are one group, labeled in one frame. Across a mesh edge where they don't (the Darb sphere's rim, between
     the pillow's two copies), the gluing is a turn and a shift of the plane, z -> zeta^k z + c, read off the edge's two
     corners on either side: crossing[(f, s)] = (g, k, c), face f's side s to face g. Every tile edge is a mirror line
-    of everything drawn across it (surface_penrose.py), so each level's tiles carry across a gluing whole."""
+    of everything drawn across it (surface_substitution.py), so each level's tiles carry across a gluing whole."""
 
     def __init__(self, top, faces):
         count = len(faces.labels)
@@ -412,7 +413,7 @@ class Atlas:
                 along_f, along_g = RING.sub(fb, fa), RING.sub(gb, ga)
                 k = next((k for k in range(RING.n) if RING.rot(along_f, k) == along_g), None)
                 if k is None:
-                    raise ValueError(f"parts_penrose: faces {f} and {g} meet along sides of different lengths")
+                    raise ValueError(f"parts_substitution: faces {f} and {g} meet along sides of different lengths")
                 glued.append((f, s, g, k, RING.sub(ga, RING.rot(fa, k))))
         roots = [find(f) for f in range(count)]
         index = {r: i for i, r in enumerate(sorted(set(roots)))}
@@ -503,7 +504,7 @@ def pieces_near(world, faces, level, rows):
         frame_of.setdefault(g, z)
         shift = RING.sub(z, frame_of[g])
         if not fits(*shift):
-            raise ValueError(f"parts_penrose: face {f}'s root is too far from its group's ({level.d})")
+            raise ValueError(f"parts_substitution: face {f}'s root is too far from its group's ({level.d})")
         shifts[i] = shift
     keys = np.einsum("cj,cjl->cl", flat_rel, TURN[faces.turn[fu]]) + shifts[face_index.reshape(-1)]
     groups = atlas.group[fu]
@@ -619,7 +620,7 @@ def camera_exact(world, camera):
 
 class SubstitutionPieces(parts.LaidOut):
     """A level's pieces round the corner nearest center (map units) out to radius of its cells (the mean distance from
-    it to its neighbors), from level (a surface_penrose.Level of this world), as parts.LaidOut lays them out, in the
+    it to its neighbors), from level (a surface_substitution.Level of this world), as parts.LaidOut lays them out, in the
     level's own units (the mesh's times phi^d) from that corner, origin() in the map; or with an infinite radius,
     every corner and edge level has"""
 
@@ -635,7 +636,7 @@ class SubstitutionPieces(parts.LaidOut):
         if not len(near.places):
             # What it was given, for finding out why (seen once on the worker thread, 2026-11-17, not reproduced): the
             # build is then made again in the tick (parts.MapState.failed)
-            raise ValueError(f"parts_penrose: no corners near the drone (level {level.d}, {len(level.face)} tiles on "
+            raise ValueError(f"parts_substitution: no corners near the drone (level {level.d}, {len(level.face)} tiles on "
                              f"faces {sorted(set(level.face.tolist()))[:8]}, kept for {level.window:.4g} round a point "
                              f"{float(np.linalg.norm(np.asarray(center) - level.center)):.4g} from this one, radius "
                              f"{radius:g} cells of {level.scale:.4g}, n {world.n}, world {world.text() == level.world_text})")
@@ -723,10 +724,10 @@ def built_pieces(world, faces, tiles, center, radius, settings, shape):
 
 def tiles_pieces(world, faces, st, level, center, window, radius, settings, shape):
     """built_pieces() of level's tiles covering window round center (map units), as the strapwork keeps them or cut
-    here (SP.tiles(): kept for the strapwork's builds too), on the worker thread (SubstitutionLattice.pieces_job())"""
-    tiles = SP.tiles(st, world, faces, level, center, window)
+    here (SS.tiles(): kept for the strapwork's builds too), on the worker thread (SubstitutionLattice.pieces_job())"""
+    tiles = SS.tiles(st, world, faces, level, center, window)
     built = built_pieces(world, faces, tiles, center, radius, settings, shape)
-    SP.keep_copy(st, tiles)
+    SS.keep_copy(st, tiles)
     return built
 
 
@@ -746,7 +747,7 @@ class SubstitutionLattice(surface.MeshLattice):
     def world(self, obj):
         world = surface.world_of(obj)
         top = world.topology
-        world.penrose = (SP.faces_of(obj, top), SP.state_of(obj, top))
+        world.substitution = (SS.faces_of(obj, top), SS.state_of(obj, top))
         return world
 
     def unit_level(self, world):
@@ -766,8 +767,8 @@ class SubstitutionLattice(surface.MeshLattice):
     def first_radius(self, world, level, build, wanted):
         """The coarsest level whole while its corners are few and the map shallow (it's then never built again as the
         drone moves); else out to the next power of 2 of the cells wanted, at most surface.FIRST_REACH"""
-        faces, _st = world.penrose
-        if world.n < SP.FLOAT_N and len(faces.kind) * self.rule.loop ** (2 * level) <= WHOLE_POINTS:
+        faces, _st = world.substitution
+        if world.n < SS.FLOAT_N and len(faces.kind) * self.rule.loop ** (2 * level) <= WHOLE_POINTS:
             return math.inf
         if not wanted > build:
             return build
@@ -775,15 +776,15 @@ class SubstitutionLattice(surface.MeshLattice):
 
     def level_for(self, world, level, center, window):
         """Level d's tiles covering window round center (map units), a Level of its own: the strapwork's kept level,
-        or cut (SP.tiles(), kept for the strapwork too); or the whole level"""
-        faces, st = world.penrose
+        or cut (SS.tiles(), kept for the strapwork too); or the whole level"""
+        faces, st = world.substitution
         if math.isinf(window):
-            whole = SP.level_zero(world, faces, None, center, math.inf)
+            whole = SS.level_zero(world, faces, None, center, math.inf)
             for _ in range(level):
-                whole = SP.level_below(world, whole, center)
+                whole = SS.level_below(world, whole, center)
             return whole
-        SP.want_tiles(st, "parts", level, world, center, window, time.perf_counter())
-        return SP.tiles(st, world, faces, level, center, window)
+        SS.want_tiles(st, "parts", level, world, center, window, time.perf_counter())
+        return SS.tiles(st, world, faces, level, center, window)
 
     def tiles_for(self, world, level, center, radius):
         """The tiles a build out to radius cells needs (tiles_window())"""
@@ -791,7 +792,7 @@ class SubstitutionLattice(surface.MeshLattice):
                               self.tiles_window(world, level, radius))
 
     def pieces(self, world, level, center, radius, settings, shape):
-        faces, _st = world.penrose
+        faces, _st = world.substitution
         tiles = self.tiles_for(world, level, center, radius)
         return SubstitutionPieces(world, faces, tiles, center, radius, settings, shape)
 
@@ -799,43 +800,43 @@ class SubstitutionLattice(surface.MeshLattice):
         """pieces() for the worker thread (parts.SphereLattice.pieces_job()): the corners found and the pieces laid out
         there (5 to 15 ms a level), on its own world, from the level's tiles as the strapwork keeps them, or cut there
         (tiles_pieces()), and kept for the strapwork too: a Penrose map's levels are cut once for both
-        (surface_penrose.tiles(), 2026-11-19). Cut in the tick round a center ahead of the drone (parts.settle()), cuts
+        (surface_substitution.tiles(), 2026-11-19). Cut in the tick round a center ahead of the drone (parts.settle()), cuts
         took up to 50 ms, and the strapwork then cut its own levels again for its own windows (2026-11-17); cut in each
         parts build, they were some 40% of its time in a fast dive (2026-11-19)."""
-        faces, st = world.penrose
+        faces, st = world.substitution
         own = surface.World.from_text(world.text(), world.rho, world.topology)
         center = np.array(center, dtype=float)
         if math.isinf(radius):
             return (built_pieces, own, faces, self.tiles_for(world, level, center, radius), center, radius, settings,
                     shape)
         window = self.tiles_window(world, level, radius)
-        SP.want_tiles(st, "parts", level, world, center, window, time.perf_counter())
+        SS.want_tiles(st, "parts", level, world, center, window, time.perf_counter())
         return tiles_pieces, own, faces, st, level, center, window, radius, settings, shape
 
     @staticmethod
     def giant_tiles(world, faces, st, d, below, foot, window):
         """A giant level's tiles for add_levels(), this world's, its own (the pieces re-root it): the kept level's, cut
         down to the window round the foot if it's much wider, and kept (st.giant_tiles) while the kept level has the
-        same tiles (SP.origin_of()) and the window holds. The kept levels near the boundary are as wide as the 3D
+        same tiles (SS.origin_of()) and the window holds. The kept levels near the boundary are as wide as the 3D
         parts' instanced builds of them want, some 30,000 tiles, and every giant level's pieces went through all of
         them at every window build: 400 ms a second of a climb's ticks (2026-11-19)."""
         text = world.text()
         kept = st.levels[d]
         if kept.world_text != text:
-            kept = st.levels[d] = SP.rebased(world, faces, kept)
+            kept = st.levels[d] = SS.rebased(world, faces, kept)
         found = st.giant_tiles.get(d)
-        if found is not None and found[0] is SP.origin_of(kept) and SP.covers(world, text, found[1], foot, window):
+        if found is not None and found[0] is SS.origin_of(kept) and SS.covers(world, text, found[1], foot, window):
             tiles = found[1]
             if tiles.world_text != text:
-                tiles = SP.rebased(world, faces, tiles)
+                tiles = SS.rebased(world, faces, tiles)
                 st.giant_tiles[d] = (found[0], tiles)
             return tiles
         tiles = kept.copy()
-        keep = window * SP.SLACK
-        if len(tiles.face) > SP.TRIM_MIN and tiles.window > schedule.OVERBUILT * keep:
-            centers = SP.Centers(world, faces, below, foot, keep) if world.n >= SP.FLOAT_N else None
+        keep = window * SS.SLACK
+        if len(tiles.face) > SS.TRIM_MIN and tiles.window > schedule.OVERBUILT * keep:
+            centers = SS.Centers(world, faces, below, foot, keep) if world.n >= SS.FLOAT_N else None
             tiles.keep_near(world, faces, centers, keep, foot)
-        st.giant_tiles[d] = (SP.origin_of(kept), tiles)
+        st.giant_tiles[d] = (SS.origin_of(kept), tiles)
         return tiles
 
     def tiles_window(self, world, level, radius):
@@ -854,19 +855,19 @@ class SubstitutionLattice(surface.MeshLattice):
         worked out for the window (exact_piece()): in float64 where its rounding is well under the drone's height,
         exactly past that"""
         found = []
-        faces, st = world.penrose
+        faces, st = world.substitution
         text = world.text()
         # Levels known to have nothing round the camera aren't looked at again (NO_PIECES_SHARE)
         camera = np.asarray(camera, dtype=float)
         levels = [d for d in levels if not (d in st.no_pieces and st.no_pieces[d][0] is shape
-                                            and SP.covers(world, text, st.no_pieces[d][1], camera, window))]
+                                            and SS.covers(world, text, st.no_pieces[d][1], camera, window))]
         if not levels:
             return found
         below = surface.Below(world, np.asarray(q, dtype=float))
         foot = world.rho * below.foot
         camera_point = camera_exact(world, camera)
         reach_cells = max(shape.plan[0], shape.plan[1], shape.past, float(shape.reach.max()))
-        SP.kept_levels(world, faces, below, st, max(levels), foot, lambda d: window)
+        SS.kept_levels(world, faces, below, st, max(levels), foot, lambda d: window)
         for d in reversed(levels):
             tiles = self.giant_tiles(world, faces, st, d, below, foot, window)
             cell = self.cell_sizes(world, [d])[d]
@@ -880,7 +881,7 @@ class SubstitutionLattice(surface.MeshLattice):
             rows, distances, tolerance = parts.window_rows(shape, pieces, local, rounding, scale, window)
             if not len(rows):
                 least = float(np.abs(distances).min()) * scale if len(distances) else math.inf
-                st.no_pieces[d] = (shape, SP.Drawn(text, world.n, camera.copy(),
+                st.no_pieces[d] = (shape, SS.Drawn(text, world.n, camera.copy(),
                                                    NO_PIECES_SHARE * min(least, window), 1.0))
             else:
                 st.no_pieces.pop(d, None)
@@ -906,7 +907,7 @@ def lattice_for(rule):
 
 def lattice_of(obj):
     """The map's lattice, for its rule"""
-    return lattice_for(SP.rule_of(obj))
+    return lattice_for(SS.rule_of(obj))
 
 
 def forget():
