@@ -881,21 +881,28 @@ class Below:
     there (base: its I, J, exactly, and its offset from the anchor's point in units, base_offset) and its offset from
     that in units (d, floats); the point itself from the anchor's (foot, units), the surface's normal there, and p's
     height over it (units, negative under: on the side away from the faces' normals). lattice_point() rounds it to any
-    level's lattice."""
+    level's lattice.
 
-    def __init__(self, world, p):
+    Found by a walk over the faces down to the nearest point: from the anchor's point, or from start (face, U, V: a
+    point of level n there; stay()), down to the nearest point of the dip it starts in."""
+
+    def __init__(self, world, p, start=None):
         self.world = world
         top = world.topology
         N = world.N
         inv_n = 1 / N
         q = np.asarray(p, dtype=float) / world.rho
-        f, Ub, Vb = world.face, world.U, world.V
-        base_offset = np.zeros(3)
-        # The anchor's face's size in units (its Jacobian's least singular value, a face being N units of it across)
-        reach = min(WALK_REACH, WALK_SHARE * float(top.sigma_lo[f]) * N) if N < GLOBAL_UNITS else math.inf
-        if float(np.linalg.norm(q)) > reach:
-            f, Ub, Vb = self.global_face(world, q)
+        if start is not None:
+            f, Ub, Vb = start
             base_offset = world.units(top.point(f, Ub, Vb, N))
+        else:
+            f, Ub, Vb = world.face, world.U, world.V
+            base_offset = np.zeros(3)
+            # The anchor's face's size in units (its Jacobian's least singular value, a face being N units of it across)
+            reach = min(WALK_REACH, WALK_SHARE * float(top.sigma_lo[f]) * N) if N < GLOBAL_UNITS else math.inf
+            if float(np.linalg.norm(q)) > reach:
+                f, Ub, Vb = self.global_face(world, q)
+                base_offset = world.units(top.point(f, Ub, Vb, N))
         best = None
         visited = set()
         for _hop in range(WALK_HOPS):
@@ -991,6 +998,12 @@ class Below:
         scale = Fraction(1, world.k ** shift) if shift >= 0 else Fraction(world.k ** -shift)
         return ((Fraction(Ub) + Fraction(float(self.d[0]))) * scale, (Fraction(Vb) + Fraction(float(self.d[1]))) * scale)
 
+    def stay(self, world, p):
+        """The Below of p walked to from this one's point (the dip it's in), as world has it now"""
+        u, v = self.cell_place(world.n)
+        start = (self.face, *nearest_point(world.topology._sides[self.face], u, v, world.N))
+        return Below(world, p, start)
+
     def lattice_point(self, level):
         """The point of the level's lattice nearest it (in its face's parameters), and that one's offset from the
         anchor's point in units: (key, offset)"""
@@ -1046,6 +1059,9 @@ map_vector = sphere.map_vector
 _below = {}
 BELOW_KEPT = 6
 BELOW_SAME = 4 * 2.0 ** -24
+# How much further (a share of the height) the point below in the dip it was in may be than the nearest before it
+# moves to the nearest's (below_of())
+BELOW_STICK = 0.05
 
 
 def below_of(obj, world, p):
@@ -1059,6 +1075,22 @@ def below_of(obj, world, p):
         if cached[0] == text and float(np.abs(cached[1] - p).max()) <= near:
             return cached[2]
     below = Below(world, p)
+    # Over a saddle, a corner with more than 360 degrees of faces round it (the Darb and Penrose tori's inner special
+    # points, 432), the faces fold up and down round the corner, and a point above it is nearer a face folded up than
+    # the corner, one dip on each side. Diving at such a corner, the nearest point jumped from one dip to the other,
+    # some 0.6 heights, at a point of each loop's dive, and back and forth tick after tick in a mirror plane of the
+    # tiling, where the two are as near to the last digits; and every engine that builds round it with it: the 3D
+    # parts' finest level, a few tenths of a height across, was rebuilt round one and then the other, missing from 47%
+    # of the frames of such a dive (2026-11-23). So the point below stays in the dip it was in (walked down to from the
+    # last one) until that's BELOW_STICK of the height further than the nearest: 19% (most of it the climb back out,
+    # as on any face). Walked from a point below in a face next to it, the same point, so elsewhere nothing changes.
+    if kept:
+        same = [cached for cached in kept if cached[0] == text] or kept
+        last = min(same, key=lambda cached: float(np.abs(cached[1] - p).max()))[2]
+        if last.face != below.face and last.world.k == world.k:
+            stay = last.stay(world, p)
+            if abs(stay.height) <= abs(below.height) * (1.0 + BELOW_STICK):
+                below = stay
     kept.insert(0, (text, p.copy(), below))
     del kept[BELOW_KEPT:]
     return below
