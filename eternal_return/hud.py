@@ -248,22 +248,23 @@ def shapes(settings):
             c, s = math.cos(turn * math.pi / 2.0), math.sin(turn * math.pi / 2.0)
             spike = [(0.0, 0.0), (-half, CROSSHAIR_LENGTH), (half, CROSSHAIR_LENGTH)]
             fills.append([(c * x - s * y, s * x + c * y, z) for x, y in spike])
-    if settings.gimbals or settings.gimbal_values:
+    # Gimbal Values and Deadzones are options of the gimbals (indented under Gimbals in the UI subpanel): the values
+    # sit beside the squares, so they go with them
+    if settings.gimbals:
         travel = GIMBAL_HALF - GIMBAL_DOT_HALF
-        controls = gimbal_controls(settings.id_data) if settings.gimbals and settings.deadzones else None
+        controls = gimbal_controls(settings.id_data) if settings.deadzones else None
         # (side, the axis across, the axis up): the left square's sticks are axes 3 and 2, the right's 0 and 1
         for side, across, up in ((-1.0, 3, 2), (1.0, 0, 1)):
             cx, cy = side * -GIMBAL_CENTER[0], GIMBAL_CENTER[1]
-            if settings.gimbals:
-                corners = square((cx, cy), GIMBAL_HALF, z)
-                fills += [corners[[0, 1, 2]], corners[[0, 2, 3]]]
-                if controls is not None:
-                    bands += deadzone_bands(settings.id_data, (cx, cy), controls[across], controls[up], travel)
-                m = MARK_DEPTH
-                marks.append((np.array([(cx, cy - GIMBAL_HALF, m), (cx, cy + GIMBAL_HALF, m)]), GIMBAL_LINE))
-                marks.append((np.array([(cx - GIMBAL_HALF, cy, m), (cx + GIMBAL_HALF, cy, m)]), GIMBAL_LINE))
-                dot = (cx + travel * clamp(axes[across]), cy + travel * clamp(axes[up]))
-                marks.append((square(dot, GIMBAL_DOT_HALF, m)[[0, 1, 2, 3, 0]], GIMBAL_LINE))
+            corners = square((cx, cy), GIMBAL_HALF, z)
+            fills += [corners[[0, 1, 2]], corners[[0, 2, 3]]]
+            if controls is not None:
+                bands += deadzone_bands(settings.id_data, (cx, cy), controls[across], controls[up], travel)
+            m = MARK_DEPTH
+            marks.append((np.array([(cx, cy - GIMBAL_HALF, m), (cx, cy + GIMBAL_HALF, m)]), GIMBAL_LINE))
+            marks.append((np.array([(cx - GIMBAL_HALF, cy, m), (cx + GIMBAL_HALF, cy, m)]), GIMBAL_LINE))
+            dot = (cx + travel * clamp(axes[across]), cy + travel * clamp(axes[up]))
+            marks.append((square(dot, GIMBAL_DOT_HALF, m)[[0, 1, 2, 3, 0]], GIMBAL_LINE))
             if settings.gimbal_values:
                 texts.append((percent(axes[up]), (cx, cy + GIMBAL_HALF + VALUE_GAP, TEXT_DEPTH), VALUE_SIZE,
                               'CENTER', 'BASELINE'))

@@ -6,10 +6,13 @@ again. Keep Drone at Origin moves the whole scene under it, the drone with it. A
 loop factor, about the point the world repeats around, to the same view at a scale of the world's that many times
 finer or coarser. The old readouts measured Blender's coordinates and the drone's Blender scale: each of these showed as
 a burst of speed (a wrap of 1458 m in a frame is 315,000 km/h), and the scale started over at every loop. These are
-jumps, not flight: an odometer leaves them out (jump()).
+jumps, not flight: an odometer leaves them out (jump()), from Speed and Scale Speed alike.
 
-A loop also relabels the world. Its factor's worth of finer world is now the size the coarser one was in Blender's
-coordinates, so a Blender unit is the factor's worth fewer meters. The meters a Blender unit is are kept as a log2:
+A loop in a self-similar world (flight.loops_go_deeper(): endless, substitution, sphere, surface and Mandelbrot maps)
+also relabels the world. Its factor's worth of finer world is now the size the coarser one was in Blender's
+coordinates, so a Blender unit is the factor's worth fewer meters. A loop about a plain mesh relabels nothing: the
+mesh is the same after it, the drone the factor bigger next to it, so the true scale is the Blender scale, and flying
+back out reads the drone's normal size again (2026-11-23). The meters a Blender unit is are kept as a log2:
 the scene's "er_unit_log2", which loops add to and Reset Scale clears, plus the scene's unit scale. A dive of a
 thousand loops of 10 is 10^-1000 meters a unit, past any float, and in logs it's exact enough. On the Earth (a sphere
 map with a planet or 3D tiles), the map knows its own size instead: its R = rho N map units are the Earth's radius
@@ -30,10 +33,12 @@ PERIOD = 6
 UNIT_KEY = "er_unit_log2"
 
 
-def scene_unit_log2(scene):
-    """log2 of the meters a Blender unit is in the scene's world, after its loops (see the module's docstring)"""
+def scene_unit_log2(scene, looped=True):
+    """log2 of the meters a Blender unit is in the scene's world, after its loops if looped (see the module's
+    docstring): only a self-similar world's loops relabel it (flight.loops_go_deeper())"""
     unit_scale = scene.unit_settings.scale_length
-    return float(scene.get(UNIT_KEY, 0.0)) + (math.log2(unit_scale) if unit_scale > 0.0 else 0.0)
+    loops = float(scene.get(UNIT_KEY, 0.0)) if looped else 0.0
+    return loops + (math.log2(unit_scale) if unit_scale > 0.0 else 0.0)
 
 
 def relabel(scene, factor):
@@ -81,19 +86,23 @@ class Odometer:
         self._path += distance * 2.0 ** (self._unit - self._ref)
         self._location = location
 
-    def leave(self, location):
-        """A jump starts with the camera at location: the flight up to here counts. Jumps inside jumps (a wrap's
-        remeasure, a loop's recenter) are one jump."""
+    def leave(self, location, scale):
+        """A jump starts with the camera at location and the drone's true scale (log2) at scale: the flight up to here
+        counts. Jumps inside jumps (a wrap's remeasure, a loop's recenter) are one jump."""
         if self._depth == 0:
             self._add(location)
+            self._scale_before = scale
         self._depth += 1
 
-    def arrive(self, location, unit):
-        """The jump ended with the camera at location, a Blender unit now 2^unit meters"""
+    def arrive(self, location, unit, scale):
+        """The jump ended with the camera at location, a Blender unit now 2^unit meters, the true scale at scale. A
+        loop about a plain mesh changes the true scale (only a self-similar world's loops keep it, by relabeling the
+        meters): Scale Speed leaves that out too, as Speed leaves out the jump's move."""
         self._depth -= 1
         if self._depth == 0:
             self._location = np.array(location, dtype=np.float64)
             self._unit = unit
+            self._start_scale += scale - self._scale_before
 
     def read(self, location, unit, scale, frame, fps):
         """At the end of a tick, with the camera at location: None, or once PERIOD frames have gone by since the last

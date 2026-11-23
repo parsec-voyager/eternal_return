@@ -132,6 +132,20 @@ def anchored_map(obj):
     return None
 
 
+def loops_go_deeper(obj, scene):
+    """Whether a loop about obj goes deeper into the same world, which only a self-similar one does: an endless map
+    (fractals too), a substitution floor, a sphere or surface map, or the scene's Mandelbrot floor, which loops with the
+    drone whatever is selected. Their loops relabel the world's meters (see odometer.py), so the HUD's Scale keeps
+    going down as the drone dives. A loop about any other object (a plain mesh, vr_drone_simple's, 2026-11-23) only
+    makes the drone the loop factor bigger next to the same mesh: there the drone's true scale is its Blender scale,
+    and flying back out it reads its normal size again, not the loops' 64^-n."""
+    if mandelbrot.floor_object(scene) is not None:
+        return True
+    if not isinstance(obj, bpy.types.Object):
+        return False
+    return (anchored_map(obj) is not None or endless.is_endless(obj) or substitution.is_substitution(obj))
+
+
 def scaling_config_text(text):
     """A scaling config Text's JSON, from its file when it's external and the file changed since Blender last read or
     wrote it (Text.is_modified): a .blend keeps its own copy of an external Text and doesn't reread the file on load,
@@ -976,24 +990,31 @@ class FlightFeatures:
     @contextlib.contextmanager
     def jump(self):
         """A move of the drone that isn't flight (a wrap, a recenter, a loop, Keep Drone at Origin), which the HUD's
-        Speed leaves out (see odometer.py)"""
+        Speed and Scale Speed leave out (see odometer.py)"""
         trip = self._odometer
         if trip is not None:
-            trip.leave(get_camera_matrix().translation)
+            trip.leave(get_camera_matrix().translation, self.get_true_scale_log2())
         try:
             yield
         finally:
             if trip is not None:
-                trip.arrive(get_camera_matrix().translation, self.get_unit_log2())
+                trip.arrive(get_camera_matrix().translation, self.get_unit_log2(), self.get_true_scale_log2())
 
     def get_unit_log2(self):
         """log2 of the meters a Blender unit is in the world the drone flies through: the Earth's, if the scene has
-        one, otherwise the scene's after its loops (see odometer.py)"""
+        one, otherwise the scene's, after its loops while the drone is in a world they went deeper into
+        (loops_go_deeper(); see odometer.py)"""
         for obj in self._earths:
             meters = sphere.meters_log2(obj)
             if meters is not None:
                 return meters
-        return odometer.scene_unit_log2(bpy.context.scene)
+        scene = bpy.context.scene
+        return odometer.scene_unit_log2(scene, looped=loops_go_deeper(selected_obj, scene))
+
+    def get_true_scale_log2(self):
+        """The drone's true scale, as a log2: its camera's Blender scale in the world's meters"""
+        camera_scale = get_camera_matrix().to_scale().z
+        return (math.log2(camera_scale) if camera_scale > 0.0 else 0.0) + self.get_unit_log2()
 
     def readouts_ui(self):
         """Measure the HUD's Altitude, Speed, Scale and Scale Speed (hud.set_readings()) every odometer.PERIOD frames,
@@ -1261,7 +1282,7 @@ class FlightFeatures:
                 drone_obj.matrix_world = Matrix.Translation(-mathutils.Vector(move)) @ drone_obj.matrix_world
             loop_origin = selected_obj.matrix_world.translation.copy()
             self.apply_scale(loop_factor, loop_origin, scale_camera=True, scale_lens_clip=True, bounded=False)
-            odometer.relabel(bpy.context.scene, loop_factor)
+            odometer.relabel(bpy.context.scene, loop_factor)       # a sphere or surface map: loops_go_deeper()
             return
 
         # Loop around the point auto scale measures to: the closest surface point in mesh mode, otherwise the origin.
@@ -1279,7 +1300,8 @@ class FlightFeatures:
             loop_origin = get_camera_matrix().translation + self.get_selected_object_diff_vector(selected_obj)
 
         self.apply_scale(loop_factor, loop_origin, scale_camera=True, scale_lens_clip=True, bounded=False)
-        odometer.relabel(bpy.context.scene, loop_factor)
+        if loops_go_deeper(selected_obj, bpy.context.scene):
+            odometer.relabel(bpy.context.scene, loop_factor)
 
         # A Mandelbrot floor isn't self-similar, so the view stays the same through a loop only if the floor scales
         # with the drone, about the same point (see mandelbrot.py)

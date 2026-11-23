@@ -38,8 +38,10 @@ class ER_PT_UI_HUD(bpy.types.Panel):
             for name in names:
                 grid.prop(settings, name)
 
-        switches(("crosshairs", "ring", "gimbals", "gimbal_values"))
+        switches(("crosshairs", "ring"))
+        layout.prop(settings, "gimbals")
         options = feature_options(layout, settings.gimbals)
+        options.prop(settings, "gimbal_values", text="Gimbal Values")
         options.prop(settings, "deadzones", text="Deadzones")
         switches(("altitude", "speed", "scale", "scale_speed"))
         layout.prop(settings, "in_renders")
