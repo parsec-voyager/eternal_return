@@ -851,7 +851,7 @@ def level_mesh(level, motif, center, window, tile, cores=None, near=None):
         for normal, offset in (((1.0, 0.0), cx + h), ((-1.0, 0.0), -(cx - h)), ((0.0, 1.0), cy + h),
                                ((0.0, -1.0), -(cy - h))):
             normals = np.broadcast_to(np.array(normal), (len(cut_polygons), 2))
-            cut_polygons, cut_counts = clip_half_planes(cut_polygons, cut_counts, normals,
+            cut_polygons, cut_counts = tiling.clip_half_planes(cut_polygons, cut_counts, normals,
                                                         np.full(len(cut_polygons), offset))
         good = cut_counts >= 3
         parts.append((cut_polygons[good], cut_counts[good], classes[across][good]))
@@ -971,7 +971,7 @@ def chunked_mesh(chunks, level, motif, center, window, cores=None, near=None):
                 for normal, offset in (((1.0, 0.0), (i + 1) * chunk), ((-1.0, 0.0), -i * chunk),
                                        ((0.0, 1.0), (j + 1) * chunk), ((0.0, -1.0), -j * chunk)):
                     normals = np.broadcast_to(np.array(normal), (len(cut_polygons), 2))
-                    cut_polygons, cut_counts = clip_half_planes(cut_polygons, cut_counts, normals, offset.astype(float))
+                    cut_polygons, cut_counts = tiling.clip_half_planes(cut_polygons, cut_counts, normals, offset.astype(float))
                 good = cut_counts >= 3
                 parts.append((cut_polygons[good], cut_counts[good], classes[rows[~whole]][good], i[good], j[good]))
             # Every new chunk's faces at once: the pieces in one array, sorted by chunk and within one by corner count
@@ -1013,26 +1013,6 @@ def chunked_mesh(chunks, level, motif, center, window, cores=None, near=None):
     # The biggest square round center the chunks cover: at least window, and up to a chunk more
     covered = min(cx - i0 * chunk, (i1 + 1) * chunk - cx, cy - j0 * chunk, (j1 + 1) * chunk - cy) * size
     return corners, sizes, classes, covered
-
-
-def clip_half_planes(points, counts, normals, offsets):
-    """Convex polygons (n, corners, 2) each cut to normal . p <= offset (its own normal and offset), keeping order"""
-    n, width = points.shape[:2]
-    if n == 0:
-        return points, counts
-    k = np.arange(width)
-    valid = k < counts[:, None]
-    previous = tiling.take_corners(points, (k - 1) % np.maximum(counts, 1)[:, None])
-    # Padding corners past a polygon's count hold anything (NaN, inf): computed and thrown away, quietly
-    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-        f = (points * normals[:, None, :]).sum(axis=2) - offsets[:, None]
-        g = (previous * normals[:, None, :]).sum(axis=2) - offsets[:, None]
-        inside, was_inside = f <= 0, g <= 0
-        t = g / (g - f)
-        crossing = previous + t[..., None] * (points - previous)
-    stacked = np.stack([crossing, points], axis=2).reshape(n, 2 * width, points.shape[2])
-    flags = np.stack([valid & (inside != was_inside), valid & inside], axis=2).reshape(n, 2 * width)
-    return tiling.compact_corners(stacked, flags)
 
 
 # --- The map ----------------------------------------------------------------------------------------------------------

@@ -47,6 +47,7 @@ The map's object (an empty at the map's origin, its axes the mesh's, scaled unif
 """
 
 import math
+import random
 import time
 from fractions import Fraction
 
@@ -80,10 +81,11 @@ FLOOR_KEY = "surface_floor_of"       # on the floor object: its map's object's n
 #   (SUBSTITUTION_RULES: a labeled mesh, the rule's strapwork drawn on the floor at every level by surface_substitution.py,
 #   whose mesh lattice splits 2 x 2)
 # - factor: how many ways a level's cell's sides split at the next, a whole number from 2 (the map loops by its powers)
+# - endless: an endless plane's ({"seed": a whole number}), None for a map with a top: see retop()
 # The rules whose floors surface_substitution.py draws (substitution.RULES' names)
 SUBSTITUTION_RULES = ("penrose", "darb_imam")
 DEFAULTS = {"rho": 1.0, "window": 1.25, "floor_cells": 4.0, "floor_color": [0.04, 0.03, 0.10, 1.0], "rule": "square",
-            "factor": 2}
+            "factor": 2, "endless": None}
 
 # A key's kinds: a corner of the mesh (its vertex), a point inside an edge (the edge, k along it from its smaller vertex
 # to its bigger one), a point inside a face (the face, I and J)
@@ -1137,14 +1139,18 @@ def crossing(obj, start_world, end_world):
 
 def loop(obj, scale, camera_world):
     """A loop by scale (a power of the map's factor, see loop_factor()) about the map's origin: a dive, or after the
-    anchor moves to the coarser lattice under the camera, a climb. Returns the move of the map's origin the climb made
-    first (world units, before the loop: the drone moves by minus it), or None."""
+    anchor moves to the coarser lattice under the camera, a climb (an endless plane's re-topped first if that would
+    leave it too few levels above the drone, see retop()). Returns the move of the map's origin the climb made first
+    (world units, before the loop: the drone moves by minus it), or None."""
     world = world_of(obj)
     j = round(log_k(scale, world.k))
     move = None
     if j > 0:
         dive(world, j)
     elif j < 0:
+        if is_endless(obj) and world.n + j < TOP_ROOM:
+            retop(obj, world, RETOP_LEVELS)
+            world = world_of(obj)
         move = world_vector(obj, climb(world, -j, map_point(obj, camera_world)))
     save(obj, world)
     return move
@@ -1152,14 +1158,80 @@ def loop(obj, scale, camera_world):
 
 def loop_factor(obj, scale):
     """The loop the map makes for a loop by scale: the nearest power of its factor, a climb no higher than the mesh's
-    own size (n = 0), 1.0 if there's no climbing left"""
+    own size (n = 0), 1.0 if there's no climbing left; an endless plane's, any (it's re-topped as it climbs)"""
     world = world_of(obj)
-    return float(world.k) ** loops.limited_power(scale, world.n, log_base=math.log(world.k))
+    most = math.inf if is_endless(obj) else world.n
+    return float(world.k) ** loops.limited_power(scale, most, log_base=math.log(world.k))
 
 
 def at_top(obj):
-    """Whether the map is at the mesh's own size, n = 0, with nothing coarser to climb into"""
-    return world_of(obj).n == 0
+    """Whether the map is at the mesh's own size, n = 0, with nothing coarser to climb into (never, for an endless
+    plane)"""
+    return not is_endless(obj) and world_of(obj).n == 0
+
+
+# ----- an endless plane: no top -----
+
+# An endless plane (the "endless" setting) is a map whose mesh is one square face, the plane's top cell: whatever's
+# biggest so far. It's kept at least TOP_ROOM levels over the drone's (n, the depth of the units), and when a climb would
+# leave it fewer, it's re-topped: RETOP_LEVELS levels are made up above it (retop()). Re-topping forgets every build,
+# a pop, so the top is made up so far above (some 500 climbing loops) that a flight never gets there: the exact
+# arithmetic is as good a thousand levels down as at the top.
+TOP_ROOM = 60
+RETOP_LEVELS = 1000
+
+
+def is_endless(obj):
+    return bool(setting(obj, "endless"))
+
+
+def retop(obj, world, levels, clear=None):
+    """Make up levels levels above an endless plane's top: each time, the face (the top cell) becomes one of the k x k
+    cells of a cell k times its size, a digit along each side, so the world goes a level deeper (n + 1) and the anchor's
+    whole numbers shift by where the old top is in the new: the same place, the same units, nothing on screen moves
+    (endless.py's digit stack, as the surface's anchor). The digits are random (seeded by the setting and the depth, so
+    a map makes up the same ones every time) among those that keep the anchor's point at least 1/(2k) of the new top's
+    side in from its sides (there's always one: the one nearest its middle), and of those, the ones where it's clear
+    of the motif's pieces at that level (clear(x, y): the point's place in the new top's cell; none clear, any), so
+    a made-up level never puts its lines or frames under the drone, and climbing never comes back to the top's edge.
+
+    Every level is relabeled (level d of the old top is d + 1 of the new), so whatever's built for the map is
+    forgotten and built again: one hitch every RETOP_LEVELS - TOP_ROOM levels of climbing."""
+    settings = setting(obj, "endless")
+    seed = int(settings.get("seed", 0)) if hasattr(settings, "get") else 0
+    if clear is None and draws_levels(obj):
+        try:
+            from . import surface_substitution
+        except ImportError:
+            import surface_substitution
+        clear = lambda x, y: surface_substitution.clear_point(obj, x, y)
+    k, top = world.k, world.topology
+    N = world.N
+    kind, a, b, c = world.A
+    if kind == FACE:
+        I, J = b, c
+    else:
+        I, J = top.param_in(world.A, N, 0)
+    n = world.n
+    least = Fraction(1, 2 * k)
+    for _ in range(levels):
+        rng = random.Random(f"{seed}:{n}")
+        x, y = Fraction(I, N), Fraction(J, N)
+        options = []
+        for dx in range(k):
+            for dy in range(k):
+                u, v = (dx + x) / k, (dy + y) / k
+                if min(u, 1 - u, v, 1 - v) >= least:
+                    options.append((dx, dy, u, v))
+        clear_ones = [o for o in options if clear is None or clear(float(o[2]), float(o[3]))]
+        dx, dy, _u, _v = rng.choice(clear_ones or options)
+        I, J = dx * N + I, dy * N + J
+        N *= k
+        n += 1
+    world.__init__(n, (FACE, 0, I, J), world.rho, top, k)
+    save(obj, world)
+    forget()
+    parts.forget()
 
 
 def recenter_move(obj, camera_world):
@@ -1193,6 +1265,9 @@ class FloorBuilt(schedule.Window):
 
 
 _floors = {}         # map object name -> FloorBuilt
+# The floor's cells are cut near the camera into pieces about their distance from it across, down to this share of
+# the drone's height (tiling.split_near())
+FLOOR_SPLIT_TILE = 0.5
 
 
 def floor_object(obj):
@@ -1427,6 +1502,13 @@ def settle_floor(obj, world, camera, below, clip_end):
     if rebuild:
         corners, sizes, colors, level, split = build_floor(world, camera, below, window,
                                                            float(setting(obj, "floor_cells")))
+        # Cells far bigger than their distance from the camera cut smaller near it (tiling.split_near(): a cell a
+        # quarter of the window across had its depth by the camera off by as much as the levels over it are apart)
+        if len(sizes):
+            points, counts, rows = tiling.split_near(*tiling.polygons_of(corners, sizes), np.zeros(3),
+                                                     FLOOR_SPLIT_TILE * abs(below.height) * world.rho)
+            corners, sizes = tiling.corners_of(points, counts)
+            colors = np.asarray(colors)[rows]
         height = abs(below.height) * world.rho if split else None
         built = _floors[obj.name] = FloorBuilt(text, world.n, np.array(camera, dtype=float), window, level, height)
         tiling.write_mesh(floor_obj, corners, sizes, colors)

@@ -664,6 +664,108 @@ def clip_segment(x0, y0, x1, y1, w):
     return (x0 + t0 * dx, y0 + t0 * dy), (x0 + t1 * dx, y0 + t1 * dy)
 
 
+def clip_half_planes(points, counts, normals, offsets):
+    """Convex polygons (n, corners, d: points of any dimension) each cut to normal . p <= offset (its own normal and
+    offset), keeping order"""
+    n, width = points.shape[:2]
+    if n == 0:
+        return points, counts
+    k = np.arange(width)
+    valid = k < counts[:, None]
+    previous = take_corners(points, (k - 1) % np.maximum(counts, 1)[:, None])
+    # Padding corners past a polygon's count hold anything (NaN, inf): computed and thrown away, quietly
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        f = (points * normals[:, None, :]).sum(axis=2) - offsets[:, None]
+        g = (previous * normals[:, None, :]).sum(axis=2) - offsets[:, None]
+        inside, was_inside = f <= 0, g <= 0
+        t = g / (g - f)
+        crossing = previous + t[..., None] * (points - previous)
+    stacked = np.stack([crossing, points], axis=2).reshape(n, 2 * width, points.shape[2])
+    flags = np.stack([valid & (inside != was_inside), valid & inside], axis=2).reshape(n, 2 * width)
+    return compact_corners(stacked, flags)
+
+
+def polygons_of(corners, sizes):
+    """Polygons given as their corners in a row (m, d) and how many each has, as split_near() takes them: (points (n,
+    widest, d), counts)"""
+    sizes = np.asarray(sizes, dtype=np.int64)
+    width = int(sizes.max()) if len(sizes) else 3
+    starts = np.concatenate([[0], np.cumsum(sizes)[:-1]]).astype(np.int64)
+    index = starts[:, None] + np.minimum(np.arange(width), np.maximum(sizes - 1, 0)[:, None])
+    return np.asarray(corners)[index], sizes
+
+
+def corners_of(points, counts):
+    """The other way round: (corners in a row, counts)"""
+    valid = np.arange(points.shape[1]) < counts[:, None]
+    return points[valid], counts
+
+
+# split_near(): a polygon is cut once it's more than this many times bigger than its distance from the middle (or the
+# tile's size near it)
+SPLIT_RATIO = 4.0
+
+
+def split_near(points, counts, middle, tile, ratio=SPLIT_RATIO):
+    """Convex polygons (n, corners, d: their first three coordinates a place, any after carried along) that are more than
+    ratio times bigger than their distance from middle (or tile, near it), cut on the planes at middle +- tile * 2^k
+    along each axis: tiles() in three dimensions, for surfaces that fold (a mesh's levels and floor). A polygon's depth
+    near the camera is interpolated from its corners, in float32 from its object's middle, so one reaching tens of
+    thousands of units off (a coarse level's band holding the whole view, a floor cell a quarter of the window across)
+    had it wrong near the camera by about as much as the layers of finer levels on top are apart, and they z-fought: a
+    giant band flickered against the floor as the camera moved (the user, 2026-11-23). Cut so, each piece is no more
+    than about its distance from the camera across. Returns (points, counts, rows: the polygon each piece is of)."""
+    n, width = points.shape[:2]
+    rows = np.arange(n)
+    if n == 0:
+        return points, counts, rows
+    middle = np.asarray(middle, dtype=float)
+    valid = (np.arange(width) < counts[:, None])[..., None]
+    with np.errstate(invalid="ignore"):
+        place = points[..., :3] - middle
+        low = np.where(valid, place, np.inf).min(axis=1)
+        high = np.where(valid, place, -np.inf).max(axis=1)
+    extent = (high - low).max(axis=1)
+    bound = np.maximum(tile, np.maximum(low, -high).max(axis=1))
+    big = np.isfinite(extent) & (extent > ratio * bound)
+    if not big.any():
+        return points, counts, rows
+    reach = float(np.abs(np.concatenate([low[big], high[big]])).max())
+    steps = [tile]
+    while steps[-1] < reach:
+        steps.append(2.0 * steps[-1])
+    cuts = sorted([-s for s in steps] + [0.0] + steps)
+    work, work_counts, work_rows = points[big], counts[big], rows[big]
+    for axis in range(3):
+        for c in cuts:
+            at = middle[axis] + c
+            w_valid = np.arange(work.shape[1]) < work_counts[:, None]
+            with np.errstate(invalid="ignore"):
+                w_low = np.where(w_valid, work[..., axis], np.inf).min(axis=1)
+                w_high = np.where(w_valid, work[..., axis], -np.inf).max(axis=1)
+            across = np.flatnonzero((w_low < at) & (w_high > at))
+            if not len(across):
+                continue
+            normal = np.zeros((len(across), work.shape[2]))
+            normal[:, axis] = 1.0
+            below, below_counts = clip_half_planes(work[across], work_counts[across], normal, np.full(len(across), at))
+            above, above_counts = clip_half_planes(work[across], work_counts[across], -normal,
+                                                   np.full(len(across), -at))
+            keep = np.setdiff1d(np.arange(len(work)), across)
+            size = max(work.shape[1], below.shape[1], above.shape[1])
+            pad = lambda a: np.pad(a, ((0, 0), (0, size - a.shape[1]), (0, 0)))
+            work = np.concatenate([pad(work[keep]), pad(below), pad(above)])
+            work_counts = np.concatenate([work_counts[keep], below_counts, above_counts])
+            work_rows = np.concatenate([work_rows[keep], work_rows[across], work_rows[across]])
+            good = work_counts >= 3
+            work, work_counts, work_rows = work[good], work_counts[good], work_rows[good]
+    size = max(width, work.shape[1])
+    pad = lambda a: np.pad(a, ((0, 0), (0, size - a.shape[1]), (0, 0)))
+    small = ~big
+    return (np.concatenate([pad(points[small]), pad(work)]), np.concatenate([counts[small], work_counts]),
+            np.concatenate([rows[small], work_rows]))
+
+
 def tiles(batches, colors, tile, window, adaptive=False):
     """Convex polygons split on the lines at 0 and +-tile * 2^k, up to the window, with their colors: batches of them,
     each (count, corners, 2) floats, and each batch's colors (count, 4). As (corners, sizes, colors): every face's

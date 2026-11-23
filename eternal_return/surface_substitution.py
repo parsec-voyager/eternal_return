@@ -127,8 +127,10 @@ PUSH_STEP = 100000.0 / 2 ** 24
 # root rounded once, are only good to ~1e-16 of their size), only the floor tinted by the bar the drone is in, if any
 # (giant_tint())
 GIANT = 1e6
-# settle(): deep down, levels are measured from the coarsest whose tiles are this much (a log) under a float's range
-LOG_ROOM = 600.0
+# settle(): deep down, once level 0's tiles are past BIG_TILE map units (products of them with pixel sizes overflowed at
+# 2^1000), levels are measured from the coarsest whose tiles are about e^LOG_ROOM
+BIG_TILE = 1e150
+LOG_ROOM = 300.0
 # A coarse level is re-rooted at a tile near the drone once its tiles are further than this from their root (its
 # places are good to ~1e-16 of the distance to the root)
 COARSE_COEF = 16
@@ -1284,7 +1286,7 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
                 if faces.clip:
                     normals, offsets = level.face_sides(faces, rows)
                     for j in range(4):
-                        ideal, row_counts = substitution.clip_half_planes(ideal, row_counts, normals[:, j], offsets[:, j])
+                        ideal, row_counts = tiling.clip_half_planes(ideal, row_counts, normals[:, j], offsets[:, j])
                     # Slivers left where a bar's side lies along a face's side (kept or not by the last bit) dropped
                     good = (row_counts >= 3) & (np.abs(polygon_areas(ideal, row_counts)) > SLIVER)
                     ideal, row_counts, rows, row_codes = ideal[good], row_counts[good], rows[good], row_codes[good]
@@ -1385,7 +1387,7 @@ def box_cut(level, world, faces, rows, ideal, counts, center, window):
         for sign in (1.0, -1.0):
             normal = np.zeros((len(mixed), 5))
             normal[:, axis] = sign
-            mixed, cut_counts = substitution.clip_half_planes(mixed, cut_counts, normal, np.full(len(mixed), window))
+            mixed, cut_counts = tiling.clip_half_planes(mixed, cut_counts, normal, np.full(len(mixed), window))
     good = cut_counts >= 3
     mixed, cut_counts, across = mixed[good], cut_counts[good], across[good]
     width = max(ideal.shape[1], mixed.shape[1])
@@ -1507,8 +1509,8 @@ def split_along(corners, counts, spacing, seen, step, span=math.inf):
     high = np.where(position == last, np.inf, at[np.minimum(base + position, len(at) - 1)])
     out, out_counts = corners[parent], counts[parent]
     with np.errstate(invalid="ignore", over="ignore"):
-        out, out_counts = substitution.clip_half_planes(out, out_counts, -direction[parent], -low)
-        out, out_counts = substitution.clip_half_planes(out, out_counts, direction[parent], high)
+        out, out_counts = tiling.clip_half_planes(out, out_counts, -direction[parent], -low)
+        out, out_counts = tiling.clip_half_planes(out, out_counts, direction[parent], high)
     good = out_counts >= 3
     out, out_counts, parent = out[good], out_counts[good], parent[good]
     whole = np.setdiff1d(np.arange(r), split_rows)
@@ -1847,6 +1849,20 @@ def inside_cell(obj, world, faces, below, d):
     return (outline_color(obj) if strip else paint_colors(obj, d, 1.0)[paint]), clearance
 
 
+def clear_point(obj, x, y):
+    """Whether the point (x, y) of a square map's cell (its own units) is clear of the motif's pieces (surface.retop():
+    a made-up level puts none under the drone)"""
+    polygons, counts = motif_of(obj).bars[0]
+    here = np.array([x, y])
+    for size in np.unique(counts).tolist():
+        c = polygons[np.flatnonzero(counts == size), :size] - here
+        e = np.roll(c, -1, axis=1) - c
+        inside = (e[..., 0] * -c[..., 1] - e[..., 1] * -c[..., 0]).min(axis=1)
+        if (inside >= 0.0).any():
+            return False
+    return True
+
+
 def tint_floor(obj, st, color):
     """The floor all one color (a giant level's bar the drone is in), or its own colors again (None)"""
     floor = surface.floor_object(obj)
@@ -1903,11 +1919,11 @@ def settle(obj, camera_world):
     bar = 2.0 * float(setting(obj, "half_width"))
     radius = float(setting(obj, "radius"))
     rule = faces.rule
-    # Levels are measured from level r: 0, or deep down, where level 0's tiles are past a float's range (2^1024 map
-    # units: a thousand loops of 2 down, 646 of 3), the coarsest whose tiles are within it, LOG_ROOM short of it
+    # Levels are measured from level r: 0, or deep down, where level 0's tiles are near a float's range (an endless
+    # plane is a thousand levels deep from the start), the coarsest whose tiles are about e^LOG_ROOM
     r, shrink = 0, rule.shrink_float
     tile0 = surface_tile(world, faces, below, 0)           # level r's tile edge where the drone is, map units
-    if not math.isfinite(tile0):
+    if not tile0 < BIG_TILE:
         r = max(0, math.ceil((rule.log_shrink(0, world.n) - LOG_ROOM) / rule.log_loop))
         shrink = lambda d: rule.shrink_float(d - r)
         tile0 = surface_tile(world, faces, below, r)
@@ -2102,7 +2118,12 @@ def settle(obj, camera_world):
             needed_in = (math.log(float(setting(obj, "min_bar_px")) / px) / -rate
                          if rate < 0.0 and 0.0 < px < float(setting(obj, "min_bar_px")) else 1.0)
             ask(finest, 0.0, False, False, worth(finest, 1.0 / FADE_STEPS)[0], max(needed_in, 0.0))
-    tint_floor(obj, st, None if covered else giant_tint(obj, world, faces, below, st, drawable, foot, sight))
+    # The giant levels' tint, from the coarsest level drawn: one that's past the giant ones' threshold now but not
+    # drawn yet (its build still on a worker thread, as it comes in from the giant ones at a loop or a dive) tints the
+    # floor until it's drawn. Tinted from the threshold, the floor went dark under such a band for the ticks between,
+    # and back as it landed: a hovering drone's floor flickered between the band's color and dark (2026-11-23)
+    top = max(drawable, min(st.drawn, default=drawable))
+    tint_floor(obj, st, None if covered else giant_tint(obj, world, faces, below, st, top, foot, sight))
     # Finer levels on top: the finest unpushed, each coarser a step under; the floor a step under them all
     push = 0.0
     for d in sorted(st.drawn, reverse=True):
@@ -2160,12 +2181,22 @@ def built_level(world, faces, level, motifs, coarse, foot, center, reach, camera
         held = float(level.window - np.linalg.norm(level.center - center))
     window = min(reach, held) if math.isfinite(held) else reach
     cover = covering(corners, sizes, edges, center, window * COVER_SHARE) if coarse and len(sizes) else None
+    # Bars far bigger than their distance from the camera (a coarse level's band holding the view) cut smaller near it
+    # (tiling.split_near(): their depth there would be off by as much as the levels are apart), once the cover's known
+    if len(sizes):
+        points, counts, rows = tiling.split_near(*tiling.polygons_of(corners, sizes),
+                                                 camera if camera is not None else foot, SPLIT_TILE * height)
+        corners, sizes = tiling.corners_of(points, counts)
+        edges = np.asarray(edges)[rows]
     record = Drawn(level.world_text, world.n, center.copy(), window, 1.0, cover, edges, coarse,
                    np.array(camera, dtype=float) if near else None, cut_for if split else None,
                    empty=coarse and not len(sizes), sizes=sizes)
     return (corners - center).astype(np.float32), record, level
 
 
+# Bars are cut near the camera into pieces about their distance from it across, down to this share of the drone's
+# height (tiling.split_near())
+SPLIT_TILE = 0.5
 # A build trims a level only if it has more tiles than this (built_level()): trimming a few is more work than it saves,
 # and the trimmed copy can't be kept (keep_copy())
 TRIM_MIN = 4000
