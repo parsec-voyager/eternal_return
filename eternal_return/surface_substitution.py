@@ -76,10 +76,12 @@ POOL = "substitution_pool"
 #   corners in a cell, u0, v0, u1, v1, ..., counterclockwise, "paint": its paint's name}, ...]; half_width is then half
 #   its strips' width (cells), for how wide they are on screen
 # - paints: each paint's colors, by level in turn ({name: [linear RGBA, ...]}); a paint not named, the palette's
+# - strips: the paints of a motif's own outline strips (its pieces are then not outlined again), drawn in the outline
+#   color and left out far off as outlines are; outline is then their share of a band's width (for how far)
 DEFAULTS = {"style": "hankin54", "half_width": 0.007, "radius": 12.0, "min_bar_px": 0.3, "focal": 1000.0,
             "fade": [0.3, 1.5], "outline": 0.25, "outline_color": None,
             "palette": [[0.03, 0.10, 0.45, 1.0], [0.0, 0.42, 0.40, 1.0], [0.95, 0.55, 0.06, 1.0],
-                        [0.80, 0.16, 0.22, 1.0]], "pieces": None, "paints": None}
+                        [0.80, 0.16, 0.22, 1.0]], "pieces": None, "paints": None, "strips": None}
 # A level's tiles are kept for a window this much wider than wanted, plus this many of its tiles
 SLACK, SLACK_TILES = 1.5, 2.0
 # A level object is built for a window this much wider than its level's, and again once the view reaches past it
@@ -1108,7 +1110,7 @@ def motif_of(obj, outline=None, half_width=None):
         if key not in _motifs:
             pieces = [(np.reshape(np.array(list(p["uv"]), dtype=float), (-1, 2)), str(p["paint"]))
                       for p in (setting(obj, "pieces") or [])]
-            _motifs[key] = Pieces(pieces, share, cores=outline <= 0.0)
+            _motifs[key] = Pieces(pieces, share, cores=outline <= 0.0, strips=list(setting(obj, "strips") or []))
         return _motifs[key]
     key = (rule.name, str(setting(obj, "style")), half_width, outline)
     if key not in _motifs:
@@ -1748,9 +1750,12 @@ def giant_tint(obj, world, faces, below, st, top, foot, sight):
     for d in range(top - 1, stop - 1, -1):
         answer = st.giant.get(d)
         if answer is None or not covers(world, text, answer[1], foot, sight):
-            if centers is None:
-                centers = Centers(world, faces, below, foot, sight)
-            found, clearance = inside_bar(obj, world, faces, below, st.levels.get(d), centers, d)
+            if periodic(faces):
+                found, clearance = inside_cell(obj, world, faces, below, d)
+            else:
+                if centers is None:
+                    centers = Centers(world, faces, below, foot, sight)
+                found, clearance = inside_bar(obj, world, faces, below, st.levels.get(d), centers, d)
             answer = st.giant[d] = (found, Drawn(text, world.n, foot.copy(), clearance, 1.0))
         # How much further the foot's sight can go before this answer stops holding
         offset, scale = surface.transform(world, text, answer[1])
@@ -1829,6 +1834,17 @@ def inside_bar(obj, world, faces, below, level, centers, d):
     if found is None:
         return None, clearance
     return (outline_color(obj) if found else level_color(obj, d, 1.0)), clearance
+
+
+def inside_cell(obj, world, faces, below, d):
+    """inside_bar() for a square map's cells (surface_cells.inside()): the color of the piece of level d the point below
+    is in, or None, and its clearance"""
+    from . import surface_cells
+    found, clearance = surface_cells.inside(world, faces, below, d, motif_of(obj))
+    if found is None:
+        return None, clearance
+    strip, paint = found
+    return (outline_color(obj) if strip else paint_colors(obj, d, 1.0)[paint]), clearance
 
 
 def tint_floor(obj, st, color):
@@ -2086,8 +2102,7 @@ def settle(obj, camera_world):
             needed_in = (math.log(float(setting(obj, "min_bar_px")) / px) / -rate
                          if rate < 0.0 and 0.0 < px < float(setting(obj, "min_bar_px")) else 1.0)
             ask(finest, 0.0, False, False, worth(finest, 1.0 / FADE_STEPS)[0], max(needed_in, 0.0))
-    giant = None if covered or periodic(faces) else giant_tint(obj, world, faces, below, st, drawable, foot, sight)
-    tint_floor(obj, st, giant)
+    tint_floor(obj, st, None if covered else giant_tint(obj, world, faces, below, st, drawable, foot, sight))
     # Finer levels on top: the finest unpushed, each coarser a step under; the floor a step under them all
     push = 0.0
     for d in sorted(st.drawn, reverse=True):

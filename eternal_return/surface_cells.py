@@ -4,7 +4,8 @@ surface map (surface.py) whose rule is "square" splits every quad face k x k at 
 way surface_substitution.py draws a substitution rule's tiles: the same levels (each its own object, finer ones on top,
 the floor under them all), outlines, builds on the worker threads, coarse levels cut to a box. A square's k x k split is
 a substitution rule too, a periodic one, so all that's needed here is where the tiles are:
-- CellRule: the rule, one kind (the unit square, a cell), each level k times finer
+- CellRule: the rule, three kinds (the unit square, a cell, and its halves, a triangle face's), each level k times
+  finer
 - CellFaces: what the drawing asks of the faces (surface_substitution.Faces holds a labeled mesh's): a face's (u, v)
   are a cell's own frame times k^d, so no labels
 - CellLevel: a level's cells near a point, each face's root an exact point of the level's lattice (Topology.point(),
@@ -12,8 +13,9 @@ a substitution rule too, a periodic one, so all that's needed here is where the 
 - tiles(): a level's cells within a window, found face by face from the face below (surface.build_floor()'s walk)
 
 The cells' places in the window are exact at any depth, as the floor's are: a root is placed from the anchor exactly
-and rounded once, and the cells near it in floats from it. Triangles (a triangle mesh's faces split into k^2
-triangles) aren't drawn yet.
+and rounded once, and the cells near it in floats from it. A triangle face splits into k^2 triangles, up and down, in
+its own (u, v) the halves of square cells (motif.CELLS): its up cells are kind UP and its down ones DOWN, each placed by
+its square cell's corner.
 """
 
 import math
@@ -24,15 +26,15 @@ import numpy as np
 from . import surface
 from . import surface_substitution as SS
 
-# A square cell: its kind, middle and corners' greatest distance from it
-SQUARE = 0
+# The cells' kinds (motif.CELLS): a quad face's square cells, a triangle face's up and down halves of them
+SQUARE, UP, DOWN = 0, 1, 2
 # How many cells either way of a root a face's grid may reach (surface.face_grid()'s cap)
 CELL_REACH = 1024
 
 
 class CellRule:
     """A square lattice's k x k split, as a substitution rule's tables (substitution.Rule) are asked for by the
-    drawing: one kind, a cell of unit side, never turned or mirrored"""
+    drawing: three kinds, a cell of unit side and its halves (a triangle face's), never turned or mirrored"""
 
     periodic = True
     straddle = False
@@ -41,19 +43,21 @@ class CellRule:
     def __init__(self, k):
         self.k = int(k)
         self.name = f"cells{self.k}"
-        self.kinds = (SQUARE,)
+        self.kinds = (SQUARE, UP, DOWN)
         self.log_loop = math.log(self.k)
         self.most_children = self.k * self.k
-        self.middles = np.array([[0.5, 0.5]])
-        self.radii = np.array([math.sqrt(0.5)])
+        self.middles = np.array([[0.5, 0.5], [1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]])
+        self.radii = np.array([math.sqrt(0.5), math.sqrt(5.0) / 3.0, math.sqrt(5.0) / 3.0])
         self.orient = np.array([[np.eye(2), np.diag([1.0, -1.0])]])          # (rot 1, mirror 2, 2, 2)
 
     def shrink_float(self, d, shift=0):
         """k^(shift - d) as a float, correctly rounded, saturating past a float's range: level d's cell in level 0's,
         times k^shift (a world's n: map units per level unit over rho)"""
         e = shift - d
-        if abs(e) * self.log_loop > 745.0:
-            return math.inf if e > 0 else 0.0
+        if e * self.log_loop > 709.78:
+            return math.inf
+        if e * self.log_loop < -745.2:
+            return 0.0
         return float(self.k ** e) if e >= 0 else float(Fraction(1, self.k ** -e))
 
     def log_shrink(self, d, shift=0):
@@ -164,24 +168,32 @@ def tiles(world, faces, d, center, window):
     u, v = below.cell_place(d)
     queue = [(below.face, *surface.nearest_point(top._sides[below.face], u, v, M))]
     done = set()
-    out_face, out_coef = [], []
+    out_face, out_kind, out_coef = [], [], []
     while queue:
         f, IR, JR = queue.pop(0)
         if f in done:
             continue
         done.add(f)
-        if top._sides[f] != 4:
-            continue
+        sides = top._sides[f]
         root = [(IR, JR), None, 0.0, 0.0]
         level.roots[f] = root
         ref = level.place_root(world, faces, f)[1] - center
         if not np.all(np.isfinite(ref)):
             continue
-        D, gi, gj, grid, _rem = surface.face_grid(top, f, IR, JR, M, ref, window, CELL_REACH, level.scale)
+        D, gi, gj, grid, rem = surface.face_grid(top, f, IR, JR, M, ref, window, CELL_REACH, level.scale)
         if min(gi.shape) < 2:
             continue
         offsets = np.stack([gi, gj], axis=-1).astype(np.int64)
-        corners, at = surface.face_cells(4, grid, offsets, 0)
+        corners, at = surface.face_cells(sides, grid, offsets, rem)
+        if sides == 4:
+            kinds, cell = np.full(len(at), SQUARE, np.int8), at[:, 0]
+        else:
+            # face_cells() lists a triangle's up cells (corner 0 the square cell's) then its down ones (corner 0 the
+            # square cell's (I + 1, J))
+            total = offsets[:-1, :-1].sum(axis=-1)
+            ups = int((total + 1 <= rem).sum())
+            kinds = np.where(np.arange(len(at)) < ups, UP, DOWN).astype(np.int8)
+            cell = at[:, 0] - np.where(kinds == DOWN, 1, 0)[:, None] * np.array([1, 0])
         middle = corners.mean(axis=1)
         radius = np.linalg.norm(corners - middle[:, None], axis=-1).max(axis=1)
         with np.errstate(over="ignore", invalid="ignore"):
@@ -189,16 +201,23 @@ def tiles(world, faces, d, center, window):
         if not near.any():
             continue
         out_face.append(np.full(int(near.sum()), f, dtype=np.int64))
-        out_coef.append(at[near, 0])
-        # The faces across the sides its kept cells reach (their corners on that side), as build_floor() goes on
+        out_kind.append(kinds[near])
+        out_coef.append(cell[near])
+        # The faces across the sides its kept cells reach (their corners on that side), as build_floor() goes on: a
+        # side as an axis of the offsets from (IR, JR) (None: I + J, a triangle's long side) and where it is along it
         kept = at[near].reshape(-1, 2)
-        for s, (axis, where) in enumerate(((1, -JR), (0, M - IR), (1, M - JR), (0, -IR))):
+        if sides == 4:
+            reach = ((1, -JR), (0, M - IR), (1, M - JR), (0, -IR))
+        else:
+            reach = ((1, -JR), (None, M - IR - JR), (0, -IR))
+        for s, (axis, where) in enumerate(reach):
             if abs(where) > D + 1:
                 continue
             g = top.across(f, s)
             if g is None or g in done:
                 continue
-            rows = np.flatnonzero(kept[:, axis] == where)
+            along = kept.sum(axis=1) if axis is None else kept[:, axis]
+            rows = np.flatnonzero(along == where)
             if not len(rows):
                 continue
             I, J = IR + int(kept[rows[0], 0]), JR + int(kept[rows[0], 1])
@@ -207,10 +226,47 @@ def tiles(world, faces, d, center, window):
         face = np.concatenate(out_face)
         coef = np.concatenate(out_coef)
         count = len(face)
-        level.set_tiles(face, np.zeros(count, np.int8), np.zeros(count, np.int8), np.zeros(count, bool), coef)
+        level.set_tiles(face, np.concatenate(out_kind), np.zeros(count, np.int8), np.zeros(count, bool), coef)
         level.roots = {f: r for f, r in level.roots.items() if f in set(face.tolist())}
     level.window = window
     return level
+
+
+def inside(world, faces, below, d, motif):
+    """Whether the point below is in one of level d's pieces (a giant level's, surface_substitution.giant_tint()), as
+    (None, or (whether it's an outline strip, its paint), how far it is from any piece's edge in its cell or its face's
+    sides, map units at least). Its place in the level's cells is exact however deep (Below.cell_place()), and since
+    every piece is cut to its cell, the cell it's in holds all that can hold it."""
+    top = world.topology
+    f = below.face
+    N, M = world.N, world.across(d)
+    u, v = below.cell_place(d)
+    I, J = min(max(math.floor(u), 0), M - 1), min(max(math.floor(v), 0), M - 1)
+    here = np.array([float(u - I), float(v - J)])
+    kind = SQUARE if top._sides[f] == 4 else (UP if here.sum() <= 1.0 else DOWN)
+    with np.errstate(over="ignore"):
+        per = min(world.rho * faces.rule.shrink_float(d, world.n) * max(float(faces.sigma[f]), 1e-300), 1e300)
+        unit = min(world.rho * faces.rule.shrink_float(0, world.n) * float(faces.sigma[f]), 1e300)
+    fu = surface.quotient(below.base[0], N) + float(below.d[0]) * (1 / N)
+    fv = surface.quotient(below.base[1], N) + float(below.d[1]) * (1 / N)
+    sides = (fu, 1.0 - fu, fv, 1.0 - fv) if kind == SQUARE else (fu, fv, 1.0 - fu - fv)
+    clearance = max(min(sides), 0.0) * unit
+    polygons, counts = motif.bars[kind]
+    found = None
+    for size in np.unique(counts).tolist():
+        which = np.flatnonzero(counts == size)
+        c = polygons[which, :size] - here
+        e = np.roll(c, -1, axis=1) - c
+        # Signed distance inside each side (counterclockwise): the least is the distance to the edge inside, and
+        # outside, the most a side is passed by bounds the distance from below (convex pieces)
+        least = ((e[..., 0] * -c[..., 1] - e[..., 1] * -c[..., 0]) / np.maximum(np.hypot(e[..., 0], e[..., 1]),
+                                                                              1e-300)).min(axis=1)
+        clearance = min(clearance, float(np.abs(least).min()) * per)
+        hits = np.flatnonzero(least >= 0.0)
+        if len(hits) and found is None:
+            i = which[hits[0]]
+            found = (bool(motif.edges[kind][i]), int(motif.paints[kind][i]))
+    return found, clearance
 
 
 def forget():

@@ -102,23 +102,40 @@ class Edges(Strapwork):
 
 
 class Pieces(Motif):
-    """A square lattice's motif (one kind, the unit cell [0, 1] x [0, 1]): pieces, each (convex polygon of [u, v]
-    corners in the cell's units, counterclockwise, paint name), as the plane maps' tiling.py motifs are given. With an
+    """A square lattice's motif on the unit cell [0, 1] x [0, 1]: pieces, each (convex polygon of [u, v] corners in the
+    cell's units, counterclockwise, paint name), as the plane maps' tiling.py motifs are given. Three kinds (CELLS): the
+    square cell, and its halves either side of its diagonal, up ((0, 0), (1, 0), (0, 1)) and down ((1, 0), (1, 1),
+    (0, 1)), a triangle face's cells (a triangle splits into k^2 of them, up and down, in its own (u, v)): the plane's
+    triangle maps' motifs are drawn on square cells sheared into two equilateral triangles. With an
     outline (a share of a strip's width each side), each quad piece whose corners 0 to 1 and 3 to 2 run along it (a
     bar or an outline's quad) is a core between two outline strips (the build scripts' plane_tiling.outlined()), and
     with cores, the cores alone (as a level's far cells are drawn). Every polygon is cut to the cell: what sticks out
     of it is drawn by the cell it sticks into (each piece shifted a cell each way and cut again: the motif repeats), so a
-    cell's pieces stay on its own face of a mesh, and two faces' cells meet seamlessly at a fold."""
+    cell's pieces stay on its own face of a mesh, and two faces' cells meet seamlessly at a fold. A motif that draws its
+    own outlines names the paints of its strips (strips): those pieces are outline strips as they are, and no quad is
+    outlined again."""
 
-    def __init__(self, pieces, outline=0.0, cores=False):
+    def __init__(self, pieces, outline=0.0, cores=False, strips=()):
         super().__init__()
-        self.outline, self.cores = outline, cores
+        self.outline, self.cores, self.strips = outline, cores, set(strips)
+        if self.strips:
+            # A motif that draws its own outlines (the pieces painted strips: the triangle motif's bands' borders)
+            # isn't outlined again, and with cores its strips are left out
+            pieces = [(polygon, paint) for polygon, paint in pieces if not (cores and paint in self.strips)]
         self.paint_names = list(dict.fromkeys(paint for _polygon, paint in pieces))
-        cell = [np.array(c, dtype=float) for c in ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))]
+        for kind, region in enumerate(CELLS):
+            self.lay_out(kind, *self.cut(pieces, [np.array(c, dtype=float) for c in region]))
+
+    def cut(self, pieces, region):
+        """Every piece's polygons (outlined) cut to region (a convex polygon in the cell), each shifted a cell each way
+        too: (polygons, whether each is an outline strip, each one's paint)"""
+        outline, cores = (0.0 if self.strips else self.outline), self.cores
         polygons, edges, paints = [], [], []
         for polygon, paint in pieces:
             polygon = np.asarray(polygon, dtype=float)
-            if outline > 0.0 and len(polygon) == 4:
+            if paint in self.strips:
+                parts = [(polygon, True)]
+            elif outline > 0.0 and len(polygon) == 4:
                 parts = [(across(polygon, outline, 1.0 - outline), False)]
                 if not cores:
                     parts += [(across(polygon, 0.0, outline), True), (across(polygon, 1.0 - outline, 1.0), True)]
@@ -128,17 +145,20 @@ class Pieces(Motif):
                 for dx in (-1.0, 0.0, 1.0):
                     for dy in (-1.0, 0.0, 1.0):
                         cut = [np.asarray(c) for c in part + (dx, dy)]
-                        for i in range(4):
-                            cut = clip_to_left(cut, cell[i], cell[(i + 1) % 4])
+                        for i in range(len(region)):
+                            cut = clip_to_left(cut, region[i], region[(i + 1) % len(region)])
                             if len(cut) < 3:
                                 break
                         if len(cut) >= 3 and polygon_area(cut) > PIECE_SLIVER:
                             polygons.append(cut)
                             edges.append(strip)
                             paints.append(self.paint_names.index(paint))
-        self.lay_out(0, polygons, edges, paints)
+        return polygons, edges, paints
 
 
+# A square lattice's cell kinds (Pieces): the square, and its up and down halves (a triangle face's cells)
+CELLS = (((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)), ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)),
+         ((1.0, 0.0), (1.0, 1.0), (0.0, 1.0)))
 # A piece cut to its cell smaller than this (cell units squared) is left out: a sliver where it only touches the cell
 PIECE_SLIVER = 1e-12
 
