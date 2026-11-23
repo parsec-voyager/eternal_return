@@ -34,14 +34,16 @@ import numpy as np
 from . import parts
 from . import penrose
 from . import schedule
+from . import substitution
 from . import surface
 from . import surface_penrose as SP
 from .cyclotomic import (RING10 as RING, im_pair, phi_power_float, q_add, q_float, q_fraction, q_mul, q_phi, q_scale,
                          q_sub, re2_pair, ring_im, ring_re2)
 
-RULE = SP.RULE
-PHI = SP.PHI
-LOG_PHI = SP.LOG_PHI
+# The 3D frames follow Penrose rhombs' corners and edges: Penrose maps only, for now
+RULE = substitution.RULES["penrose"]
+PHI = (1.0 + math.sqrt(5.0)) / 2.0
+LOG_PHI = math.log(PHI)
 EDGE, VERTEX = surface.EDGE, surface.VERTEX
 
 # Each kind, turn and mirroring's corners A, B, C as ring coefficients (kind, rot, mirror, corner, 4), and its legs AB
@@ -196,7 +198,7 @@ def lattice_near(world, faces, level, center, reach):
     side_edge, side_forward, mesh_edges, edge_home, vertex_home = topology_arrays(top)
     out = Near()
     turn = RULE.orient[level.rot, level.mirror.astype(np.int64)]
-    cents = level.rel + np.einsum("tij,tj->ti", turn, SP._CENTROIDS[level.kind])
+    cents = level.rel + np.einsum("tij,tj->ti", turn, RULE.middles[level.kind])
     rows = np.arange(len(level.face))
     if len(rows) and math.isfinite(reach):
         with np.errstate(over="ignore", invalid="ignore"):
@@ -204,7 +206,7 @@ def lattice_near(world, faces, level, center, reach):
             size = level.scale * faces.sigma_hi[level.face]
             away = np.linalg.norm(places - center, axis=1)
             stretch = level.scale * float(faces.sigma_hi[level.face[int(np.argmin(away))]])
-            near = away - SP._RADII[level.kind] * size <= 1.1 * reach * stretch
+            near = away - RULE.radii[level.kind] * size <= 1.1 * reach * stretch
         rows = rows[near]
     face, kind = level.face[rows], level.kind[rows].astype(np.int64)
     rot, mirror = level.rot[rows].astype(np.int64), level.mirror[rows].astype(np.int64)
@@ -215,7 +217,7 @@ def lattice_near(world, faces, level, center, reach):
     maps = level.map_points(world, faces, rows, ideal) if T else np.zeros((0, 3, 3))
     _place, ur, vr = level.face_params(world, faces, rows) if T else (None, np.zeros(0), np.zeros(0))
     small = phi_power_float(level.d)
-    sin, cos = faces.sin[face], faces.cos[face]
+    sin, cos = faces.ev_y[face], faces.ev_x[face]
     dv = ideal[..., 1] / sin[:, None]
     du = ideal[..., 0] - dv * cos[:, None]
     u = np.clip(ur[:, None] + small * du, 0.0, 1.0)

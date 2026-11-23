@@ -214,6 +214,27 @@ def start_origin(start):
     return Matrix.Identity(4)
 
 
+def viewport_shading(scene):
+    """Workbench renders with the scene's display shading, but the user flies in a 3D view with its own: copy the file's
+    biggest Solid 3D view's shading onto the scene's, so the frames show what the user sees. The substitution maps
+    color their bars by vertex color in the view only: rendered with the scene's (material gray) the strapwork was
+    invisible, and every pop and seam check on those maps was blind to it (2026-11-22)."""
+    views = [(area.width * area.height, space) for screen in bpy.data.screens for area in screen.areas
+             if area.type == 'VIEW_3D' for space in area.spaces[:1] if space.shading.type == 'SOLID']
+    if not views:
+        return None
+    space = max(views, key=lambda v: v[0])[1]
+    source, target = space.shading, scene.display.shading
+    for prop in source.bl_rna.properties:
+        if prop.is_readonly or prop.type in ('POINTER', 'COLLECTION') or prop.identifier in ("type", "rna_type"):
+            continue
+        try:
+            setattr(target, prop.identifier, getattr(source, prop.identifier))
+        except (AttributeError, TypeError, ValueError):
+            pass
+    return source.color_type
+
+
 def place_drone(m, start):
     """Put the drone camera at the plan's start: location, aim, scale and clip."""
     scene = bpy.context.scene
@@ -749,6 +770,7 @@ def replay(args):
     r = scene.render
     if args.engine == "workbench":
         r.engine = 'BLENDER_WORKBENCH'
+        viewport_shading(scene)
     elif r.engine == 'BLENDER_EEVEE':
         scene.eevee.taa_render_samples = 1
     r.resolution_x, r.resolution_y, r.resolution_percentage = width, height, 100
@@ -938,6 +960,7 @@ def main():
     r = scene.render
     if args.engine == "workbench":
         r.engine = 'BLENDER_WORKBENCH'
+        viewport_shading(scene)
     elif r.engine == 'BLENDER_EEVEE':
         scene.eevee.taa_render_samples = 1       # like a viewport frame in motion
     r.resolution_x, r.resolution_y, r.resolution_percentage = width, height, 100

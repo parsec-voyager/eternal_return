@@ -41,6 +41,8 @@ PHI = RING.add(ONE, RING.sub(RING.power(2), RING.power(3)))       # 1 + zeta^2 -
 PHI_INV = RING.sub(RING.power(2), RING.power(3))                    # phi - 1
 LAMBDA, LAMBDA_INV = PHI, PHI_INV
 LOOP = (1.0 + math.sqrt(5.0)) / 2.0
+# LAMBDA as 2^a phi^b, (a, b): its powers exact in Q(sqrt 5) and as floats to the last bit (substitution.Rule)
+LAMBDA_POWERS = (0, 1)
 
 # Corners A (the apex), B, C, counterclockwise: legs AB and AC of length 1, the base BC the rhomb's diagonal
 PROTOTILE = {THIN: (ZERO, ONE, RING.power(1)), THICK: (ZERO, ONE, RING.power(3))}

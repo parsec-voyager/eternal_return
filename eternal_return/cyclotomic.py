@@ -226,6 +226,12 @@ def q_scale(x, k):
     return x[0] * k, x[1] * k
 
 
+def q_div(x, y):
+    """x / y (y not 0): times y's conjugate over its norm"""
+    norm = Fraction(y[0] * y[0] - 5 * y[1] * y[1])
+    return (Fraction(x[0] * y[0] - 5 * x[1] * y[1]) / norm, Fraction(x[1] * y[0] - x[0] * y[1]) / norm)
+
+
 def q_float(x):
     return float_sqrt(x[0], x[1], 5)
 

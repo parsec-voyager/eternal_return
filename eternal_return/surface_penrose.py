@@ -51,16 +51,12 @@ from . import schedule
 from . import substitution
 from . import surface
 from . import tiling
-from .cyclotomic import (RING10 as RING, Q_PHI, Q_PHI_INV, float_sqrt, phi_power_float, q_add, q_mul, q_phi, q_scale,
-                         q_sub)
+from .cyclotomic import RING10 as RING, float_sqrt, q_add, q_div, q_mul, q_scale, q_sub
 
 PROPERTY = "surface_penrose"
 KIND = "rhomb_kind"
 LEVEL_KEY = "surface_penrose_level_of"
 POOL = "substitution_pool"
-SQRT5 = math.sqrt(5.0)
-PHI = (1.0 + SQRT5) / 2.0
-LOG_PHI = math.log(PHI)
 
 # Settings ("surface_penrose" on the map's object):
 # - style, half_width: the strapwork (substitution.Motif: "hankin54", or another contact angle), its bars' half width
@@ -136,38 +132,56 @@ def setting(obj, name):
 
 
 def is_penrose(obj):
-    settings = obj.get(surface.PROPERTY)
-    return settings is not None and settings.get("rule") == "penrose"
+    """Whether the map's floor is drawn here (surface.is_substitution(), whatever its rule)"""
+    return surface.PROPERTY in obj and surface.is_substitution(obj)
 
 
-Q_COS = {penrose.THIN: (Fraction(-1, 4), Fraction(-1, 4)),     # cos 144 = -(1 + sqrt 5) / 4
-         penrose.THICK: (Fraction(-1, 4), Fraction(1, 4))}     # cos 72 = (sqrt 5 - 1) / 4
-# ----- each face's ideal rhomb -----
+def rule_of(obj):
+    """The map's substitution rule (substitution.Rule)"""
+    return substitution.RULES[surface.setting(obj, "rule")]
+
+
+# ----- each face's ideal polygon -----
+
+# A labeled mesh's faces, either way:
+# - a rhomb mesh's (Penrose): the face attribute KIND, each quad's loop (B, A, C, A') a Penrose rhomb, its two halves
+#   its level 0's tiles
+# - any rule's: each corner's place in the tiling's plane (corner attributes IDEAL + "0" to "3": a ring point in level-0
+#   units) and each face's level-0 tile (face attributes TILE + "kind", "rot", "mirror", "tau_0" to "tau_3", in the same
+#   plane), the face a piece of it: a triangle, or a quad that's a parallelogram there, its first side a tile edge (unit
+#   length, along a power of zeta) and counterclockwise. The tile is drawn cut to the face (Faces.clip), so a tile split
+#   into faces any way is drawn whole, and two tiles' faces meet edge to edge. A Darb-i Imam decagon or hexagon is
+#   rhombs, a bowtie triangles; and any two girih tiles join seamlessly at a fold (each tile edge is a mirror line of
+#   everything drawn across it, at every depth: 2026-11-21, checked exactly to depth 3).
+IDEAL = "ideal_"
+TILE = "tile_"
+
 
 class Faces:
-    """A rhomb mesh's labels: each face's kind, its ideal rhomb's A' direction (cos, sin of 144 or 72 degrees), and its
-    two halves at level 0 as penrose.py tiles (in the face's own units: legs 1)"""
+    """A labeled mesh's faces as the levels see them: each face's level 0's tiles (tiles: the rule's, (kind, rot,
+    mirror, tau), in the face's own ideal frame: its corner 0 at 0, its first side along 1), its second side's direction
+    there (ev_x, ev_y as floats, q_ev_x, q_ev_y exactly: x, and y over sin 36, Q(sqrt 5) pairs), whether its tiles are
+    cut to it (clip; then polygon: its corners in its frame, ring points), and how far its point moves for a step in
+    its frame (sigma, sigma_hi) and where it is (middle, radius: mesh units)"""
 
-    def __init__(self, top, mesh):
-        attribute = mesh.attributes.get(KIND)
-        if attribute is None or attribute.domain != 'FACE':
-            raise ValueError(f"surface_penrose: {mesh.name} has no face attribute {KIND}")
-        kinds = np.empty(len(mesh.polygons), dtype=np.int32)
-        attribute.data.foreach_get("value", kinds)
-        if np.any(top.sides != 4):
-            raise ValueError(f"surface_penrose: {mesh.name} isn't all quads")
-        self.kind = kinds
-        angle = np.where(kinds == penrose.THIN, math.radians(144.0), math.radians(72.0))
-        self.cos, self.sin = np.cos(angle), np.sin(angle)
-        e2 = {penrose.THIN: RING.power(4), penrose.THICK: RING.power(2)}
-        # How far a step in the ideal rhomb moves the face's point at least (its Jacobian from ideal coordinates, (u, v)'s
-        # times the inverse of (u, v) -> u + v e2, on a 5 x 5 grid, its least singular value, less a tenth for between)
+    def __init__(self, top, mesh, rule):
+        self.rule = rule
+        count = len(mesh.polygons)
+        if mesh.attributes.get(KIND) is not None:
+            self.rhombs(top, mesh)
+        elif mesh.attributes.get(TILE + "kind") is not None:
+            self.pieces(top, mesh)
+        else:
+            raise ValueError(f"surface_penrose: {mesh.name} has neither {KIND} nor {TILE}kind")
+        assert len(self.tiles) == count
+        # How far a step in the face's frame moves its point at least (its Jacobian from ideal coordinates, (u, v)'s
+        # times the inverse of (u, v) -> u + v ev, on a 5 x 5 grid, its least singular value, less a tenth for between)
         grid = np.linspace(0.0, 1.0, 5)
         gu, gv = (g.ravel() for g in np.meshgrid(grid, grid, indexing="ij"))
-        inverse = np.zeros((len(kinds), 2, 2))
+        inverse = np.zeros((count, 2, 2))
         inverse[:, 0, 0] = 1.0
-        inverse[:, 0, 1] = -self.cos / self.sin
-        inverse[:, 1, 1] = 1.0 / self.sin
+        inverse[:, 0, 1] = -self.ev_x / self.ev_y
+        inverse[:, 1, 1] = 1.0 / self.ev_y
         ju = top.eu[:, None, :] + gv[None, :, None] * top.w[:, None, :]
         jv = top.ev[:, None, :] + gu[None, :, None] * top.w[:, None, :]
         jacobian = np.stack([ju, jv], axis=-1) @ inverse[:, None]                   # (F, grid, 3, 2)
@@ -175,27 +189,94 @@ class Faces:
         self.sigma = 0.9 * values[..., -1].min(axis=1)
         self.sigma_hi = 1.1 * values[..., 0].max(axis=1)
         # Each face's corners' middle and how far its corners are from it (mesh units), for which faces a window reaches
+        quad = (top.sides == 4)[:, None, None]
         corners = np.stack([top.P0, top.P0 + top.eu, top.P0 + top.eu + top.ev + top.w, top.P0 + top.ev], axis=1)
-        self.middle = corners.mean(axis=1)
+        triangle = np.stack([top.P0, top.P0 + top.eu, top.P0 + top.ev, top.P0 + top.ev], axis=1)
+        corners = np.where(quad, corners, triangle)
+        self.middle = np.where(quad[:, 0], corners.mean(axis=1), corners[:, :3].mean(axis=1))
         self.radius = np.linalg.norm(corners - self.middle[:, None], axis=2).max(axis=1)
-        self.halves = []
-        for f, kind in enumerate(kinds.tolist()):
+
+    def rhombs(self, top, mesh):
+        """A rhomb mesh's: each face's kind (0 thin, 1 thick), its A' at 144 or 72 degrees, its two halves"""
+        kinds = np.empty(len(mesh.polygons), dtype=np.int32)
+        mesh.attributes[KIND].data.foreach_get("value", kinds)
+        if np.any(top.sides != 4):
+            raise ValueError(f"surface_penrose: {mesh.name} isn't all quads")
+        self.kind = kinds
+        angle = np.where(kinds == penrose.THIN, math.radians(144.0), math.radians(72.0))
+        self.ev_x, self.ev_y = np.cos(angle), np.sin(angle)
+        e2 = {penrose.THIN: RING.power(4), penrose.THICK: RING.power(2)}
+        sides = {kind: RING.exact_xy(e2[kind]) for kind in e2}
+        self.q_ev_x = [sides[k][0] for k in kinds.tolist()]
+        self.q_ev_y = [sides[k][1] for k in kinds.tolist()]
+        self.clip, self.polygon = False, None
+        self.tiles = []
+        for kind in kinds.tolist():
             c = RING.add(RING.one, e2[kind])
-            self.halves.append([penrose.solve(kind, RING.one, RING.zero, c), penrose.solve(kind, e2[kind], RING.zero, c)])
+            self.tiles.append([penrose.solve(kind, RING.one, RING.zero, c), penrose.solve(kind, e2[kind], RING.zero, c)])
+
+    def pieces(self, top, mesh):
+        """Any rule's: each face's corners' ideal places and its tile, put into its own frame (turned so its first side
+        is along 1, exactly: a turn by a power of zeta)"""
+        count = len(mesh.polygons)
+        loops = len(mesh.loops)
+        ideal = np.zeros((loops, 4), np.int64)
+        for j in range(4):
+            values = np.empty(loops, dtype=np.int32)
+            mesh.attributes[IDEAL + str(j)].data.foreach_get("value", values)
+            ideal[:, j] = values
+        tile = {}
+        for name in ("kind", "rot", "mirror", "tau_0", "tau_1", "tau_2", "tau_3"):
+            values = np.empty(count, dtype=np.int32)
+            mesh.attributes[TILE + name].data.foreach_get("value", values)
+            tile[name] = values.tolist()
+        starts = np.empty(count, dtype=np.int64)
+        mesh.polygons.foreach_get("loop_start", starts)
+        rule, R = self.rule, RING
+        units = {R.power(k): k for k in range(R.n)}
+        self.kind = np.zeros(count, np.int32)
+        self.ev_x, self.ev_y = np.zeros(count), np.zeros(count)
+        self.q_ev_x, self.q_ev_y, self.tiles, self.polygon = [], [], [], []
+        self.clip = True
+        for f in range(count):
+            n = int(top.sides[f])
+            points = [tuple(int(c) for c in ideal[starts[f] + i]) for i in range(n)]
+            k = units.get(R.sub(points[1], points[0]))
+            if k is None:
+                raise ValueError(f"surface_penrose: {mesh.name} face {f}'s first side isn't a tile edge")
+            frame = [R.rot(R.sub(p, points[0]), -k % R.n) for p in points]
+            if n == 4 and R.add(frame[1], frame[3]) != frame[2]:
+                raise ValueError(f"surface_penrose: {mesh.name} face {f} isn't a parallelogram in the tiling's plane")
+            x, y = R.exact_xy(frame[-1])
+            if not float_sqrt(y[0], y[1], 5) > 0.0:
+                raise ValueError(f"surface_penrose: {mesh.name} face {f} isn't counterclockwise in the tiling's plane")
+            self.q_ev_x.append(x)
+            self.q_ev_y.append(y)
+            self.ev_x[f] = float_sqrt(x[0], x[1], 5)
+            self.ev_y[f] = float_sqrt(y[0], y[1], 5) * R.stretch
+            self.polygon.append(frame)
+            tau = (tile["tau_0"][f], tile["tau_1"][f], tile["tau_2"][f], tile["tau_3"][f])
+            kind, rot, mirror = tile["kind"][f], tile["rot"][f], bool(tile["mirror"][f])
+            self.kind[f] = kind
+            self.tiles.append([(kind, (rot - k) % R.n, mirror, R.rot(R.sub(tau, points[0]), -k % R.n))])
 
     def uv_exact(self, f, z, d):
-        """A ring point z of level d (units phi^-d of the face's) as the face's (u, v), exactly: Q(sqrt 5) pairs"""
-        (xa, xb), (ya, yb) = RING.exact_xy(z)
-        kind = int(self.kind[f])
-        v = (ya, yb) if kind == penrose.THIN else q_mul((ya, yb), Q_PHI_INV)     # sin 72 = sin 36 phi
-        u = q_sub((xa, xb), q_mul(v, Q_COS[kind]))
-        scale = q_phi(-d)
+        """A ring point z of level d (units LAMBDA^-d of the face's) as the face's (u, v), exactly: Q(sqrt 5) pairs"""
+        (xa, xb), y = RING.exact_xy(z)
+        v = q_div(y, self.q_ev_y[f])                    # both over sin 36
+        u = q_sub((xa, xb), q_mul(v, self.q_ev_x[f]))
+        scale = self.rule.q_grow(-d)
         return q_mul(u, scale), q_mul(v, scale)
 
     def uv_float(self, f, dx, dy):
         """Ideal offsets (floats, any units) as offsets of the face's (u, v) in the same units"""
-        dv = dy / self.sin[f]
-        return dx - dv * self.cos[f], dv
+        dv = dy / self.ev_y[f]
+        return dx - dv * self.ev_x[f], dv
+
+    def ideal_exact(self, f, u, v):
+        """The face's (u, v) (Fractions) as its ideal point: (x, y over sin 36), Q(sqrt 5) pairs"""
+        uq, vq = (Fraction(u), Fraction(0)), (Fraction(v), Fraction(0))
+        return q_add(uq, q_mul(vq, self.q_ev_x[f])), q_mul(vq, self.q_ev_y[f])
 
 
 _faces = {}
@@ -204,10 +285,10 @@ _faces = {}
 def faces_of(obj, top):
     source = obj.get(surface.SOURCE)
     mesh = source.data
-    key = (mesh.name, len(mesh.vertices), len(mesh.polygons), id(top))
+    key = (mesh.name, len(mesh.vertices), len(mesh.polygons), id(top), surface.setting(obj, "rule"))
     found = _faces.get(key)
     if found is None:
-        found = _faces[key] = Faces(top, mesh)
+        found = _faces[key] = Faces(top, mesh, rule_of(obj))
     return found
 
 
@@ -229,11 +310,6 @@ def exact_offset(world, f, u, v):
 
 # ----- a level's tiles near the drone -----
 
-# Each kind's half: its corners in prototile coordinates, its centroid, and its corners' furthest from it
-_PROTO = {k: np.array([RING.xy_small(c) for c in penrose.PROTOTILE[k]]) for k in penrose.KINDS}
-_CENTROID = {k: p.mean(axis=0) for k, p in _PROTO.items()}
-_RADIUS = {k: float(np.linalg.norm(p - p.mean(axis=0), axis=1).max()) for k, p in _PROTO.items()}
-RULE = substitution.RULES["penrose"]
 # A kept level keeps at least the tiles within this many of its tiles of the point below (its biggest levels: their
 # window is a speck in a tile, and the drone stays in what's kept for long)
 MIN_KEEP = 0.25
@@ -242,9 +318,18 @@ MIN_KEEP = 0.25
 FLOAT_N = 24
 
 
-def side_uv(s, t):
-    """The point t along a quad's side s (from its corner s), as (u, v)"""
+def side_uv(s, t, sides=4):
+    """The point t along a face's side s (from its corner s), as (u, v)"""
+    if sides == 3:
+        return ((t, 0), (1 - t, t), (0, 1 - t))[s]
     return ((t, 0), (1, t), (1 - t, 1), (0, 1 - t))[s]
+
+
+def side_t(u, v, s, sides=4):
+    """How far along a face's side s (from its corner s) the point (u, v) is, as side_uv() counts"""
+    if sides == 3:
+        return (u, (1 + v - u) / 2, 1 - v)[s]
+    return (u, v, 1 - u, 1 - v)[s]
 
 
 class Centers:
@@ -270,19 +355,21 @@ class Centers:
             f = queue.pop(0)
             u, v = self.uv[f]
             corners = top._corners[f]
-            for s in range(4):
+            sides = int(top.sides[f])
+            for s in range(sides):
                 g = top.across(f, s)
                 if g is None or g in self.uv:
                     continue
-                t = clamp((u, v, 1 - u, 1 - v)[s])
+                t = clamp(side_t(u, v, s, sides))
                 e = top._side_edge[f][s]
-                s2 = next(k for k in range(4) if top._side_edge[g][k] == e)
+                sides_g = int(top.sides[g])
+                s2 = next(k for k in range(sides_g) if top._side_edge[g][k] == e)
                 same = top._corners[g][s2] == corners[s]
-                ue, ve = side_uv(s2, t if same else 1 - t)
+                ue, ve = side_uv(s2, t if same else 1 - t, sides_g)
                 ue, ve = Fraction(ue), Fraction(ve)
                 place = exact_offset(world, g, (ue, Fraction(0)), (ve, Fraction(0)))
                 gap = foot - place
-                if not float(np.linalg.norm(gap)) <= window:
+                if not math.hypot(*gap) <= window:          # hypot: a far face's gap squared overflows
                     continue
                 jacobian = world.rho * math.ldexp(1.0, n) * np.stack(
                     [top.eu[g] + float(ve) * top.w[g], top.ev[g] + float(ue) * top.w[g]], axis=1)
@@ -291,13 +378,7 @@ class Centers:
                 self.extra[g] = float(np.linalg.norm(jacobian @ step - gap))
                 queue.append(g)
         # Each one's ideal point (x, and y over sin 36: both Q(sqrt 5) pairs)
-        self.ideal = {}
-        for f, (u, v) in self.uv.items():
-            uq, vq = (Fraction(u), Fraction(0)), (Fraction(v), Fraction(0))
-            kind = int(faces.kind[f])
-            x = q_add(uq, q_mul(vq, Q_COS[kind]))
-            y = vq if kind == penrose.THIN else q_mul(vq, Q_PHI)      # v phi
-            self.ideal[f] = (x, y)
+        self.ideal = {f: faces.ideal_exact(f, u, v) for f, (u, v) in self.uv.items()}
 
 
 # A level's tiles' places are whole-number coefficients from their face's root (int64): re-rooted at a tile near the
@@ -312,22 +393,65 @@ class Level:
     and (u, v)), and each tile as arrays: its face, kind, rot, mirror and tau from its face's root as whole-number ring
     coefficients (coef)"""
 
-    def __init__(self, d, world, center):
-        self.d, self.world_text, self.n = d, world.text(), world.n
+    def __init__(self, d, world, center, rule):
+        self.d, self.world_text, self.n, self.rule = d, world.text(), world.n, rule
         self.center, self.window = np.asarray(center, dtype=float), 0.0
         self.transform = None        # for surface.transform()
         self.roots = {}              # face -> [root tau, map place or None, u_r, v_r]
-        self.scale = world.rho * phi_power_float(d, world.n)       # map units per (u, v) unit of level d: rho 2^n phi^-d
+        self.scale = world.rho * rule.shrink_float(d, world.n)    # map units per (u, v) unit of level d: rho 2^n LAMBDA^-d
         self.set_tiles(np.zeros(0, np.int64), np.zeros(0, np.int8), np.zeros(0, np.int8), np.zeros(0, bool),
                        np.zeros((0, 4), np.int64))
 
     def set_tiles(self, face, kind, rot, mirror, coef):
         self.face, self.kind, self.rot, self.mirror, self.coef = face, kind, rot, mirror, coef
-        self.rel = np.stack([coef @ RULE.basis_x, coef @ RULE.basis_y], axis=1) if len(coef) else np.zeros((0, 2))
+        self.rel = (np.stack([coef @ self.rule.basis_x, coef @ self.rule.basis_y], axis=1) if len(coef)
+                    else np.zeros((0, 2)))
         self.params = None           # face_params() of every tile, until the tiles or their roots change
+        self.__dict__.pop("_face_sides", None)   # face_sides()'s
 
     def take(self, rows):
         self.set_tiles(self.face[rows], self.kind[rows], self.rot[rows], self.mirror[rows], self.coef[rows])
+
+    def face_sides(self, faces, rows):
+        """For tiles rows, of a mesh whose tiles are cut to their faces (Faces.clip): their faces' sides as half planes
+        in the level's units from each face's root, (outward unit normals (t, 4, 2), offsets (t, 4)), a point p inside
+        all four normal . p <= offset (a triangle's third side twice). Each side's offset is the root's distance from
+        it, worked out exactly (deep down a face's corners are far bigger than the tiles' places near the drone, and the
+        distance of a line near the drone, from floats of them, would be all rounding), once a face (kept until the
+        tiles or roots change)."""
+        kept = self.__dict__.setdefault("_face_sides", {})
+        grow = self.rule.power(self.d)
+        for f in np.unique(self.face[rows]).tolist():
+            if f in kept:
+                continue
+            polygon = faces.polygon[f]
+            root = self.roots[f][0]
+            corners = [RING.sub(RING.mul(grow, c), root) for c in polygon]
+            normals, offsets = [], []
+            for i in range(len(polygon)):
+                e = RING.sub(polygon[(i + 1) % len(polygon)], polygon[i])
+                ex, ey = RING.xy_float(e)
+                length = math.hypot(ex, ey)
+                # n = (ey, -ex) / |e|, and n . a = (ey ax - ex ay) / |e| for the side's corner a, exactly
+                (exa, exb), (eya, eyb) = RING.exact_xy(e)
+                (axa, axb), (aya, ayb) = RING.exact_xy(corners[i])
+                cross = q_sub(q_mul((eya, eyb), (axa, axb)), q_mul((exa, exb), (aya, ayb)))
+                normals.append((ey / length, -ex / length))
+                offsets.append(float_sqrt(cross[0], cross[1], 5) * RING.stretch / length)
+            while len(normals) < 4:
+                normals.append(normals[-1])
+                offsets.append(offsets[-1])
+            kept[f] = (np.array(normals), np.array(offsets))
+        normals = np.array([kept[f][0] for f in self.face[rows].tolist()]).reshape(-1, 4, 2)
+        offsets = np.array([kept[f][1] for f in self.face[rows].tolist()]).reshape(-1, 4)
+        return normals, offsets
+
+    def outside(self, faces, rows, points):
+        """How far points (t, 2: level units from each one's face's root) of tiles rows are outside their faces (the
+        most they're past a side; negative inside)"""
+        normals, offsets = self.face_sides(faces, rows)
+        with np.errstate(over="ignore", invalid="ignore"):
+            return (np.einsum("tsj,tj->ts", normals, points) - offsets).max(axis=1)
 
     def copy(self):
         """The same level for a build on another thread, which trims and re-roots what it's given: its own
@@ -346,7 +470,7 @@ class Level:
         if root[1] is None:
             if world.n < FLOAT_N:
                 x, y = RING.xy_float(root[0])
-                scale = phi_power_float(self.d)
+                scale = self.rule.shrink_float(self.d)
                 du, dv = faces.uv_float(f, x, y)
                 ur, vr = du * scale, dv * scale
                 top = world.topology
@@ -386,8 +510,8 @@ class Level:
         top = world.topology
         face = self.face[rows]
         _place, ur, vr = self.face_params(world, faces, rows)
-        small = phi_power_float(self.d)
-        sin, cos = faces.sin[face], faces.cos[face]
+        small = self.rule.shrink_float(self.d)
+        sin, cos = faces.ev_y[face], faces.ev_x[face]
         # Ideal (x, y) to (du, dv): dv = y / sin, du = x - dv cos
         to_uv = np.zeros((len(rows), 2, 2))
         to_uv[:, 0, 0] = 1.0
@@ -410,9 +534,9 @@ class Level:
         place, ur, vr = self.face_params(world, faces, rows)
         extra = (1,) * (ideal.ndim - 2)
         shape = lambda a: a.reshape(a.shape[:1] + extra)
-        dv = ideal[..., 1] / shape(faces.sin[face])
-        du = ideal[..., 0] - dv * shape(faces.cos[face])
-        small = phi_power_float(self.d)
+        dv = ideal[..., 1] / shape(faces.ev_y[face])
+        du = ideal[..., 0] - dv * shape(faces.ev_x[face])
+        small = self.rule.shrink_float(self.d)
         vec = lambda a: a[face].reshape((len(face),) + extra + (3,))
         twist = shape(ur) * dv + shape(vr) * du + small * du * dv
         offset = du[..., None] * vec(top.eu) + dv[..., None] * vec(top.ev) + twist[..., None] * vec(top.w)
@@ -435,15 +559,24 @@ class Level:
         map places (float64 has them to far under a unit); deep, each face's in its ideal coordinates in the level's
         units, from the point below as that face sees it (exactly, once a face: Centers), which never overflows however
         big the level's tiles are in map units, then by their map places too where those are good enough"""
+        rule = self.rule
+        if faces.clip and len(self.face):
+            # Tiles cut to their faces: only those whose descendants can reach the face (a rule's straddle past a tile
+            # by its PAD at most) are its
+            turn = rule.orient[self.rot, self.mirror.astype(np.int64)]
+            cents = self.rel + np.einsum("tij,tj->ti", turn, rule.middles[self.kind])
+            mine = self.outside(faces, np.arange(len(self.face)), cents) <= rule.radii[self.kind] + rule.pad
+            if not mine.all():
+                self.take(np.flatnonzero(mine))
         if not len(self.face):
             self.window = 0.0
             return
-        turn = RULE.orient[self.rot, self.mirror.astype(np.int64)]                     # (t, 2, 2)
-        cents = self.rel + np.einsum("tij,tj->ti", turn, _CENTROIDS[self.kind])
+        turn = rule.orient[self.rot, self.mirror.astype(np.int64)]                     # (t, 2, 2)
+        cents = self.rel + np.einsum("tij,tj->ti", turn, rule.middles[self.kind])
         if world.n < FLOAT_N:
             rows = np.arange(len(self.face))
             places = self.map_points(world, faces, rows, cents)
-            reach = _RADII[self.kind] * self.scale * faces.sigma_hi[self.face]
+            reach = rule.radii[self.kind] * self.scale * faces.sigma_hi[self.face]
             with np.errstate(over="ignore", invalid="ignore"):
                 away = np.linalg.norm(places - center, axis=1) - reach
                 keep = away <= window
@@ -452,7 +585,7 @@ class Level:
             keep = np.zeros(len(self.face), dtype=bool)
             away = np.full(len(self.face), math.inf)        # map units at least
             covered = math.inf
-            grow = q_phi(self.d)
+            grow = rule.q_grow(self.d)
             for f in np.unique(self.face).tolist():
                 if f not in centers.ideal:
                     continue
@@ -469,7 +602,7 @@ class Level:
                     extra = centers.extra[f] / per if per > 0.0 else 0.0
                 if not math.isfinite(margin):
                     margin = math.inf
-                gap = np.linalg.norm(cents[rows] - here, axis=1) - _RADII[self.kind[rows]]
+                gap = np.linalg.norm(cents[rows] - here, axis=1) - rule.radii[self.kind[rows]]
                 near = gap <= margin + extra
                 with np.errstate(over="ignore", invalid="ignore"):
                     away[rows] = gap * per
@@ -486,7 +619,7 @@ class Level:
                 size = self.scale * faces.sigma_hi[self.face[rows]]
                 with np.errstate(over="ignore", invalid="ignore"):
                     places = self.map_points(world, faces, rows, cents[rows])
-                    out = np.linalg.norm(places - center, axis=1) - _RADII[self.kind[rows]] * size
+                    out = np.linalg.norm(places - center, axis=1) - rule.radii[self.kind[rows]] * size
                     far = np.isfinite(out) & (out > np.maximum(window, MIN_KEEP * size))
                 if far.any():
                     keep[rows[far]] = False
@@ -511,10 +644,6 @@ class Level:
         self.reroot()
 
 
-_CENTROIDS = np.array([_CENTROID[k] for k in penrose.KINDS])
-_RADII = np.array([_RADIUS[k] for k in penrose.KINDS])
-
-
 def near_faces(world, faces, center, window):
     """The faces whose corners' sphere comes within window of center (map units), shallow (float64)"""
     top = world.topology
@@ -524,14 +653,14 @@ def near_faces(world, faces, center, window):
 
 
 def level_zero(world, faces, centers, center, window):
-    """Level 0: the halves of the faces near the point below, each face's root its first half's apex"""
-    level = Level(0, world, center)
+    """Level 0: the tiles of the faces near the point below (Faces.tiles), each face's root its first tile's place"""
+    level = Level(0, world, center, faces.rule)
     face, kind, rot, mirror, coef = [], [], [], [], []
     for f in (near_faces(world, faces, center, window) if world.n < FLOAT_N else centers.uv):
-        halves = faces.halves[f]
-        root = halves[0][3]
+        tiles = faces.tiles[f]
+        root = tiles[0][3]
         level.roots[f] = [root, None, 0.0, 0.0]
-        for k, r, m, tau in halves:
+        for k, r, m, tau in tiles:
             face.append(f)
             kind.append(k)
             rot.append(r)
@@ -543,24 +672,33 @@ def level_zero(world, faces, centers, center, window):
 
 
 def level_below(world, parent, center):
-    """The parent level's tiles' children, all of them (the next level's roots phi times the parent's: the same points,
-    which are corners of the children)"""
-    level = Level(parent.d + 1, world, center)
-    level.roots = {f: [RING.mul(penrose.PHI, r[0]), None, 0.0, 0.0] for f, r in parent.roots.items()}
-    grown = parent.coef @ RULE.lambda_matrix.T
+    """The parent level's tiles' children, all of them (the next level's roots LAMBDA times the parent's: the same
+    points), each once: a rule whose children straddle their parents' edges (darb_imam.py) lists some under two parents,
+    with the same face, kind, turn and whole-number place from the face's root"""
+    rule = parent.rule
+    level = Level(parent.d + 1, world, center, rule)
+    level.roots = {f: [RING.mul(rule.lambda_, r[0]), None, 0.0, 0.0] for f, r in parent.roots.items()}
+    grown = parent.coef @ rule.lambda_matrix.T
     parts = []
-    for kind in penrose.KINDS:
+    for kind in rule.kinds:
         rows = np.flatnonzero(parent.kind == kind)
         if not len(rows):
             continue
-        table = RULE.child[kind]
+        table = rule.child[kind]
         r, m = parent.rot[rows].astype(np.int64), parent.mirror[rows].astype(np.int64)
         for slot in range(len(table.kind)):
             parts.append((parent.face[rows], np.full(len(rows), table.kind[slot], np.int8),
                           table.rot[slot][r, m].astype(np.int8), table.mirror[slot][r, m],
                           grown[rows] + table.place[slot][r, m]))
     if parts:
-        level.set_tiles(*(np.concatenate([p[i] for p in parts]) for i in range(5)))
+        face, kind, rot, mirror, coef = (np.concatenate([p[i] for p in parts]) for i in range(5))
+        if rule.straddle:
+            keys = np.column_stack([face, kind.astype(np.int64), rot.astype(np.int64), mirror.astype(np.int64), coef])
+            _unique, first = np.unique(keys, axis=0, return_index=True)
+            if len(first) < len(face):
+                first = np.sort(first)
+                face, kind, rot, mirror, coef = face[first], kind[first], rot[first], mirror[first], coef[first]
+        level.set_tiles(face, kind, rot, mirror, coef)
     return level
 
 
@@ -824,7 +962,7 @@ def cut_levels(world, faces, below, parents, cuts, center, centers_window):
 def rebased(world, faces, level):
     """A kept level with its map places worked out in this world (its tiles and roots are the same)"""
     offset, scale = surface.transform(world, world.text(), level)
-    fresh = Level(level.d, world, offset + scale * level.center)
+    fresh = Level(level.d, world, offset + scale * level.center, level.rule)
     fresh.window = scale * level.window
     fresh.set_tiles(level.face, level.kind, level.rot, level.mirror, level.coef)
     fresh.roots = {f: [r[0], None, 0.0, 0.0] for f, r in level.roots.items()}
@@ -854,7 +992,7 @@ def surface_tile(world, faces, below, d):
                 + (1.0 - u) * v * corner[3])
     else:
         edge = (1.0 - u - v) * corner[0] + u * corner[1] + v * corner[2]
-    return world.rho * float(edge) * phi_power_float(d, world.n)
+    return world.rho * float(edge) * faces.rule.shrink_float(d, world.n)
 
 
 def corner_edges(top):
@@ -874,12 +1012,13 @@ _motifs = {}
 
 
 class EdgeMotif(substitution.Motif):
-    """The "edges" style: each half's legs as bars (its rhomb's edges, cut to the half; the base, inside the rhomb,
-    isn't drawn), so each level's rhombs show, split by the next level's"""
+    """The "edges" style (Penrose): each half's legs as bars (its rhomb's edges, cut to the half; the base, inside the
+    rhomb, isn't drawn), so each level's rhombs show, split by the next level's"""
 
     def __init__(self, rule, style="edges", half_width=0.012, outline=0.0):
         lines = rule.module.lines
-        rule.module.lines = lambda kind, theta: [(_PROTO[kind][0], _PROTO[kind][1]), (_PROTO[kind][0], _PROTO[kind][2])]
+        proto = {kind: [RING.xy_small(c) for c in rule.module.PROTOTILE[kind]] for kind in rule.kinds}
+        rule.module.lines = lambda kind, theta: [(proto[kind][0], proto[kind][1]), (proto[kind][0], proto[kind][2])]
         try:
             super().__init__(rule, "hankin54", half_width, outline)
         finally:
@@ -891,9 +1030,10 @@ def motif_of(obj, outline=None, half_width=None):
     """The map's motif: outlined as its settings say, or with outline (0 for plain bars) and half_width"""
     outline = float(setting(obj, "outline")) if outline is None else outline
     half_width = float(setting(obj, "half_width")) if half_width is None else half_width
-    key = (str(setting(obj, "style")), half_width, outline)
+    rule = rule_of(obj)
+    key = (rule.name, str(setting(obj, "style")), half_width, outline)
     if key not in _motifs:
-        _motifs[key] = (EdgeMotif if key[0] == "edges" else substitution.Motif)(RULE, *key)
+        _motifs[key] = (EdgeMotif if key[1] == "edges" else substitution.Motif)(rule, *key[1:])
     return _motifs[key]
 
 
@@ -948,27 +1088,34 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
     if not len(level.face):
         return np.zeros((0, 3)), np.zeros(0, np.int64), np.zeros(0, np.int8), False
     outlined, cores = motifs
+    rule = level.rule
     rots = level.rot.astype(np.int64)
     top = world.topology
     twist = np.linalg.norm(top.w, axis=1)
-    small = phi_power_float(level.d)
-    for kind in penrose.KINDS:
+    small = rule.shrink_float(level.d)
+    for kind in rule.kinds:
         for mirror in (False, True):
             every = np.flatnonzero((level.kind == kind) & (level.mirror == mirror))
             if not len(every):
                 continue
             # Each tile's middle, and how far its corners can be from it (map units): only those that can reach the
             # window, or the box, go on
-            turn = RULE.orient[rots[every], int(mirror)]
-            cents = level.rel[every] + turn @ _CENTROIDS[kind]
+            turn = rule.orient[rots[every], int(mirror)]
+            cents = level.rel[every] + turn @ rule.middles[kind]
             places = level.map_points(world, faces, every, cents)
-            reach = _RADII[kind] * level.scale * faces.sigma_hi[level.face[every]]
+            reach = rule.radii[kind] * level.scale * faces.sigma_hi[level.face[every]]
             with np.errstate(over="ignore", invalid="ignore"):
                 if box:
                     near = np.all(np.abs(places - center) - reach[:, None] <= window, axis=1)
                 else:
                     near = np.linalg.norm(places - center, axis=1) - reach <= window
             every, places, reach = every[near], places[near], reach[near]
+            # Tiles cut to their faces (Faces.clip): those across a side of theirs go a polygon at a time, cut to it
+            crossing = None
+            if faces.clip and len(every):
+                past = level.outside(faces, every, cents[near])
+                mine = past <= rule.radii[kind]
+                every, places, reach, crossing = every[mine], places[mine], reach[mine], past[mine] > -rule.radii[kind]
             if not len(every):
                 continue
             # Each tile's distance from the camera, for its outlines and its bars' pieces
@@ -1011,8 +1158,10 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
                 # flat enough), unless they're cut to a box: each one's place and frame times the prototile's corners
                 tile_long, tile_seen, tile_step = longest[pick], seen[pick], step[pick]
                 whole = np.zeros(len(sel), dtype=bool) if box else ~(tile_long < bar_span(motif, kind, mirror))
+                if crossing is not None:
+                    whole &= ~crossing[pick]
                 if whole.any():
-                    turn = RULE.orient[rots[sel[whole]], int(mirror)]            # (t, 2, 2)
+                    turn = rule.orient[rots[sel[whole]], int(mirror)]            # (t, 2, 2)
                     place, G, bent, B = level.tile_frames(world, faces, sel[whole], turn)
                     turned = G.transpose(0, 2, 1)
                     corners = place[:, None, :] + flat @ turned                  # (t, p k, 3)
@@ -1036,7 +1185,7 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
                         continue
                     sel, tile_long, tile_seen, tile_step = sel[~whole], tile_long[~whole], tile_seen[~whole], tile_step[~whole]
                 # The rest a polygon at a time: cut to the box, or across into pieces
-                turn = RULE.orient[rots[sel], int(mirror)]
+                turn = rule.orient[rots[sel], int(mirror)]
                 x, y = polygons[..., 0], polygons[..., 1]
                 pts = np.stack([turn[:, 0, 0, None, None] * x + turn[:, 0, 1, None, None] * y,
                                 turn[:, 1, 0, None, None] * x + turn[:, 1, 1, None, None] * y], axis=-1)
@@ -1049,6 +1198,13 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
                 row_seen = np.repeat(tile_seen, len(polygons), axis=0)
                 row_step = np.repeat(tile_step, len(polygons))
                 ideal = pts.reshape(-1, pts.shape[2], 2)
+                if faces.clip:
+                    normals, offsets = level.face_sides(faces, rows)
+                    for j in range(4):
+                        ideal, row_counts = substitution.clip_half_planes(ideal, row_counts, normals[:, j], offsets[:, j])
+                    good = row_counts >= 3
+                    ideal, row_counts, rows, row_codes = ideal[good], row_counts[good], rows[good], row_codes[good]
+                    row_long, row_seen, row_step = row_long[good], row_seen[good], row_step[good]
                 if box:
                     # Cut to the box first (in map units, with the level units carried along as two more coordinates:
                     # the cut's new corners are where the same mix of the corners is, on the face), then split what's
@@ -1087,8 +1243,10 @@ SPLIT_FOLLOW = 0.7
 # again at every 30% of it, most of a dive's builds (2026-11-17: 532 of 790 on the Penrose sphere), and cut for half
 # of it, each holds three times as far down
 SPLIT_AHEAD = 0.5
-# inside_bar() looks at the tiles within this many level units of the point
+# inside_bar() looks at the tiles within this many level units of the point (for Penrose halves, whose furthest corner
+# is PENROSE_RADIUS from their middle; a rule with bigger tiles, as many times as far)
 INSIDE_REACH = 2.5
+PENROSE_RADIUS = float(substitution.RULES["penrose"].radii.max())
 # The finest levels fade in in this many steps: each step writes every corner's color again and has Blender send the
 # mesh to the GPU again, and with substitution.fade()'s 32, three or four levels fading in at once in a dive came to
 # 70 a second, more than one a tick (2026-11-14)
@@ -1511,31 +1669,33 @@ def inside_bar(obj, world, faces, below, level, centers, d):
     per = level.scale * max(float(faces.sigma[f]), 1e-300)
     # How far the point is from its face's sides: past them, other faces' bars aren't looked at
     u, v = (float(x) for x in centers.uv[f])
-    side = min(u, 1.0 - u, v, 1.0 - v) * world.rho * math.ldexp(float(world.topology.sigma_lo[f]), world.n)
+    inside = min(u, v, 1.0 - u - v) if world.topology.sides[f] == 3 else min(u, 1.0 - u, v, 1.0 - v)
+    side = inside * world.rho * math.ldexp(float(world.topology.sigma_lo[f]), world.n)
     clearance = min(side, level.window)
     if not len(rows) or f not in level.roots:
         return None, clearance
+    rule = level.rule
     (xa, xb), (ya, yb) = RING.exact_xy(level.roots[f][0])
     cx, cy = centers.ideal[f]
-    grow = q_phi(d)
+    grow = rule.q_grow(d)
     dx = q_sub(q_mul(cx, grow), (xa, xb))
     dy = q_sub(q_mul(cy, grow), (ya, yb))
     here = np.array([float_sqrt(dx[0], dx[1], 5), float_sqrt(dy[0], dy[1], 5) * RING.stretch])
     # Only the tiles round the point (level units): further bars are at least that far, which caps the clearance
-    turn = RULE.orient[level.rot[rows].astype(np.int64), level.mirror[rows].astype(np.int64)]
-    cents = level.rel[rows] + np.einsum("tij,tj->ti", turn, _CENTROIDS[level.kind[rows]])
-    reach = INSIDE_REACH
-    rows = rows[np.linalg.norm(cents - here, axis=1) <= reach + _RADII[level.kind[rows]]]
-    clearance = min(clearance, (reach - float(_RADII.max())) * per)
+    turn = rule.orient[level.rot[rows].astype(np.int64), level.mirror[rows].astype(np.int64)]
+    cents = level.rel[rows] + np.einsum("tij,tj->ti", turn, rule.middles[level.kind[rows]])
+    reach = INSIDE_REACH * float(rule.radii.max()) / PENROSE_RADIUS
+    rows = rows[np.linalg.norm(cents - here, axis=1) <= reach + rule.radii[level.kind[rows]]]
+    clearance = min(clearance, (reach - float(rule.radii.max())) * per)
     motif = motif_of(obj)
     found = None
-    for kind in penrose.KINDS:
+    for kind in rule.kinds:
         for mirror in (False, True):
             sel = rows[(level.kind[rows] == kind) & (level.mirror[rows] == mirror)]
             polygons, counts = (motif.bars_reversed if mirror else motif.bars)[kind]
             if not len(sel) or not len(polygons):
                 continue
-            turns = RULE.orient[level.rot[sel].astype(np.int64), int(mirror)]
+            turns = rule.orient[level.rot[sel].astype(np.int64), int(mirror)]
             for size in np.unique(counts).tolist():
                 which = np.flatnonzero(counts == size)
                 c = (np.einsum("tij,pkj->tpki", turns, polygons[which, :size]) + level.rel[sel][:, None, None, :]
@@ -1614,14 +1774,16 @@ def settle(obj, camera_world):
     tile0 = surface_tile(world, faces, below, 0)
     px0 = focal * bar * tile0 / height                     # level 0's bars' width under the drone, px
     strip = float(setting(obj, "outline")) * bar
-    outline_within = functools.lru_cache(None)(lambda d: focal * strip * tile0 * phi_power_float(d) / OUTLINE_PX)
-    log_level = lambda x: math.log(max(x, 1e-300)) / LOG_PHI
-    # Level d's bars are px0 phi^-d wide and its tiles tile0 phi^-d: the finest drawn has bars min_bar_px wide; plain
+    rule = faces.rule
+    shrink = rule.shrink_float
+    outline_within = functools.lru_cache(None)(lambda d: focal * strip * tile0 * shrink(d) / OUTLINE_PX)
+    log_level = lambda x: math.log(max(x, 1e-300)) / rule.log_loop
+    # Level d's bars are px0 LAMBDA^-d wide and its tiles tile0 LAMBDA^-d: the finest drawn has bars min_bar_px wide; plain
     # while radius of its tiles fit in the sight; giant past GIANT
     finest = max(0, math.ceil(log_level(px0 / float(setting(obj, "min_bar_px")))))
     plain = min(finest, max(0, math.ceil(log_level(radius * tile0 / sight))))
     drawable = min(plain, max(0, math.ceil(log_level(tile0 / (GIANT * sight)))))
-    drawn_window = functools.lru_cache(None)(lambda d: min(sight, radius * tile0 * phi_power_float(d)))
+    drawn_window = functools.lru_cache(None)(lambda d: min(sight, radius * tile0 * shrink(d)))
     # With nothing drawn yet (a flight's start, a file just loaded), everything is built before the first picture
     first = not st.drawn
     # Where the drone will be when a build asked for now is drawn (soon), and each level's build (plan()): its middle,
@@ -1653,7 +1815,7 @@ def settle(obj, camera_world):
     let_go(st, finest + 2)
 
     # How much of its colors level d shows (None: not drawn at all), in fade steps (asked some 60 times a tick)
-    fade_steps = functools.lru_cache(None)(lambda d: substitution.fade(settings, px0 * phi_power_float(d)) * FADE_STEPS)
+    fade_steps = functools.lru_cache(None)(lambda d: substitution.fade(settings, px0 * shrink(d)) * FADE_STEPS)
 
     def shown_of(d):
         if not drawable <= d <= finest:
@@ -1692,7 +1854,7 @@ def settle(obj, camera_world):
         sinking = max(0.0, -st.motion.descent) * floor_wait
         height_then = height * math.exp(-sinking)
         if d >= plain:
-            shown = max(shown, substitution.fade(settings, px0 * phi_power_float(d) * math.exp(sinking)))
+            shown = max(shown, substitution.fade(settings, px0 * shrink(d) * math.exp(sinking)))
         stake = INK * schedule.view_share(window, height_then) * shown
         entry = st.drawn.get(d)
         if entry is None:
@@ -1798,7 +1960,7 @@ def settle(obj, camera_world):
         if ready is None or due(finest, ready[1]):
             # Worth what it shows once it fades in (its first step), wanted once its bars are min_bar_px wide: diving
             # (schedule.Motion's rate), the drone's height falls and its bars widen
-            px = px0 * phi_power_float(finest)
+            px = px0 * shrink(finest)
             rate = st.motion.descent
             needed_in = (math.log(float(setting(obj, "min_bar_px")) / px) / -rate
                          if rate < 0.0 and 0.0 < px < float(setting(obj, "min_bar_px")) else 1.0)

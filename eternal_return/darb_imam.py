@@ -52,6 +52,8 @@ PHI3_INV = RING.mul(PHI_INV, RING.mul(PHI_INV, PHI_INV))
 LAMBDA_INV = tuple(Fraction(c, 2) for c in PHI3_INV)
 assert RING.tidy(RING.mul(LAMBDA, LAMBDA_INV)) == ONE
 LOOP = 4.0 + 2.0 * math.sqrt(5.0)
+# LAMBDA as 2^a phi^b, (a, b): its powers exact in Q(sqrt 5) and as floats to the last bit (substitution.Rule)
+LAMBDA_POWERS = (1, 3)
 PHI_F = (1.0 + math.sqrt(5.0)) / 2.0
 # Default levels drawn above `made`: by then O is within LAMBDA^-4 = 2e-4 of the default chain's fixed point (a
 # decagon's middle)

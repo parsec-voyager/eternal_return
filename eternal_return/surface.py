@@ -76,9 +76,12 @@ FLOOR_KEY = "surface_floor_of"       # on the floor object: its map's object's n
 # - window: how far the floor is built, in drone camera clip ends
 # - floor_cells: the floor's cells are about the window over this, across (more: more, smaller cells)
 # - floor_color: linear RGBA for faces without a "Col" of the mesh's own
-# - rule: "square" (quads and triangles split factor x factor: this module's lattice) or "penrose" (a rhomb mesh, its
-#   Penrose strapwork drawn on the floor at every level: surface_penrose.py, whose mesh lattice splits 2 x 2)
+# - rule: "square" (quads and triangles split factor x factor: this module's lattice) or a substitution rule
+#   (SUBSTITUTION_RULES: a labeled mesh, the rule's strapwork drawn on the floor at every level by surface_penrose.py,
+#   whose mesh lattice splits 2 x 2)
 # - factor: how many ways a level's cell's sides split at the next, a whole number from 2 (the map loops by its powers)
+# The rules whose floors surface_penrose.py draws (substitution.RULES' names)
+SUBSTITUTION_RULES = ("penrose", "darb_imam")
 DEFAULTS = {"rho": 1.0, "window": 1.25, "floor_cells": 4.0, "floor_color": [0.04, 0.03, 0.10, 1.0], "rule": "square",
             "factor": 2}
 
@@ -644,8 +647,13 @@ _topologies = {}     # (mesh name, vertices, faces) -> Topology
 
 
 def factor(obj):
-    """The map's factor: a level's cells' sides split this many ways at the next (a Penrose map's mesh lattice, 2)"""
-    return 2 if setting(obj, "rule") == "penrose" else int(setting(obj, "factor"))
+    """The map's factor: a level's cells' sides split this many ways at the next (a substitution map's mesh lattice, 2)"""
+    return 2 if is_substitution(obj) else int(setting(obj, "factor"))
+
+
+def is_substitution(obj):
+    """Whether the map's floor is a substitution tiling's (surface_penrose.py), not a lattice's"""
+    return setting(obj, "rule") in SUBSTITUTION_RULES
 
 
 def topology_of(obj):
@@ -1409,7 +1417,7 @@ def settle(obj, camera_world):
     if clip_end <= 0.0:
         return
     settle_floor(obj, world, camera, below_of(obj, world, camera), clip_end)
-    if setting(obj, "rule") == "penrose":
+    if is_substitution(obj):
         try:
             from . import surface_penrose
         except ImportError:

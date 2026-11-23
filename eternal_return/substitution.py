@@ -75,6 +75,7 @@ from . import darb_imam
 from . import loops
 from . import penrose
 from . import tiling
+from .cyclotomic import phi_power_float, q_phi, q_scale
 
 PROPERTY = "substitution"
 MADE = "substitution_made"
@@ -151,11 +152,29 @@ class Rule:
             self.corners[kind] = np.array(pts + [pts[-1]] * (width - len(pts)))
         self.color_class = np.array([[[m.color_class(kind, r, bool(mi)) for mi in (0, 1)] for r in range(N)]
                                      for kind in self.kinds])                     # (kind, rot, mirror)
+        # Each kind's corners' middle and how far its corners are from it (prototile units), indexed by kind: how far a
+        # tile can reach from its middle
+        true = {kind: np.array([R.xy_small(v) for v in m.PROTOTILE[kind]]) for kind in self.kinds}
+        self.middles = np.array([true[kind].mean(axis=0) for kind in self.kinds])
+        self.radii = np.array([float(np.linalg.norm(true[kind] - true[kind].mean(axis=0), axis=1).max())
+                               for kind in self.kinds])
+        self.two_power, self.phi_power = m.LAMBDA_POWERS
         self._powers = {}
 
     def size(self, k):
         """LAMBDA^k as a float, saturating: level k's tile size in level-0 units"""
         return math.exp(max(-700.0, min(700.0, k * self.log_loop)))
+
+    def shrink_float(self, d, shift=0):
+        """2^shift LAMBDA^-d as a float (d >= 0), accurate to the last bit however big d and shift are: level d's tile
+        size in level 0's (the surface maps' levels)"""
+        return phi_power_float(self.phi_power * d, shift - self.two_power * d)
+
+    def q_grow(self, d):
+        """LAMBDA^d exactly in Q(sqrt 5), d of either sign (a pair: a + b sqrt 5)"""
+        found = q_phi(self.phi_power * d)
+        two = self.two_power * d
+        return found if not two else q_scale(found, Fraction(1 << two) if two > 0 else Fraction(1, 1 << -two))
 
     def power(self, k):
         """LAMBDA^k as a ring element, for any whole k"""
