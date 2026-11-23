@@ -18,7 +18,7 @@ Penrose rhombs (~/blender_tests/penrose_surface, the build scripts and checks; ~
 
 Everything about where the drone is stays surface.py's: its world (n and the exact anchor A), the point below, auto
 scale, loops (which only change units) and the floor, drawn dark under the tiles. What's drawn here is each level's
-strapwork, like substitution.py's endless girih floors (its Motif: Hankin lines at 54 degrees by default, each bar cut
+strapwork, like substitution.py's endless girih floors (motif.Hankin: Hankin lines at 54 degrees by default, each bar cut
 to its own half, so two halves' bars never overlap in one plane), on the surface:
 - Level d's tiles are the faces' halves split d times, edges phi^-d of a face's. The drawn levels are those whose bars
   are between min_bar_px and the fade band's far end wide under the drone (fade(), substitution.py's), each within
@@ -55,6 +55,7 @@ from . import substitution
 from . import surface
 from . import tiling
 from .cyclotomic import RING10 as RING, float_sqrt, q_add, q_div, q_mul, q_scale, q_sub
+from .motif import Edges, Hankin, Pieces
 
 PROPERTY = "surface_substitution"
 KIND = "rhomb_kind"
@@ -62,19 +63,23 @@ LEVEL_KEY = "surface_substitution_level_of"
 POOL = "substitution_pool"
 
 # Settings ("surface_substitution" on the map's object):
-# - style, half_width: the strapwork (substitution.Motif: "hankin54", or another contact angle), its bars' half width
+# - style, half_width: the strapwork (motif.Hankin: "hankin54", or another contact angle), its bars' half width
 #   in tiles
 # - radius: a level is drawn within this many of its tiles of the point below (and at most sight: window clip ends)
 # - min_bar_px, focal: the finest level drawn has bars this wide under the drone, on a screen focal px per unit of
 #   distance
 # - fade: [in from, in to] px: the finest levels fade in from under a pixel (substitution.fade()); none ever fades out
-# - outline: the share of a bar's width that's outline_color on each side (substitution.outlined()), 0 for none
+# - outline: the share of a bar's width that's outline_color on each side (motif.outlined()), 0 for none
 # - outline_color: linear RGBA, the floor's if None: diving into an outline comes back to the dark floor
 # - palette: the levels' colors in turn (linear RGBA)
+# - pieces: a square map's motif (surface_cells.py), its cells' pieces (motif.Pieces): [{"uv": a convex polygon's
+#   corners in a cell, u0, v0, u1, v1, ..., counterclockwise, "paint": its paint's name}, ...]; half_width is then half
+#   its strips' width (cells), for how wide they are on screen
+# - paints: each paint's colors, by level in turn ({name: [linear RGBA, ...]}); a paint not named, the palette's
 DEFAULTS = {"style": "hankin54", "half_width": 0.007, "radius": 12.0, "min_bar_px": 0.3, "focal": 1000.0,
             "fade": [0.3, 1.5], "outline": 0.25, "outline_color": None,
             "palette": [[0.03, 0.10, 0.45, 1.0], [0.0, 0.42, 0.40, 1.0], [0.95, 0.55, 0.06, 1.0],
-                        [0.80, 0.16, 0.22, 1.0]]}
+                        [0.80, 0.16, 0.22, 1.0]], "pieces": None, "paints": None}
 # A level's tiles are kept for a window this much wider than wanted, plus this many of its tiles
 SLACK, SLACK_TILES = 1.5, 2.0
 # A level object is built for a window this much wider than its level's, and again once the view reaches past it
@@ -120,6 +125,8 @@ PUSH_STEP = 100000.0 / 2 ** 24
 # root rounded once, are only good to ~1e-16 of their size), only the floor tinted by the bar the drone is in, if any
 # (giant_tint())
 GIANT = 1e6
+# settle(): deep down, levels are measured from the coarsest whose tiles are this much (a log) under a float's range
+LOG_ROOM = 600.0
 # A coarse level is re-rooted at a tile near the drone once its tiles are further than this from their root (its
 # places are good to ~1e-16 of the distance to the root)
 COARSE_COEF = 16
@@ -135,8 +142,16 @@ def setting(obj, name):
 
 
 def rule_of(obj):
-    """The map's substitution rule (substitution.Rule)"""
+    """The map's substitution rule (substitution.Rule), or a square map's cells' (surface_cells.CellRule)"""
+    if not surface.is_substitution(obj):
+        from . import surface_cells
+        return surface_cells.rule_of(obj)
     return substitution.RULES[surface.setting(obj, "rule")]
+
+
+def periodic(faces):
+    """Whether faces are a square map's cells (surface_cells.py), not a substitution rule's labeled mesh"""
+    return getattr(faces.rule, "periodic", False)
 
 
 # ----- each face's ideal polygon -----
@@ -293,6 +308,9 @@ _faces = {}
 
 
 def faces_of(obj, top):
+    if not surface.is_substitution(obj):
+        from . import surface_cells
+        return surface_cells.faces_of(obj, top)
     source = obj.get(surface.SOURCE)
     mesh = source.data
     key = (mesh.name, len(mesh.vertices), len(mesh.polygons), id(top), surface.setting(obj, "rule"))
@@ -480,7 +498,7 @@ class Level:
     def copy(self):
         """The same level for a build on another thread, which trims and re-roots what it's given: its own
         coefficients and roots (and what it's a copy of, for keep_copy())"""
-        fresh = Level.__new__(Level)
+        fresh = type(self).__new__(type(self))
         fresh.__dict__.update(self.__dict__)
         fresh.coef = self.coef.copy()
         fresh.roots = {f: list(r) for f, r in self.roots.items()}
@@ -785,9 +803,12 @@ def state_of(obj, top):
 
 
 def forget():
-    """After loading a file (surface.forget()): another file's levels and labels don't apply"""
+    """After loading a file (surface.forget()): another file's levels, labels and motifs don't apply"""
     _states.clear()
     _faces.clear()
+    _motifs.clear()
+    from . import surface_cells
+    surface_cells.forget()
     schedule.forget()
     background.forget()
 
@@ -920,6 +941,10 @@ def tiles(st, world, faces, d, center, window):
     2026-11-19: before, the floor's levels were cut in the tick round where the drone would be (a quarter of the main
     thread's time in a fast dive), and each 3D parts' build cut its level again on the worker thread for its own
     window (some 40% of its time there)."""
+    if periodic(faces):
+        # A square map's cells, found anew: whole numbers from the root, nothing to walk down from the level above
+        from . import surface_cells
+        return surface_cells.tiles(world, faces, d, center, window)
     text = world.text()
     center = np.asarray(center, dtype=float)
     while True:
@@ -1042,8 +1067,10 @@ def surface_tile(world, faces, below, d):
     f = below.face
     corner = corner_edges(top)[np.asarray(top.corners[f])]
     N = world.N
-    u = min(max(float(below.base[0]) / N + float(below.d[0]) * math.ldexp(1.0, -world.n), 0.0), 1.0)
-    v = min(max(float(below.base[1]) / N + float(below.d[1]) * math.ldexp(1.0, -world.n), 0.0), 1.0)
+    # The point's (u, v) as Below has it (a factor k map's N = k^n is past a float's range 646 loops of 3 down)
+    inv_n = 1 / N
+    u = min(max(surface.quotient(below.base[0], N) + float(below.d[0]) * inv_n, 0.0), 1.0)
+    v = min(max(surface.quotient(below.base[1], N) + float(below.d[1]) * inv_n, 0.0), 1.0)
     if len(corner) == 4:
         edge = ((1.0 - u) * (1.0 - v) * corner[0] + u * (1.0 - v) * corner[1] + u * v * corner[2]
                 + (1.0 - u) * v * corner[3])
@@ -1068,29 +1095,24 @@ def corner_edges(top):
 _motifs = {}
 
 
-class EdgeMotif(substitution.Motif):
-    """The "edges" style (Penrose): each half's legs as bars (its rhomb's edges, cut to the half; the base, inside the
-    rhomb, isn't drawn), so each level's rhombs show, split by the next level's"""
-
-    def __init__(self, rule, style="edges", half_width=0.012, outline=0.0):
-        lines = rule.module.lines
-        proto = {kind: [RING.xy_small(c) for c in rule.module.PROTOTILE[kind]] for kind in rule.kinds}
-        rule.module.lines = lambda kind, theta: [(proto[kind][0], proto[kind][1]), (proto[kind][0], proto[kind][2])]
-        try:
-            super().__init__(rule, "hankin54", half_width, outline)
-        finally:
-            rule.module.lines = lines
-        self.style = style
-
-
 def motif_of(obj, outline=None, half_width=None):
     """The map's motif: outlined as its settings say, or with outline (0 for plain bars) and half_width"""
     outline = float(setting(obj, "outline")) if outline is None else outline
     half_width = float(setting(obj, "half_width")) if half_width is None else half_width
     rule = rule_of(obj)
+    if getattr(rule, "periodic", False):
+        # A square map's pieces: outlined, or (outline 0) their cores alone. Kept for the map (read again after a file
+        # loads, forget()): going through its pieces' properties every tick would cost more than drawing them
+        share = float(setting(obj, "outline"))
+        key = (obj.name, rule.name, share, outline > 0.0)
+        if key not in _motifs:
+            pieces = [(np.reshape(np.array(list(p["uv"]), dtype=float), (-1, 2)), str(p["paint"]))
+                      for p in (setting(obj, "pieces") or [])]
+            _motifs[key] = Pieces(pieces, share, cores=outline <= 0.0)
+        return _motifs[key]
     key = (rule.name, str(setting(obj, "style")), half_width, outline)
     if key not in _motifs:
-        _motifs[key] = (EdgeMotif if key[1] == "edges" else substitution.Motif)(rule, *key[1:])
+        _motifs[key] = (Edges if key[1] == "edges" else Hankin)(rule, *key[1:])
     return _motifs[key]
 
 
@@ -1100,8 +1122,10 @@ def motifs_of(obj):
     return motif_of(obj), motif_of(obj, 0.0, core)
 
 
-# Face codes (level_bars()): a bar's core, an outline strip, and a far bar drawn whole in its core and strips' mean color
+# Face codes (level_bars()): a bar's core, an outline strip, and a far bar drawn whole in its core and strips' mean color;
+# plus CODES times its paint (motif.Motif.paints: a Hankin motif's are all 0)
 CORE, STRIP, BLEND = 0, 1, 2
+CODES = 3
 
 
 def motif_bars(motif, kind, mirror):
@@ -1111,7 +1135,7 @@ def motif_bars(motif, kind, mirror):
     found = kept.get((kind, mirror))
     if found is None:
         polygons, counts = (motif.bars_reversed if mirror else motif.bars)[kind]
-        codes = np.where(motif.edges[kind], STRIP, CORE).astype(np.int8)
+        codes = (np.where(motif.edges[kind], STRIP, CORE) + CODES * motif.paints[kind]).astype(np.int8)
         valid = np.arange(polygons.shape[1]) < counts[:, None]
         middles = (polygons * valid[..., None]).sum(axis=1) / np.maximum(counts, 1)[:, None]
         by_size = {int(size): np.flatnonzero(counts == size) for size in np.unique(counts)}
@@ -1664,14 +1688,33 @@ def outline_color(obj):
 
 
 def face_colors(obj, d, shown, codes):
-    """Each face's linear RGBA by its code (level_bars()): the level's color, the outline color, or their mean as a bar
-    shows them (each strip outline of the width), all faded in alike"""
-    color = level_color(obj, d, shown)
+    """Each face's linear RGBA by its code (level_bars()): its paint's color (the level's), the outline color, or
+    their mean as a bar shows them (each strip outline of the width), all faded in alike"""
     floor_color = np.array(list(surface.setting(obj, "floor_color")), dtype=float)
     edge = floor_color + (outline_color(obj) - floor_color) * shown
     share = 2.0 * float(setting(obj, "outline"))
-    table = np.array([color, edge, color + (edge - color) * share])
-    return table[np.asarray(codes, dtype=np.int64)]
+    table = []
+    for color in paint_colors(obj, d, shown):
+        table += [color, edge, color + (edge - color) * share]
+    return np.array(table)[np.asarray(codes, dtype=np.int64)]
+
+
+def paint_colors(obj, d, shown):
+    """Level d's color for each of the map's motif's paints (the "paints" setting by name, the palette's otherwise),
+    faded in by shown"""
+    paints = setting(obj, "paints")
+    if not paints:
+        return [level_color(obj, d, shown)]
+    floor_color = np.array(list(surface.setting(obj, "floor_color")), dtype=float)
+    out = []
+    for name in motif_of(obj).paint_names:
+        colors = paints.get(name)
+        if colors is None:
+            out.append(level_color(obj, d, shown))
+            continue
+        color = np.array(list(colors[d % len(colors)]), dtype=float)
+        out.append(floor_color + (color - floor_color) * shown)
+    return out
 
 
 def giant_tint(obj, world, faces, below, st, top, foot, sight):
@@ -1843,18 +1886,24 @@ def settle(obj, camera_world):
     focal = float(setting(obj, "focal"))
     bar = 2.0 * float(setting(obj, "half_width"))
     radius = float(setting(obj, "radius"))
-    tile0 = surface_tile(world, faces, below, 0)
-    px0 = focal * bar * tile0 / height                     # level 0's bars' width under the drone, px
-    strip = float(setting(obj, "outline")) * bar
     rule = faces.rule
-    shrink = rule.shrink_float
+    # Levels are measured from level r: 0, or deep down, where level 0's tiles are past a float's range (2^1024 map
+    # units: a thousand loops of 2 down, 646 of 3), the coarsest whose tiles are within it, LOG_ROOM short of it
+    r, shrink = 0, rule.shrink_float
+    tile0 = surface_tile(world, faces, below, 0)           # level r's tile edge where the drone is, map units
+    if not math.isfinite(tile0):
+        r = max(0, math.ceil((rule.log_shrink(0, world.n) - LOG_ROOM) / rule.log_loop))
+        shrink = lambda d: rule.shrink_float(d - r)
+        tile0 = surface_tile(world, faces, below, r)
+    px0 = focal * bar * tile0 / height                     # level r's bars' width under the drone, px
+    strip = float(setting(obj, "outline")) * bar
     outline_within = functools.lru_cache(None)(lambda d: focal * strip * tile0 * shrink(d) / OUTLINE_PX)
     log_level = lambda x: math.log(max(x, 1e-300)) / rule.log_loop
-    # Level d's bars are px0 LAMBDA^-d wide and its tiles tile0 LAMBDA^-d: the finest drawn has bars min_bar_px wide; plain
-    # while radius of its tiles fit in the sight; giant past GIANT
-    finest = max(0, math.ceil(log_level(px0 / float(setting(obj, "min_bar_px")))))
-    plain = min(finest, max(0, math.ceil(log_level(radius * tile0 / sight))))
-    drawable = min(plain, max(0, math.ceil(log_level(tile0 / (GIANT * sight)))))
+    # Level d's bars are px0 LAMBDA^(r - d) wide and its tiles tile0 LAMBDA^(r - d): the finest drawn has bars
+    # min_bar_px wide; plain while radius of its tiles fit in the sight; giant past GIANT
+    finest = max(0, r + math.ceil(log_level(px0 / float(setting(obj, "min_bar_px")))))
+    plain = min(finest, max(0, r + math.ceil(log_level(radius * tile0 / sight))))
+    drawable = min(plain, max(0, r + math.ceil(log_level(tile0 / (GIANT * sight)))))
     drawn_window = functools.lru_cache(None)(lambda d: min(sight, radius * tile0 * shrink(d)))
     # With nothing drawn yet (a flight's start, a file just loaded), everything is built before the first picture
     first = not st.drawn
@@ -1881,7 +1930,7 @@ def settle(obj, camera_world):
     # What the worker threads have finished, and the giant levels, read here (giant_tint()), kept round where the drone
     # will be; the levels drawn are cut by their builds (tiles())
     collect(obj, st)
-    if drawable > 0:
+    if drawable > 0 and not periodic(faces):
         kept_levels(world, faces, below, st, drawable - 1, np.asarray(foot_soon), lambda d: plan(d)[1] + plan(d)[2],
                     lowest=drawable - 1)
     let_go(st, finest + 2)
@@ -2037,7 +2086,8 @@ def settle(obj, camera_world):
             needed_in = (math.log(float(setting(obj, "min_bar_px")) / px) / -rate
                          if rate < 0.0 and 0.0 < px < float(setting(obj, "min_bar_px")) else 1.0)
             ask(finest, 0.0, False, False, worth(finest, 1.0 / FADE_STEPS)[0], max(needed_in, 0.0))
-    tint_floor(obj, st, None if covered else giant_tint(obj, world, faces, below, st, drawable, foot, sight))
+    giant = None if covered or periodic(faces) else giant_tint(obj, world, faces, below, st, drawable, foot, sight)
+    tint_floor(obj, st, giant)
     # Finer levels on top: the finest unpushed, each coarser a step under; the floor a step under them all
     push = 0.0
     for d in sorted(st.drawn, reverse=True):
@@ -2062,7 +2112,7 @@ def recolor(obj, d, level_obj, record, shown):
     if colors is not None and len(colors.data):
         if record.corner_codes is None:
             record.corner_codes = np.repeat(record.edges, record.sizes).astype(np.int64)
-        table = face_colors(obj, d, shown, np.arange(3)).astype(np.float32)
+        table = face_colors(obj, d, shown, np.arange(CODES * len(motif_of(obj).paint_names))).astype(np.float32)
         colors.data.foreach_set("color", table[record.corner_codes].ravel())
         level_obj.data.update()
     record.shown = shown
@@ -2082,7 +2132,7 @@ def built_level(world, faces, level, motifs, coarse, foot, center, reach, camera
     keep = (reach + float(np.linalg.norm(center - foot))) * SLACK
     with np.errstate(over="ignore", invalid="ignore"):
         if level.window > schedule.OVERBUILT * keep and len(level.face) > TRIM_MIN:
-            centers = Centers(world, faces, below, foot, keep) if world.n >= FLOAT_N else None
+            centers = Centers(world, faces, below, foot, keep) if world.n >= FLOAT_N and not periodic(faces) else None
             level.keep_near(world, faces, centers, keep, foot)
     if coarse and len(level.coef) and np.abs(level.coef).max() > COARSE_COEF:
         level.reroot(COARSE_COEF)
@@ -2163,10 +2213,12 @@ def build_level(obj, world, faces, st, motifs, d, shown, coarse, foot, center, r
         if job is not None and not background.running(key):
             st.jobs[d] = job[:1] + (priority,) + job[2:5] + (urgent or job[5],)
         return
-    # Its own world: this thread loops on
-    if background.submit(key, built_from_tiles, st, surface.World.from_text(text, world.rho, world.topology), faces, d,
-                         motifs, coarse, foot.copy(), center.copy(), reach, np.array(camera, dtype=float),
-                         outline_within, height, below, priority=priority, replace=True):
+    # Its own world (its factor too: one of 2 on a 3 x 3 map placed every level built there wrong, 2026-11-23): this
+    # thread loops on
+    own = surface.World.from_text(text, world.rho, world.topology, world.k)
+    if background.submit(key, built_from_tiles, st, own, faces, d, motifs, coarse, foot.copy(), center.copy(), reach,
+                         np.array(camera, dtype=float), outline_within, height, below, priority=priority,
+                         replace=True):
         st.jobs[d] = (time.perf_counter(), priority, center.copy(), text, coarse, urgent)
 
 

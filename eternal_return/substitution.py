@@ -76,6 +76,7 @@ from . import loops
 from . import penrose
 from . import tiling
 from .cyclotomic import phi_power_float, q_phi, q_scale
+from .motif import Hankin, polygon_area
 
 PROPERTY = "substitution"
 MADE = "substitution_made"
@@ -171,6 +172,10 @@ class Rule:
         size in level 0's (the surface maps' levels)"""
         return phi_power_float(self.phi_power * d, shift - self.two_power * d)
 
+    def log_shrink(self, d, shift=0):
+        """The log of shrink_float(d, shift), past a float's range too"""
+        return shift * math.log(2.0) - d * self.log_loop
+
     def q_grow(self, d):
         """LAMBDA^d exactly in Q(sqrt 5), d of either sign (a pair: a + b sqrt 5)"""
         found = q_phi(self.phi_power * d)
@@ -252,189 +257,6 @@ def cut(rule, tiles, h, center=(0.0, 0.0)):
     """The children of tiles (exact) that meet the square of half side h around center (their units), each once"""
     found = [c for t in tiles for _s, c in children_near(rule, t, h, center) if meets_square(rule, c, h, center)]
     return list(dict.fromkeys(found)) if rule.straddle else found
-
-
-# --- Motif: girih strapwork, Hankin's method at 54 degrees ----------------------------------------------------------
-
-class Motif:
-    """A style's segments per kind (prototile floats, (n, 2, 2)) and its bars' half width, in tile units; and its bars
-    as polygons, each already cut to its own tile (two tiles' bars meet at edge midpoints and would overlap in one
-    plane), the same for every tile of a kind: bars[kind] = (polygons (n, corners, 2), counts (n,)), and the same
-    with each polygon's corners the other way round, for mirrored tiles (which turn them clockwise). A tile that isn't
-    convex (darb_imam's bowtie) is cut into convex pieces, and a bar across two is cut in two.
-
-    With an outline (a share of the bar's width, 0 to 0.5), each bar is a core in its level's color with a strip of the
-    outline color along each side (outlined(): every level's drawing has dark in it, so diving into a bar never leaves
-    the dark behind, 2026-11-13), and edges[kind] says which polygons are outline strips."""
-
-    def __init__(self, rule, style="hankin54", half_width=0.007, outline=0.0):
-        self.rule, self.style, self.half_width, self.outline = rule, style, half_width, outline
-        theta = float(style[len("hankin"):]) if style.startswith("hankin") else 54.0
-        self.segments = {k: np.array(rule.module.lines(k, theta), dtype=float).reshape(-1, 2, 2) for k in rule.kinds}
-        self.bars, self.bars_reversed, self.edges, self.boxes = {}, {}, {}, {}
-        for kind, segs in self.segments.items():
-            pieces = rule.module.pieces(kind)
-            polygons, edges = [], []
-            if outline > 0.0:
-                polygons, edges = outlined(segs, pieces, half_width, outline)
-            for a, b in (segs if outline <= 0.0 else ()):
-                u = (b - a) / np.hypot(*(b - a))
-                n = np.array([-u[1], u[0]]) * half_width
-                a, b = a - u * half_width, b + u * half_width
-                for piece in pieces:
-                    polygon = [a - n, b - n, b + n, a + n]
-                    for i in range(len(piece)):
-                        polygon = clip_to_left(polygon, piece[i], piece[(i + 1) % len(piece)])
-                    if len(polygon) >= 3:
-                        polygons.append(polygon)
-                        edges.append(False)
-            self.edges[kind] = np.array(edges, dtype=bool)
-            width = max([3] + [len(p) for p in polygons])
-            array = np.zeros((len(polygons), width, 2))
-            reverse = np.zeros((len(polygons), width, 2))
-            counts = np.array([len(p) for p in polygons], dtype=np.int64)
-            for i, polygon in enumerate(polygons):
-                array[i, :len(polygon)] = polygon
-                reverse[i, :len(polygon)] = polygon[::-1]
-            self.bars[kind] = (array, counts)
-            self.bars_reversed[kind] = (reverse, counts)
-            # Each polygon's bounding box (lo (n, 2), hi (n, 2)), for giant_bars() to pass over those far from the view
-            valid = (np.arange(width) < counts[:, None])[..., None]
-            self.boxes[kind] = (np.where(valid, array, np.inf).min(axis=1), np.where(valid, array, -np.inf).max(axis=1))
-
-
-# outlined(): how close (prototile units) two ends are to be one joint, and a point to be on a piece's edge
-JOINT = 1e-9
-# A bar's end on its piece's edge reaches this many half widths past it before it's cut there (so a bar that meets the
-# edge at a slant still fills to it: 20 is enough down to 3 degrees)
-REACH_PAST = 20.0
-
-
-def outlined(segments, pieces, half_width, outline):
-    """A tile's bars with outlines, cut to its pieces: (polygons [[corners]], edges [is an outline strip]). Each bar is
-    a core (half width h_c = (1 - 2 outline) h) and two strips from h_c to h, one each side. So that nothing overlaps
-    in one plane but polygons of one color:
-    - Two bars ending at the same point inside the tile (a star's tip) are cut on the angle's bisector there: the
-      cores and both pairs of strips meet in clean miters.
-    - A bar ending on a piece's edge (where its line runs on into the next tile, or a half's base) reaches well past it
-      and is cut there, so it runs on seamlessly from the next tile's, cut the same way.
-    - Where bars cross, the cores win: each strip has every other bar's core cut out of it (convex differences), so
-      crossing strands meet in a plain patch of the level's color, the same from both tiles at a crossing on an edge."""
-    h, h_c = half_width, half_width * (1.0 - 2.0 * outline)
-    segments = [(np.asarray(a, float), np.asarray(b, float)) for a, b in segments]
-    edges = [(np.asarray(piece[i], float), np.asarray(piece[(i + 1) % len(piece)], float))
-             for piece in pieces for i in range(len(piece))]
-
-    def on_edge(p):
-        for a, b in edges:
-            e = b - a
-            t = float((p - a) @ e) / float(e @ e)
-            if -JOINT <= t <= 1.0 + JOINT and abs(e[0] * (p[1] - a[1]) - e[1] * (p[0] - a[0])) <= JOINT * math.hypot(*e):
-                return True
-        return False
-
-    # Each end's treatment: (how far past the end the bar reaches, the half plane it's cut to there or None)
-    ends = []
-    for i, (a, b) in enumerate(segments):
-        treat = []
-        for p, away in ((a, b), (b, a)):
-            out = (p - away) / np.hypot(*(p - away))                  # along the bar, out past this end
-            others = [(q, r) for j, (q0, q1) in enumerate(segments) if j != i
-                      for q, r in ((q0, q1), (q1, q0)) if np.hypot(*(q - p)) <= JOINT]
-            if on_edge(p):
-                treat.append((REACH_PAST * h, None))
-            elif len(others) == 1 and abs(float(out @ ((others[0][1] - p) / np.hypot(*(others[0][1] - p))))) < 1.0 - 1e-9:
-                # The bisector of the angle between the two bars: this bar keeps the side its own body is on
-                mine = -out
-                theirs = (others[0][1] - p) / np.hypot(*(others[0][1] - p))
-                bisector = mine + theirs
-                half_angle = math.acos(max(-1.0, min(1.0, float(mine @ theirs)))) / 2.0
-                reach = h / max(math.tan(half_angle), 1e-3) + h
-                # clip_to_left keeps the left of a line: the line along the bisector, turned so the body is on its left
-                a_line, b_line = p, p + bisector
-                side = bisector[0] * mine[1] - bisector[1] * mine[0]
-                treat.append((reach, (a_line, b_line) if side >= 0.0 else (b_line, a_line)))
-            else:
-                treat.append((h, None))
-        ends.append(treat)
-
-    def band(i, lo, hi):
-        """Bar i's strip between offsets lo and hi (left of its direction), its ends as treated, one convex polygon"""
-        a, b = segments[i]
-        u = (b - a) / np.hypot(*(b - a))
-        n = np.array([-u[1], u[0]])
-        (reach_a, cut_a), (reach_b, cut_b) = ends[i]
-        a, b = a - u * reach_a, b + u * reach_b
-        polygon = [a + n * lo, b + n * lo, b + n * hi, a + n * hi]
-        for cut in (cut_a, cut_b):
-            if cut is not None and len(polygon) >= 3:
-                polygon = clip_to_left(polygon, *cut)
-        return polygon
-
-    cores = [band(i, -h_c, h_c) for i in range(len(segments))]
-    shapes = [(core, False) for core in cores]
-    for i in range(len(segments)):
-        for lo, hi in ((-h, -h_c), (h_c, h)):
-            parts = [band(i, lo, hi)]
-            for j, core in enumerate(cores):
-                if j != i and len(core) >= 3:
-                    parts = [rest for part in parts for rest in subtract_convex(part, core)]
-            shapes += [(part, True) for part in parts]
-    polygons, flags = [], []
-    for polygon, edge in shapes:
-        for piece in pieces:
-            cut = polygon
-            for k in range(len(piece)):
-                if len(cut) < 3:
-                    break
-                cut = clip_to_left(cut, np.asarray(piece[k], float), np.asarray(piece[(k + 1) % len(piece)], float))
-            if len(cut) >= 3 and polygon_area(cut) > 1e-6 * h * h:
-                polygons.append(cut)
-                flags.append(edge)
-    return polygons, flags
-
-
-def polygon_area(polygon):
-    x = np.array([p[0] for p in polygon])
-    y = np.array([p[1] for p in polygon])
-    return 0.5 * float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
-
-
-def subtract_convex(polygon, hole):
-    """A convex polygon less a convex hole (both counterclockwise), as convex polygons: the part outside each of the
-    hole's edges in turn, inside the ones before it (the polygon itself if they don't overlap)"""
-    common = polygon
-    for k in range(len(hole)):
-        common = clip_to_left(common, np.asarray(hole[k], float), np.asarray(hole[(k + 1) % len(hole)], float))
-        if len(common) < 3:
-            return [polygon]
-    if polygon_area(common) <= 1e-12 * max(polygon_area(polygon), 1e-300):
-        return [polygon]
-    out, rest = [], polygon
-    for k in range(len(hole)):
-        a, b = np.asarray(hole[k], float), np.asarray(hole[(k + 1) % len(hole)], float)
-        outside = clip_to_left(rest, b, a)
-        if len(outside) >= 3 and polygon_area(outside) > 0.0:
-            out.append(outside)
-        rest = clip_to_left(rest, a, b)
-        if len(rest) < 3:
-            return out
-    return out
-
-
-def clip_to_left(polygon, a, b):
-    """A convex polygon cut to the left of the line from a to b"""
-    e = b - a
-    side = lambda p: e[0] * (p[1] - a[1]) - e[1] * (p[0] - a[0])
-    out = []
-    for i, p in enumerate(polygon):
-        q = polygon[(i + 1) % len(polygon)]
-        sp, sq = side(p), side(q)
-        if sp >= 0:
-            out.append(p)
-        if (sp >= 0) != (sq >= 0):
-            out.append(p + (q - p) * (sp / (sp - sq)))
-    return out
 
 
 def shows(tile, level, h_world, motif):
@@ -900,7 +722,7 @@ class FloatLevel:
         return self.rule.color_class[self.kind.astype(int), self.rot.astype(int), self.mirror.astype(int)]
 
     def bar_polygons(self, motif):
-        """Every tile's bar polygons (Motif.bars, cut to the tile already), placed in the level's own tile units around
+        """Every tile's bar polygons (motif.Motif.bars, cut to the tile already), placed in the level's own tile units around
         O, counterclockwise: (polygons (n, corners, 2), counts (n,), color classes (n,))"""
         size = self.rule.size(self.level)
         places, turns, classes = self.places() / size, self.turns(), self.colors()
@@ -1007,7 +829,7 @@ def mixed_polygons(level, motif, cores=None, near=None):
 
 def level_mesh(level, motif, center, window, tile, cores=None, near=None):
     """A level's bars as faces in its own tile units around O: (corners (n, 2), sizes, color classes). The bar polygons
-    (cut to their own tiles already, Motif.bars; outlined near the camera, mixed_polygons()) placed, cut to the level's
+    (cut to their own tiles already, motif.Motif.bars; outlined near the camera, mixed_polygons()) placed, cut to the level's
     window around center (only those across its edge), and, for levels big enough that a bar can be longer than tile
     (level units), split into tiles (depth precision, tiling.tiles())."""
     size = level.rule.size(level.level)
@@ -1323,7 +1145,7 @@ def motif_of(settings, cores=False):
         half_width, outline = half_width * (1.0 - 2.0 * outline), 0.0
     key = (rule.name, settings.get("style", "hankin54"), half_width, outline)
     if key not in _motifs:
-        _motifs[key] = Motif(rule, *key[1:])
+        _motifs[key] = Hankin(rule, *key[1:])
     return _motifs[key]
 
 

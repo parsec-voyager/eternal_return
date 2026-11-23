@@ -651,6 +651,12 @@ def factor(obj):
     return 2 if is_substitution(obj) else int(setting(obj, "factor"))
 
 
+def draws_levels(obj):
+    """Whether surface_substitution.py draws the map's levels over its floor: a substitution rule's strapwork, or a
+    square map's motif (surface_cells.py; its settings under the same "surface_substitution" property)"""
+    return is_substitution(obj) or obj.get("surface_substitution") is not None
+
+
 def is_substitution(obj):
     """Whether the map's floor is a substitution tiling's (surface_substitution.py), not a lattice's"""
     return setting(obj, "rule") in SUBSTITUTION_RULES
@@ -680,7 +686,7 @@ class World:
     layout = "mesh"
     level_shift = 0                  # a level's cells are k^(n - level) units
 
-    def __init__(self, n, A, rho, topology, k=2):
+    def __init__(self, n, A, rho, topology, k):
         self.n, self.A, self.rho, self.topology, self.k = int(n), tuple(int(c) for c in A), float(rho), topology, int(k)
         assert self.n >= 0 and self.k >= 2
         self.N = self.k ** self.n
@@ -695,7 +701,7 @@ class World:
         return " ".join([str(self.n)] + [format(c, "x") for c in self.A])
 
     @staticmethod
-    def from_text(text, rho, topology, k=2):
+    def from_text(text, rho, topology, k):
         n, *A = text.split()
         return World(int(n), [int(c, 16) for c in A], rho, topology, k)
 
@@ -1449,7 +1455,7 @@ def settle(obj, camera_world):
     if clip_end <= 0.0:
         return
     settle_floor(obj, world, camera, below_of(obj, world, camera), clip_end)
-    if is_substitution(obj):
+    if draws_levels(obj):
         try:
             from . import surface_substitution
         except ImportError:

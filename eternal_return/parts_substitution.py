@@ -804,7 +804,7 @@ class SubstitutionLattice(surface.MeshLattice):
         took up to 50 ms, and the strapwork then cut its own levels again for its own windows (2026-11-17); cut in each
         parts build, they were some 40% of its time in a fast dive (2026-11-19)."""
         faces, st = world.substitution
-        own = surface.World.from_text(world.text(), world.rho, world.topology)
+        own = surface.World.from_text(world.text(), world.rho, world.topology, world.k)
         center = np.array(center, dtype=float)
         if math.isinf(radius):
             return (built_pieces, own, faces, self.tiles_for(world, level, center, radius), center, radius, settings,
