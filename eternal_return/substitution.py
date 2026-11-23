@@ -123,6 +123,7 @@ class Rule:
         self.lambda_, self.lambda_inv = m.LAMBDA, m.LAMBDA_INV
         self.extra, self.pad, self.reach, self.child_reach = m.EXTRA, m.PAD, m.REACH, m.CHILD_REACH
         self.straddle, self.classes = m.STRADDLE, m.CLASSES
+        self.most_children = max(len(m.RULE[kind]) for kind in m.KINDS)
         R, N = self.ring, self.n
         self.lambda_matrix = np.array([R.mul(m.LAMBDA, R.power(j)) for j in range(4)], dtype=np.int64).T
         self.basis_x = np.array([R.xy_small(R.power(j))[0] for j in range(4)])

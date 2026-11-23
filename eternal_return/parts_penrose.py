@@ -4,6 +4,8 @@ edge piece along each of their edges, from the mesh's own faces (level 0) down f
 than the one above. Since the same day's flights they're on every other level only (level_step), phi^2 apart: on every
 level they were dense. The open frames (posts, beams and horseshoe rings) stand on the same lines the strapwork's levels
 are drawn on, and a coarser level's corners are corners of every finer one, so the posts nest as the square maps' do.
+Since 2026-11-22 any rule's (one SubstitutionLattice each): on a girih mesh (Darb-i Imam), the girih tiles' corners and
+edges, on every level, LAMBDA = 8.5 times finer (pieces_near(), Atlas).
 
 What parts.py asks of the lattice (parts.SphereLattice, surface.MeshLattice) is answered here, from the tiles the
 strapwork already keeps near the drone (surface_penrose.State's levels, shared: the parts ask for the windows they need
@@ -37,13 +39,11 @@ from . import schedule
 from . import substitution
 from . import surface
 from . import surface_penrose as SP
-from .cyclotomic import (RING10 as RING, im_pair, phi_power_float, q_add, q_float, q_fraction, q_mul, q_phi, q_scale,
+from .cyclotomic import (RING10 as RING, im_pair, q_add, q_float, q_fraction, q_mul, q_scale,
                          q_sub, re2_pair, ring_im, ring_re2)
 
-# The 3D frames follow Penrose rhombs' corners and edges: Penrose maps only, for now
+# A rhomb mesh's tiles (rhombs_near()) are Penrose's
 RULE = substitution.RULES["penrose"]
-PHI = (1.0 + math.sqrt(5.0)) / 2.0
-LOG_PHI = math.log(PHI)
 EDGE, VERTEX = surface.EDGE, surface.VERTEX
 
 # Each kind, turn and mirroring's corners A, B, C as ring coefficients (kind, rot, mirror, corner, 4), and its legs AB
@@ -70,6 +70,8 @@ REROOT = 64
 # rebuild of the giant window looked at every giant level again, nearly all with nothing near: in a fast dive a
 # rebuild each loop, ~10 ms a level, 0.24 s a tick 48 loops down (2026-11-19, 5 to 9 frames a second)
 NO_PIECES_SHARE = 0.5
+# Substitution levels with frames are at least this many times finer than the next coarser with them
+FRAME_SPACING = 2.5
 # The level 0 a parts map shows whole while its corners are this few (and the map shallow: surface_penrose.FLOAT_N)
 WHOLE_POINTS = 20000
 
@@ -153,27 +155,7 @@ def topology_arrays(top):
     return found
 
 
-def unique_rows(a):
-    """The distinct rows of a whole-number array (n, k): each one's first row, and each row's distinct one's index
-    (in sorted order). np.unique(axis=0) was a fifth of a level's build."""
-    if not len(a):
-        return np.zeros(0, np.int64), np.zeros(0, np.int64)
-    # Mostly the columns' spans multiply to under 2^62: one whole number a row, sorted at once
-    low = a.min(axis=0)
-    spans = (a.max(axis=0) - low + 1).tolist()
-    if math.prod(spans) < 1 << 62:
-        code = np.zeros(len(a), dtype=np.int64)
-        for k, span in enumerate(spans):
-            code = code * span + (a[:, k] - low[k])
-        _codes, first, inverse = np.unique(code, return_index=True, return_inverse=True)
-        return first, inverse.reshape(-1)
-    order = np.lexsort(a.T[::-1])
-    ordered = a[order]
-    new = np.r_[True, np.any(ordered[1:] != ordered[:-1], axis=1)]
-    inverse = np.empty(len(a), dtype=np.int64)
-    inverse[order] = np.cumsum(new) - 1
-    return order[new], inverse
-
+unique_rows = SP.unique_rows
 
 def fits(*values):
     return all(abs(v) < FIT for v in values)
@@ -193,12 +175,11 @@ class Near:
 
 def lattice_near(world, faces, level, center, reach):
     """Level's corners and edges whose tiles come within reach of center (map units), as a Near: reach in the level's
-    ideal units (its tiles' edges), as far in map units as the face nearest center stretches them at most, and a tenth more"""
-    top = world.topology
-    side_edge, side_forward, mesh_edges, edge_home, vertex_home = topology_arrays(top)
-    out = Near()
-    turn = RULE.orient[level.rot, level.mirror.astype(np.int64)]
-    cents = level.rel + np.einsum("tij,tj->ti", turn, RULE.middles[level.kind])
+    ideal units (its tiles' edges), as far in map units as the face nearest center stretches them at most, and a tenth
+    more. A rhomb mesh's tiles are its faces' halves; a girih mesh's are cut to its faces (pieces_near())."""
+    rule = level.rule
+    turn = rule.orient[level.rot, level.mirror.astype(np.int64)]
+    cents = level.rel + np.einsum("tij,tj->ti", turn, rule.middles[level.kind])
     rows = np.arange(len(level.face))
     if len(rows) and math.isfinite(reach):
         with np.errstate(over="ignore", invalid="ignore"):
@@ -206,27 +187,103 @@ def lattice_near(world, faces, level, center, reach):
             size = level.scale * faces.sigma_hi[level.face]
             away = np.linalg.norm(places - center, axis=1)
             stretch = level.scale * float(faces.sigma_hi[level.face[int(np.argmin(away))]])
-            near = away - RULE.radii[level.kind] * size <= 1.1 * reach * stretch
+            near = away - rule.radii[level.kind] * size <= 1.1 * reach * stretch
         rows = rows[near]
-    face, kind = level.face[rows], level.kind[rows].astype(np.int64)
-    rot, mirror = level.rot[rows].astype(np.int64), level.mirror[rows].astype(np.int64)
-    rel = level.coef[rows][:, None, :] + CORNERS[kind, rot, mirror]                    # (t, 3, 4)
-    T = len(rows)
-    # Ideal places from the faces' roots, then map places, (u, v) and normals of every corner as its tile has it
-    ideal = np.stack([rel @ RULE.basis_x, rel @ RULE.basis_y], axis=-1)                # (t, 3, 2)
-    maps = level.map_points(world, faces, rows, ideal) if T else np.zeros((0, 3, 3))
-    _place, ur, vr = level.face_params(world, faces, rows) if T else (None, np.zeros(0), np.zeros(0))
-    small = phi_power_float(level.d)
+    if faces.clip:
+        return pieces_near(world, faces, level, rows)
+    return rhombs_near(world, faces, level, rows)
+
+
+def copy_normals(world, faces, level, rows, ideal):
+    """The surface's normal at each of ideal's points (t, k, 2: level units from the faces' roots of tiles rows), as
+    its tile's face has it: (t k, 3)"""
+    top = world.topology
+    face = level.face[rows]
+    k = ideal.shape[1]
+    _place, ur, vr = level.face_params(world, faces, rows) if len(rows) else (None, np.zeros(0), np.zeros(0))
+    small = level.rule.shrink_float(level.d)
     sin, cos = faces.ev_y[face], faces.ev_x[face]
     dv = ideal[..., 1] / sin[:, None]
     du = ideal[..., 0] - dv * cos[:, None]
     u = np.clip(ur[:, None] + small * du, 0.0, 1.0)
     v = np.clip(vr[:, None] + small * dv, 0.0, 1.0)
-    fu = np.repeat(face, 3)
+    fu = np.repeat(face, k)
     ju = top.eu[fu] + v.reshape(-1)[:, None] * top.w[fu]
     jv = top.ev[fu] + u.reshape(-1)[:, None] * top.w[fu]
     normals = np.cross(ju, jv)
     normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-300)
+    return normals
+
+
+def finish_near(out, count, vertex_of, copy_face, normals, legs, directions, leg_faces, group=None):
+    """A Near's normals, slopes, edges and neighbors from its corners' copies (vertex_of: each copy's corner, -1 for
+    none; copy_face, normals: its face and the normal there) and its tiles' edges (legs: pairs of copies' corners, each
+    one's direction from its first, a power of zeta in its face's frame, leg_faces). Normals and slopes: each face a
+    corner is on once, as surface.Topology.key_normal() and key_slope() have them. A corner's first neighbor is along
+    the least of its edges' directions among its home face's (or, with group, among the faces in its home's group,
+    which share one frame)."""
+    held = vertex_of >= 0
+    first_pair, _inverse = unique_rows(np.stack([vertex_of[held], copy_face[held]], axis=1))
+    pair_vertex = vertex_of[held][first_pair]
+    pair_normals = normals[held][first_pair]
+    total = np.zeros((count, 3))
+    np.add.at(total, pair_vertex, pair_normals)
+    faces_on = np.bincount(pair_vertex, minlength=count)
+    length = np.linalg.norm(total, axis=1)
+    out.normals = total / np.maximum(length, 1e-300)[:, None]
+    cancel = ~(length > surface.NORMALS_CANCEL * faces_on)
+    for vtx in np.flatnonzero(cancel).tolist():
+        out.normals[vtx] = pair_normals[np.flatnonzero(pair_vertex == vtx)[0]]
+    c = np.sum(out.normals[pair_vertex] * pair_normals, axis=1)
+    tilt = np.sqrt(np.maximum(1.0 - c * c, 0.0)) / np.maximum(c, 0.2)
+    out.slopes = np.zeros(count)
+    np.maximum.at(out.slopes, pair_vertex, np.where(faces_on[pair_vertex] > 1, tilt, 0.0))
+    # Edges, each once
+    sorted_legs = np.sort(legs, axis=1)
+    first_edge, _inverse = unique_rows(sorted_legs)
+    edges = sorted_legs[first_edge] if len(legs) else np.zeros((0, 2), np.int64)
+    out.edges = edges
+    # Each corner's first neighbor: along the least of the directions (zeta^k, from it) of its edges in its home face
+    tails = np.concatenate([legs[:, 0], legs[:, 1]])
+    heads = np.concatenate([legs[:, 1], legs[:, 0]])
+    ks = np.concatenate([directions, (directions + RING.n // 2) % RING.n])
+    both_faces = np.concatenate([leg_faces, leg_faces])
+    if group is None:
+        in_home = both_faces == out.home[tails]
+    else:
+        in_home = group[both_faces] == group[out.home[tails]]
+    order = np.lexsort((ks, ~in_home, tails))
+    tails_sorted = tails[order]
+    starts = np.flatnonzero(np.r_[True, tails_sorted[1:] != tails_sorted[:-1]]) if len(tails_sorted) else []
+    first_neighbor = np.full(count, -1, dtype=np.int64)
+    first_neighbor[tails_sorted[starts]] = heads[order][starts]
+    # Every neighbor from the edges, the first one first: each one's place in its corner's row
+    ends = np.concatenate([edges, edges[:, ::-1]])
+    is_first = ends[:, 1] == first_neighbor[ends[:, 0]]
+    ends = ends[np.lexsort((ends[:, 1], ~is_first, ends[:, 0]))]
+    group_start = np.r_[0, np.flatnonzero(ends[1:, 0] != ends[:-1, 0]) + 1] if len(ends) else np.zeros(0, np.int64)
+    rank = np.arange(len(ends)) - np.repeat(group_start, np.diff(np.r_[group_start, len(ends)]))
+    width = int(max(rank.max() + 1 if len(rank) else 1, 1))
+    neighbors = np.full((count, width), -1, dtype=np.int64)
+    neighbors[ends[:, 0], rank] = ends[:, 1]
+    out.neighbors = neighbors
+
+
+def rhombs_near(world, faces, level, rows):
+    """lattice_near() of a rhomb mesh (Penrose): each half's corners A, B, C and its legs AB and AC, the rhombs' edges
+    (its base BC is the rhomb's inside); corners on a face's side keyed by its mesh edge (see the module's docstring)"""
+    top = world.topology
+    side_edge, side_forward, mesh_edges, edge_home, vertex_home = topology_arrays(top)
+    out = Near()
+    face, kind = level.face[rows], level.kind[rows].astype(np.int64)
+    rot, mirror = level.rot[rows].astype(np.int64), level.mirror[rows].astype(np.int64)
+    rel = level.coef[rows][:, None, :] + CORNERS[kind, rot, mirror]                    # (t, 3, 4)
+    T = len(rows)
+    # Ideal places from the faces' roots, then map places and normals of every corner as its tile has it
+    ideal = np.stack([rel @ RULE.basis_x, rel @ RULE.basis_y], axis=-1)                # (t, 3, 2)
+    maps = level.map_points(world, faces, rows, ideal) if T else np.zeros((0, 3, 3))
+    normals = copy_normals(world, faces, level, rows, ideal)
+    fu = np.repeat(face, 3)
     # Which corners are on a face's side, exactly: Im(zeta^a rel) at the side's target, all corners at once
     flat_rel = rel.reshape(-1, 4)
     fs, face_index = np.unique(fu, return_inverse=True)
@@ -310,50 +367,230 @@ def lattice_near(world, faces, level, center, reach):
     out.copy_rel = flat_rel[first_copy] if count else np.zeros((0, 4), np.int64)
     out.keys = keys
     out.home = np.array(homes, dtype=np.int64)
-    # Normals and slopes: each face a corner is on once, as surface.Topology.key_normal() and key_slope() have them
-    first_pair, _inverse = unique_rows(np.stack([vertex_of, fu], axis=1))
-    pair_vertex = vertex_of[first_pair]
-    total = np.zeros((count, 3))
-    np.add.at(total, pair_vertex, normals[first_pair])
-    faces_on = np.bincount(pair_vertex, minlength=count)
-    length = np.linalg.norm(total, axis=1)
-    out.normals = total / np.maximum(length, 1e-300)[:, None]
-    cancel = ~(length > surface.NORMALS_CANCEL * faces_on)
-    for vtx in np.flatnonzero(cancel).tolist():
-        out.normals[vtx] = normals[first_pair[np.flatnonzero(pair_vertex == vtx)[0]]]
-    c = np.sum(out.normals[pair_vertex] * normals[first_pair], axis=1)
-    tilt = np.sqrt(np.maximum(1.0 - c * c, 0.0)) / np.maximum(c, 0.2)
-    out.slopes = np.zeros(count)
-    np.maximum.at(out.slopes, pair_vertex, np.where(faces_on[pair_vertex] > 1, tilt, 0.0))
-    # Edges: each half's legs AB and AC, each once, with their directions in their tiles' faces
+    # Edges: each half's legs AB and AC, with their directions in their tiles' faces
     corner_v = vertex_of.reshape(T, 3)
     legs = np.concatenate([corner_v[:, [0, 1]], corner_v[:, [0, 2]]])
     directions = np.concatenate([LEGS[kind, rot, mirror, 0], LEGS[kind, rot, mirror, 1]])
-    leg_faces = np.concatenate([face, face])
-    sorted_legs = np.sort(legs, axis=1)
-    first_edge, _inverse = unique_rows(sorted_legs)
-    edges = sorted_legs[first_edge] if len(legs) else np.zeros((0, 2), np.int64)
-    out.edges = edges
-    # Each corner's first neighbor: along the least of the directions (zeta^k, from it) of its edges in its home face
-    tails = np.concatenate([legs[:, 0], legs[:, 1]])
-    heads = np.concatenate([legs[:, 1], legs[:, 0]])
-    ks = np.concatenate([directions, (directions + RING.n // 2) % RING.n])
-    in_home = np.concatenate([leg_faces, leg_faces]) == out.home[tails]
-    order = np.lexsort((ks, ~in_home, tails))
-    tails_sorted = tails[order]
-    starts = np.flatnonzero(np.r_[True, tails_sorted[1:] != tails_sorted[:-1]]) if len(tails_sorted) else []
-    first_neighbor = np.full(count, -1, dtype=np.int64)
-    first_neighbor[tails_sorted[starts]] = heads[order][starts]
-    # Every neighbor from the edges, the first one first: each one's place in its corner's row
-    ends = np.concatenate([edges, edges[:, ::-1]])
-    is_first = ends[:, 1] == first_neighbor[ends[:, 0]]
-    ends = ends[np.lexsort((ends[:, 1], ~is_first, ends[:, 0]))]
-    group_start = np.r_[0, np.flatnonzero(ends[1:, 0] != ends[:-1, 0]) + 1] if len(ends) else np.zeros(0, np.int64)
-    rank = np.arange(len(ends)) - np.repeat(group_start, np.diff(np.r_[group_start, len(ends)]))
-    width = int(max(rank.max() + 1 if len(rank) else 1, 1))
-    neighbors = np.full((count, width), -1, dtype=np.int64)
-    neighbors[ends[:, 0], rank] = ends[:, 1]
-    out.neighbors = neighbors
+    finish_near(out, count, vertex_of, fu, normals, legs, directions, np.concatenate([face, face]))
+    out.level, out.world_text = level, level.world_text
+    return out
+
+
+
+# ----- a girih mesh's corners: faces in one frame, and the gluings between frames -----
+
+class Atlas:
+    """A girih mesh's faces (Faces.labels) as frames of the tiling's plane: faces whose labels agree at the corners
+    they share are one group, labeled in one frame. Across a mesh edge where they don't (the Darb sphere's rim, between
+    the pillow's two copies), the gluing is a turn and a shift of the plane, z -> zeta^k z + c, read off the edge's two
+    corners on either side: crossing[(f, s)] = (g, k, c), face f's side s to face g. Every tile edge is a mirror line
+    of everything drawn across it (surface_penrose.py), so each level's tiles carry across a gluing whole."""
+
+    def __init__(self, top, faces):
+        count = len(faces.labels)
+        parent = list(range(count))
+
+        def find(a):
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+        label_at = [dict(zip(top._corners[f], faces.labels[f])) for f in range(count)]
+        glued = []
+        for f in range(count):
+            corners = top._corners[f]
+            n = len(corners)
+            for s in range(n):
+                g = top.across(f, s)
+                if g is None:
+                    continue
+                a, b = corners[s], corners[(s + 1) % n]
+                fa, fb, ga, gb = label_at[f][a], label_at[f][b], label_at[g][a], label_at[g][b]
+                if (fa, fb) == (ga, gb):
+                    parent[find(f)] = find(g)
+                    continue
+                along_f, along_g = RING.sub(fb, fa), RING.sub(gb, ga)
+                k = next((k for k in range(RING.n) if RING.rot(along_f, k) == along_g), None)
+                if k is None:
+                    raise ValueError(f"parts_penrose: faces {f} and {g} meet along sides of different lengths")
+                glued.append((f, s, g, k, RING.sub(ga, RING.rot(fa, k))))
+        roots = [find(f) for f in range(count)]
+        index = {r: i for i, r in enumerate(sorted(set(roots)))}
+        self.group = np.array([index[r] for r in roots], dtype=np.int64)
+        self.crossing = {(f, s): (g, k, c) for f, s, g, k, c in glued}
+        self.glued = np.zeros(count, dtype=bool)          # faces with a side on a gluing
+        self.glued[[f for f, _s, _g, _k, _c in glued]] = True
+
+
+def atlas_of(top, faces):
+    found = getattr(faces, "_atlas", None)
+    if found is None or found[0] is not top:
+        found = faces._atlas = (top, Atlas(top, faces))
+    return found[1]
+
+
+# A corner within this many of its tiles' edges of its face counts as on it (exactly, the corners on a side are on
+# it; the rest are a tile's algebraic distance from it at least, far more than this)
+ON_SIDE = 1e-6
+
+
+class Prototiles:
+    """A rule's tiles as ring coefficients, for a level's corners at once: each kind, turn and mirroring's corners
+    (kind, rot, mirror, corner, 4, padded with copies of the last), each kind's corner count, and each edge's direction
+    (corner i to i + 1, a power of zeta)"""
+
+    def __init__(self, rule):
+        m = rule.module
+        width = max(len(m.PROTOTILE[kind]) for kind in rule.kinds)
+        self.corners = np.zeros((len(rule.kinds), RING.n, 2, width, 4), dtype=np.int64)
+        self.directions = np.zeros((len(rule.kinds), RING.n, 2, width), dtype=np.int64)
+        self.count = np.array([len(m.PROTOTILE[kind]) for kind in rule.kinds], dtype=np.int64)
+        for kind in rule.kinds:
+            for r in range(RING.n):
+                for mi in (0, 1):
+                    tile = (kind, r, bool(mi), RING.zero)
+                    c = m.polygon(tile) if hasattr(m, "polygon") else [penrose.place(tile, v) for v in m.PROTOTILE[kind]]
+                    c = list(c) + [c[-1]] * (width - len(c))
+                    self.corners[kind, r, mi] = c
+                    n = self.count[kind]
+                    for i in range(n):
+                        self.directions[kind, r, mi, i] = RING.unit_index(RING.sub(c[(i + 1) % n], c[i]))
+
+
+_prototiles = {}
+
+
+def prototiles_of(rule):
+    found = _prototiles.get(rule.name)
+    if found is None:
+        found = _prototiles[rule.name] = Prototiles(rule)
+    return found
+
+
+def pieces_near(world, faces, level, rows):
+    """lattice_near() of a girih mesh: each tile's corners and edges, the tiles cut to their faces. A tile is listed
+    by every face it reaches into, each in its own frame, so a corner has copies: they're one corner by their ring
+    point in their group's frame (Atlas), placed from the copy whose face holds it, and a corner past its group's edge
+    is the next group's, through the gluing (its own tiles have it too, if they're kept). A corner on a gluing is the
+    lowest group's."""
+    top = world.topology
+    rule = level.rule
+    atlas = atlas_of(top, faces)
+    tiles = prototiles_of(rule)
+    out = Near()
+    face, kind = level.face[rows], level.kind[rows].astype(np.int64)
+    rot, mirror = level.rot[rows].astype(np.int64), level.mirror[rows].astype(np.int64)
+    width = tiles.corners.shape[3]
+    T = len(rows)
+    rel = level.coef[rows][:, None, :] + tiles.corners[kind, rot, mirror]               # (t, k, 4)
+    ideal = np.stack([rel @ rule.basis_x, rel @ rule.basis_y], axis=-1)                # (t, k, 2)
+    real = (np.arange(width)[None, :] < tiles.count[kind][:, None]).reshape(-1)
+    # How far each copy is past each of its face's sides (level units; a triangle's third side twice)
+    side_normals, offsets = level.face_sides(faces, rows) if T else (np.zeros((0, 4, 2)), np.zeros((0, 4)))
+    past = (np.einsum("tsj,tkj->tks", side_normals, ideal) - offsets[:, None, :]).reshape(-1, 4)
+    outside = past.max(axis=1)
+    fu = np.repeat(face, width)
+    flat_rel = rel.reshape(-1, 4)
+    # Each copy in its group's frame, from a point of that frame near the drone (the first face's root): level d's
+    # point Z of face f's frame is zeta^turn Z + labels[0] LAMBDA^d there
+    grow = rule.power(level.d)
+    frame_of = {}
+    level_faces, face_index = np.unique(fu, return_inverse=True)
+    shifts = np.zeros((len(level_faces), 4), dtype=np.int64)
+    for i, f in enumerate(level_faces.tolist()):
+        g = int(atlas.group[f])
+        z = RING.add(RING.rot(level.roots[f][0], int(faces.turn[f])), RING.mul(faces.labels[f][0], grow))
+        frame_of.setdefault(g, z)
+        shift = RING.sub(z, frame_of[g])
+        if not fits(*shift):
+            raise ValueError(f"parts_penrose: face {f}'s root is too far from its group's ({level.d})")
+        shifts[i] = shift
+    keys = np.einsum("cj,cjl->cl", flat_rel, TURN[faces.turn[fu]]) + shifts[face_index.reshape(-1)]
+    groups = atlas.group[fu]
+    copies = np.flatnonzero(real)
+    first, inverse = unique_rows(np.concatenate([groups[copies, None], keys[copies]], axis=1))
+    count = len(first)
+    corner_of = np.full(T * width, -1, dtype=np.int64)
+    corner_of[copies] = inverse
+    # Each corner's best copy: the one most inside its face
+    order = np.lexsort((outside[copies], inverse))
+    starts = np.r_[0, np.flatnonzero(np.diff(inverse[order])) + 1] if len(order) else np.zeros(0, np.int64)
+    best = copies[order[starts]]
+    target = np.arange(count)
+    keep = np.ones(count, dtype=bool)
+    beyond = outside[best] > ON_SIDE
+    if atlas.crossing:
+        # Corners past a gluing, or on one to a lower group, are the other group's (if it has them here): through the
+        # gluing of a side any copy of theirs is on, or past (the nearest past first)
+        by_key = {(int(groups[c]), *keys[c].tolist()): i for i, c in enumerate(best.tolist())}
+        by_corner = np.argsort(inverse, kind="stable")
+        bounds = np.searchsorted(inverse[by_corner], np.arange(count + 1))
+        on_side = np.abs(outside[best]) <= ON_SIDE
+        glued = np.zeros(count, dtype=bool)
+        glued[inverse[atlas.glued[fu[copies]]]] = True
+        keep &= ~(beyond & ~glued)
+        for i in np.flatnonzero((beyond | on_side) & glued).tolist():
+            own = int(groups[best[i]])
+            candidates = []
+            for c in copies[by_corner[bounds[i]:bounds[i + 1]]].tolist():
+                f = int(fu[c])
+                for s in range(int(top.sides[f])):
+                    found = atlas.crossing.get((f, s))
+                    p = past[c, s]
+                    if found is not None and (p > -ON_SIDE if beyond[i] else abs(p) <= ON_SIDE):
+                        candidates.append((p, found))
+            candidates.sort(key=lambda item: item[0])
+            moved = False
+            for _p, (g, k, glue) in candidates:
+                group = int(atlas.group[g])
+                if group not in frame_of or (not beyond[i] and group > own):
+                    continue
+                # zeta^k (key + frame) + glue LAMBDA^d - the other frame
+                constant = RING.sub(RING.add(RING.rot(frame_of[own], k), RING.mul(glue, grow)), frame_of[group])
+                other = RING.add(RING.rot(tuple(int(v) for v in keys[best[i]]), k), constant)
+                j = by_key.get((group, *other))
+                if j is not None and not beyond[j]:
+                    target[i] = j
+                    moved = True
+                    break
+            if beyond[i] and not moved:
+                keep[i] = False
+    else:
+        keep &= ~beyond
+    # Merged and dropped corners renumbered (a corner where three groups meet may be merged twice over)
+    final = target.copy()
+    while np.any(final[final] != final):
+        final = final[final]
+    alive = keep & (final == np.arange(count))           # the corners kept, each standing for itself
+    number = np.cumsum(alive) - 1
+    stands_for = final[np.maximum(corner_of, 0)]
+    vertex_of = np.where((corner_of >= 0) & alive[stands_for], number[stands_for], -1)
+    count = int(alive.sum())
+    # Places from each corner's best copy over all its copies; homes: the lowest face holding it
+    held = vertex_of >= 0
+    holds = held & (outside <= ON_SIDE)
+    order = np.lexsort((outside, vertex_of))
+    order = order[held[order]]
+    starts = np.r_[0, np.flatnonzero(np.diff(vertex_of[order])) + 1] if len(order) else np.zeros(0, np.int64)
+    first_copy = order[starts]
+    maps = level.map_points(world, faces, rows, ideal).reshape(-1, 3) if T else np.zeros((0, 3))
+    out.places = maps[first_copy] if count else np.zeros((0, 3))
+    out.copy_face = fu[first_copy] if count else np.zeros(0, np.int64)
+    out.copy_rel = flat_rel[first_copy] if count else np.zeros((0, 4), np.int64)
+    home = np.full(count, np.iinfo(np.int64).max, dtype=np.int64)
+    np.minimum.at(home, vertex_of[holds], fu[holds])
+    out.home = np.where(home == np.iinfo(np.int64).max, out.copy_face, home)
+    out.keys = None
+    normals = copy_normals(world, faces, level, rows, ideal)
+    # Edges: each tile's sides, corner i to i + 1, their directions in their group's frame
+    corner_v = vertex_of.reshape(T, width)
+    nexts = (np.arange(width)[None, :] + 1) % tiles.count[kind][:, None]                # (t, k)
+    legs = np.stack([corner_v, np.take_along_axis(corner_v, nexts, axis=1)], axis=-1).reshape(-1, 2)
+    directions = ((tiles.directions[kind, rot, mirror] + faces.turn[face][:, None]) % RING.n).reshape(-1)
+    leg_faces = np.repeat(face, width)
+    whole = real & np.all(legs >= 0, axis=1)
+    finish_near(out, count, np.where(holds, vertex_of, -1), fu, normals, legs[whole], directions[whole],
+                leg_faces[whole], atlas.group)
     out.level, out.world_text = level, level.world_text
     return out
 
@@ -380,7 +617,7 @@ def camera_exact(world, camera):
 
 # ----- a level's pieces round a point -----
 
-class PenrosePieces(parts.LaidOut):
+class SubstitutionPieces(parts.LaidOut):
     """A level's pieces round the corner nearest center (map units) out to radius of its cells (the mean distance from
     it to its neighbors), from level (a surface_penrose.Level of this world), as parts.LaidOut lays them out, in the
     level's own units (the mesh's times phi^d) from that corner, origin() in the map; or with an infinite radius,
@@ -435,7 +672,7 @@ class PenrosePieces(parts.LaidOut):
         0.0)"""
         if self._point is None:
             self._point = self.point(self.middle_row)
-        grow = q_phi(self.d)
+        grow = self.level.rule.q_grow(self.d)
         cam = camera_exact(self.world, camera)
         return np.array([q_float(q_mul(q_sub((c, Fraction(0)), p), grow)) for c, p in zip(cam, self._point)]), 0.0
 
@@ -455,7 +692,8 @@ def exact_piece(world, pieces, row, camera_point, window, shape, settings, phase
         stretch = parts.foot_stretch(shape, float(pieces.near.slopes[rows[0]]))
     else:
         scales = tuple(float(s) for s in pieces.edge_scales[row - pieces.vertex_count])
-    phase = parts.level_phase(pieces.d, phases, PenroseLattice.level_step)
+    rule = pieces.level.rule
+    phase = parts.level_phase(pieces.d, phases, lattice_for(rule).level_step)
     if local is not None:
         # The corners as laid out, from the middle corner (to ~1e-14 of a tile, as add_levels()'s tolerance has it)
         points = pieces.points[rows]
@@ -465,27 +703,27 @@ def exact_piece(world, pieces, row, camera_point, window, shape, settings, phase
                                       window, shape, settings, phase, scale=pieces.scale())
     exact = [pieces.point(r) for r in rows]
     P = exact[0]
-    grow = q_phi(pieces.d)
+    grow = rule.q_grow(pieces.d)
     offsets = [tuple(q_float(q_mul(q_sub(p, q), grow)) for p, q in zip(point, P)) for point in exact]
-    # Enough bits of sqrt 5: a point's a + b sqrt 5 has a and b about phi^2d (its ring point's coefficients, times
-    # phi^-d's), cancelling to the mesh's size, and the drone is 2^-n h of the mesh's units (h map units, rho about 1)
-    grown = int(2 * pieces.d * LOG_PHI / math.log(2.0))
+    # Enough bits of sqrt 5: a point's a + b sqrt 5 has a and b about LAMBDA^2d (its ring point's coefficients, times
+    # LAMBDA^-d's), cancelling to the mesh's size, and the drone is 2^-n h of the mesh's units (h map units, rho about 1)
+    grown = int(2 * pieces.d * rule.log_loop / math.log(2.0))
     bits = grown + world.n + max(0, int(-math.log2(max(h, 1e-300)))) + 128
     relative = [q_fraction(q_sub((c, Fraction(0)), p), bits) for c, p in zip(camera_point, P)]
-    unit = q_fraction(q_phi(-pieces.d), bits)
+    unit = q_fraction(rule.q_grow(-pieces.d), bits)
     return surface.exact_piece_at(world, pieces.d, kind, offsets, normals, stretch, scales, relative, unit, window,
                                   shape, settings, phase)
 
 
 def built_pieces(world, faces, tiles, center, radius, settings, shape):
-    """A level's pieces (PenrosePieces) built on the worker thread, as parts.write_level() takes them"""
-    pieces = PenrosePieces(world, faces, tiles, center, radius, settings, shape)
+    """A level's pieces (SubstitutionPieces) built on the worker thread, as parts.write_level() takes them"""
+    pieces = SubstitutionPieces(world, faces, tiles, center, radius, settings, shape)
     return world, pieces, pieces.origin(), radius
 
 
 def tiles_pieces(world, faces, st, level, center, window, radius, settings, shape):
     """built_pieces() of level's tiles covering window round center (map units), as the strapwork keeps them or cut
-    here (SP.tiles(): kept for the strapwork's builds too), on the worker thread (PenroseLattice.pieces_job())"""
+    here (SP.tiles(): kept for the strapwork's builds too), on the worker thread (SubstitutionLattice.pieces_job())"""
     tiles = SP.tiles(st, world, faces, level, center, window)
     built = built_pieces(world, faces, tiles, center, radius, settings, shape)
     SP.keep_copy(st, tiles)
@@ -494,11 +732,16 @@ def tiles_pieces(world, faces, st, level, center, window, radius, settings, shap
 
 # ----- parts.py's view of a Penrose map's lattice -----
 
-class PenroseLattice(surface.MeshLattice):
-    """parts.py's view of a Penrose surface map's lattice (surface.MeshLattice is the square and triangle maps')"""
+class SubstitutionLattice(surface.MeshLattice):
+    """parts.py's view of a substitution surface map's lattice, one per rule (surface.MeshLattice is the square and
+    triangle maps')"""
 
-    # Frames on every other level, phi^2 apart: on every level they were dense (the user, 2026-11-16)
-    level_step = 2
+    def __init__(self, rule):
+        super().__init__(rule.loop)
+        self.rule = rule
+        # Frames on every level_step-th level, at least FRAME_SPACING apart: Penrose's every other level, phi^2 (on
+        # every level they were dense, the user, 2026-11-16), Darb-i Imam's every level, LAMBDA = 8.5
+        self.level_step = max(1, math.ceil(math.log(FRAME_SPACING) / rule.log_loop - 1e-9))
 
     def world(self, obj):
         world = surface.world_of(obj)
@@ -509,7 +752,7 @@ class PenroseLattice(surface.MeshLattice):
     def unit_level(self, world):
         """The level whose tiles are about a map unit at the anchor"""
         edge = self.edge(world)
-        return max(0, math.floor((math.log(world.rho * edge) + world.n * math.log(2.0)) / LOG_PHI))
+        return max(0, math.floor((math.log(world.rho * edge) + world.n * math.log(2.0)) / self.rule.log_loop))
 
     @staticmethod
     def edge(world):
@@ -524,7 +767,7 @@ class PenroseLattice(surface.MeshLattice):
         """The coarsest level whole while its corners are few and the map shallow (it's then never built again as the
         drone moves); else out to the next power of 2 of the cells wanted, at most surface.FIRST_REACH"""
         faces, _st = world.penrose
-        if world.n < SP.FLOAT_N and len(faces.kind) * PHI ** (2 * level) <= WHOLE_POINTS:
+        if world.n < SP.FLOAT_N and len(faces.kind) * self.rule.loop ** (2 * level) <= WHOLE_POINTS:
             return math.inf
         if not wanted > build:
             return build
@@ -550,7 +793,7 @@ class PenroseLattice(surface.MeshLattice):
     def pieces(self, world, level, center, radius, settings, shape):
         faces, _st = world.penrose
         tiles = self.tiles_for(world, level, center, radius)
-        return PenrosePieces(world, faces, tiles, center, radius, settings, shape)
+        return SubstitutionPieces(world, faces, tiles, center, radius, settings, shape)
 
     def pieces_job(self, world, level, center, radius, settings, shape):
         """pieces() for the worker thread (parts.SphereLattice.pieces_job()): the corners found and the pieces laid out
@@ -601,9 +844,9 @@ class PenroseLattice(surface.MeshLattice):
         return (radius + 4.0) * self.cell_sizes(world, [level])[level] * 1.2
 
     def cell_sizes(self, world, levels):
-        """Each level's tile edge at the anchor's face (map units): rho 2^n phi^-d times its edge"""
+        """Each level's tile edge at the anchor's face (map units): rho 2^n LAMBDA^-d times its edge"""
         edge = self.edge(world)
-        return {d: world.rho * edge * phi_power_float(d, world.n) for d in levels}
+        return {d: world.rho * edge * self.rule.shrink_float(d, world.n) for d in levels}
 
     def add_levels(self, world, camera, q, h, window, levels, settings, shape, phases, placer):
         """The giant levels' pieces within window of the camera (map units), as parts.ExactPieces, finest first: each
@@ -629,7 +872,7 @@ class PenroseLattice(surface.MeshLattice):
             cell = self.cell_sizes(world, [d])[d]
             radius = math.ceil(1.5 + 1.25 * window / cell + reach_cells)
             try:
-                pieces = PenrosePieces(world, faces, tiles, foot, radius, settings, shape)
+                pieces = SubstitutionPieces(world, faces, tiles, foot, radius, settings, shape)
             except ValueError:
                 continue
             local, rounding = pieces.camera(camera)
@@ -651,7 +894,19 @@ class PenroseLattice(surface.MeshLattice):
         return found
 
 
-LATTICE = PenroseLattice(PHI)
+_lattices = {}
+
+
+def lattice_for(rule):
+    found = _lattices.get(rule.name)
+    if found is None:
+        found = _lattices[rule.name] = SubstitutionLattice(rule)
+    return found
+
+
+def lattice_of(obj):
+    """The map's lattice, for its rule"""
+    return lattice_for(SP.rule_of(obj))
 
 
 def forget():

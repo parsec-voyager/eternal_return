@@ -1083,7 +1083,7 @@ def center_vector(obj, camera_world):
     world = world_of(obj)
     p = map_point(obj, camera_world)
     with np.errstate(over="ignore", invalid="ignore"):
-        return world_vector(obj, world.rho * world.units(((0, 0, 0), 0)) - p)
+        return world_vector(obj, world.rho * world.units(((0, 0, 0), 1)) - p)
 
 
 def crossing(obj, start_world, end_world):

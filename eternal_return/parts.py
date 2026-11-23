@@ -104,10 +104,12 @@ icosahedron's: parts_ico.IcoChart); surface.MeshLattice for a surface map, whose
 placed from the anchor without a chart, and its giant levels' pieces worked out with Fractions (surface.add_levels()).
 
 2026-11-16, the icosahedron sphere's lattice (parts_ico.py: triangles, 5 edges at its 12 corners) and the
-Penrose surface maps' (parts_penrose.PenroseLattice: each level's rhombs' corners and edges, levels phi times finer, so
+Penrose surface maps' (parts_penrose.SubstitutionLattice: each level's rhombs' corners and edges, levels phi times finer, so
 a lattice says how much finer each level is, its ratio). Same day, at the user's request, the Penrose frames are on
 every other level only (phi^2 apart, less dense): a lattice's level_step, 1 for the rest, says which levels have parts
-(drawn()); the levels between are left out of the instanced and giant levels alike.
+(drawn()); the levels between are left out of the instanced and giant levels alike. 2026-11-22: any substitution
+rule's (parts_penrose.SubstitutionLattice, one per rule): Darb-i Imam's girih tiles' corners and edges, on every level
+(LAMBDA = 8.5 apart).
 
 Not yet: maps with 3D tiles (the lift: parts stand on the sphere, not the tiles' ground).
 """
@@ -211,15 +213,15 @@ def _surface():
 
 def lattice_of(obj):
     """The lattice a map's parts stand on: a sphere map's (parts_sphere.SphereLattice, with the cube's chart or the
-    icosahedron's, parts_ico.IcoChart), a surface map's (surface.MeshLattice) or a Penrose surface map's
-    (parts_penrose.PenroseLattice)"""
+    icosahedron's, parts_ico.IcoChart), a surface map's (surface.MeshLattice) or a substitution surface map's
+    (parts_penrose.SubstitutionLattice, one per rule)"""
     if sphere.is_sphere(obj):
         if sphere.world_of(obj).layout == "ico":
             return _module("parts_ico").LATTICE
         return _module("parts_sphere").SPHERE
     surface = _surface()
-    if surface.setting(obj, "rule") == "penrose":
-        return _module("parts_penrose").LATTICE
+    if surface.is_substitution(obj):
+        return _module("parts_penrose").lattice_of(obj)
     return surface.lattice_of(obj)
 
 

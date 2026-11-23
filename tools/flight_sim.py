@@ -111,6 +111,13 @@ def parse_args():
     parser.add_argument("--addon", choices=("installed", "working"), default="installed",
                         help="fly the installed extension (what Blender loads) or the repo's working copy")
     parser.add_argument("--video", action="store_true")
+    parser.add_argument("--realtime", action="store_true",
+                        help="keep simulated time no faster than the wall clock, and hand builds to the add-on's worker "
+                             "threads as a real flight does (background.py keeps them off in a background Blender): "
+                             "they get as much time a frame as in a real flight (their schedulers read the real clock)")
+    parser.add_argument("--probe", metavar="SCRIPT",
+                        help="a Python file whose frame(t, frame, m, scene) runs after every frame and whose "
+                             "report(out) runs at the end, e.g. to count what a map hasn't built yet")
     parser.add_argument("--save-as", metavar="PATH", help="save the .blend after the flight, e.g. with a recording")
     parser.add_argument("--replay", metavar="OBJECT",
                         help="instead of flying a plan, replay a flight recorded with the add-on's Record Camera into "
@@ -980,6 +987,14 @@ def main():
 
     start = plan.get("start", {})
     turn_after_click = "click_at" in start and "look_at" in start
+    probe = None
+    if args.probe:
+        probe = types.ModuleType("probe")
+        probe.__file__ = os.path.abspath(args.probe)
+        exec(compile(open(args.probe).read(), args.probe, "exec"), probe.__dict__)
+    if args.realtime:
+        importlib.import_module(m.__package__ + ".background").enabled = True
+    wall_start = time.perf_counter()
     while min(next_tick, next_frame) <= duration:
         if next_tick <= next_frame:
             clock.t = next_tick
@@ -1029,10 +1044,16 @@ def main():
             continue
 
         clock.t = next_frame
+        if args.realtime:
+            behind = clock.t - (time.perf_counter() - wall_start)
+            if behind > 0.0:
+                time.sleep(behind)
         camera_before = m.drone_camera.matrix_world.translation.copy()
         scene.frame_set(scene.frame_current + 1)     # frame_change_pre feeds the sticks to the simulation
         next_frame += 1.0 / fps
         frame_count += 1
+        if probe is not None:
+            probe.frame(clock.t, frame_count, m, scene)
         # The add-on moves the Drone object onto the simulated drone once it's drifted RECENTER_DISTANCE from it, and
         # the simulation subtracts the same offset, so the camera shouldn't move
         physics = m.physics
@@ -1120,6 +1141,8 @@ def main():
         writer.writerow(["time", "frame", "x", "y", "z", "scale", "clip_end", "selected", "view_change_%",
                          "inside", "sticks", "readouts", "map_change_%"])
         writer.writerows(row + [f"{map_changes.get(row[1], float('nan')):.2f}"] for row in rows)
+    if probe is not None and hasattr(probe, "report"):
+        probe.report(out)
     for broken in invalid_drivers():
         events.append((duration, "DRIVER", f"switched off after an error: {broken}"))
     events.sort(key=lambda e: e[0])

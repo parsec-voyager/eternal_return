@@ -237,6 +237,11 @@ class Faces:
         self.kind = np.zeros(count, np.int32)
         self.ev_x, self.ev_y = np.zeros(count), np.zeros(count)
         self.q_ev_x, self.q_ev_y, self.tiles, self.polygon = [], [], [], []
+        # Each face's corners' labels (ring points, the tiling's plane) and its frame's turn there: a point z of its
+        # frame is zeta^turn z + labels[0] (parts_penrose's girih frames join faces by them)
+        self.labels, self.turn = [], np.zeros(count, np.int64)
+        # Each face's sides' outward unit normals and lengths in its frame (Level.face_sides(), a triangle's last twice)
+        self.side_normals, self.side_lengths = np.zeros((count, 4, 2)), np.zeros((count, 4))
         self.clip = True
         for f in range(count):
             n = int(top.sides[f])
@@ -245,6 +250,8 @@ class Faces:
             if k is None:
                 raise ValueError(f"surface_penrose: {mesh.name} face {f}'s first side isn't a tile edge")
             frame = [R.rot(R.sub(p, points[0]), -k % R.n) for p in points]
+            self.labels.append(points)
+            self.turn[f] = k
             if n == 4 and R.add(frame[1], frame[3]) != frame[2]:
                 raise ValueError(f"surface_penrose: {mesh.name} face {f} isn't a parallelogram in the tiling's plane")
             x, y = R.exact_xy(frame[-1])
@@ -255,6 +262,11 @@ class Faces:
             self.ev_x[f] = float_sqrt(x[0], x[1], 5)
             self.ev_y[f] = float_sqrt(y[0], y[1], 5) * R.stretch
             self.polygon.append(frame)
+            for i in range(n):
+                ex, ey = R.xy_float(R.sub(frame[(i + 1) % n], frame[i]))
+                self.side_lengths[f, i] = math.hypot(ex, ey)
+                self.side_normals[f, i] = (ey / self.side_lengths[f, i], -ex / self.side_lengths[f, i])
+            self.side_lengths[f, n:], self.side_normals[f, n:] = self.side_lengths[f, n - 1], self.side_normals[f, n - 1]
             tau = (tile["tau_0"][f], tile["tau_1"][f], tile["tau_2"][f], tile["tau_3"][f])
             kind, rot, mirror = tile["kind"][f], tile["rot"][f], bool(tile["mirror"][f])
             self.kind[f] = kind
@@ -387,6 +399,32 @@ class Centers:
 COEF_LIMIT = 2 ** 40
 
 
+# A face's sides' offsets are worked out in float64 while its corners' ring coefficients (level units, from its root)
+# are under this: their distances are then right to some 1e-10 of a tile
+FLOAT_SIDES = 1 << 20
+
+
+def side_offsets(faces, f, corners):
+    """Face f's sides' distances from a root, its corners given from it (ring points, level units): n . a for each
+    side's outward unit normal n (Faces.side_normals) and its first corner a, padded to 4"""
+    n = len(corners)
+    out = np.empty(4)
+    if max(abs(c) for corner in corners for c in corner) < FLOAT_SIDES:
+        c = np.array(corners, dtype=np.float64)
+        points = np.stack([c @ faces.rule.basis_x, c @ faces.rule.basis_y], axis=1)
+        out[:n] = np.einsum("sj,sj->s", faces.side_normals[f, :n], points)
+    else:
+        for i in range(n):
+            # n . a = (ey ax - ex ay) / |e|, exactly
+            e = RING.sub(faces.polygon[f][(i + 1) % n], faces.polygon[f][i])
+            (exa, exb), (eya, eyb) = RING.exact_xy(e)
+            (axa, axb), (aya, ayb) = RING.exact_xy(corners[i])
+            cross = q_sub(q_mul((eya, eyb), (axa, axb)), q_mul((exa, exb), (aya, ayb)))
+            out[i] = float_sqrt(cross[0], cross[1], 5) * RING.stretch / faces.side_lengths[f, i]
+    out[n:] = out[n - 1]
+    return out
+
+
 class Level:
     """Level d's tiles near where the drone was (center, map units of the world world_text, like surface.FloorBuilt),
     covering window of it (map units): each face's root, an exact ring point of the level (and once drawn, its map place
@@ -407,7 +445,6 @@ class Level:
         self.rel = (np.stack([coef @ self.rule.basis_x, coef @ self.rule.basis_y], axis=1) if len(coef)
                     else np.zeros((0, 2)))
         self.params = None           # face_params() of every tile, until the tiles or their roots change
-        self.__dict__.pop("_face_sides", None)   # face_sides()'s
 
     def take(self, rows):
         self.set_tiles(self.face[rows], self.kind[rows], self.rot[rows], self.mirror[rows], self.coef[rows])
@@ -416,35 +453,24 @@ class Level:
         """For tiles rows, of a mesh whose tiles are cut to their faces (Faces.clip): their faces' sides as half planes
         in the level's units from each face's root, (outward unit normals (t, 4, 2), offsets (t, 4)), a point p inside
         all four normal . p <= offset (a triangle's third side twice). Each side's offset is the root's distance from
-        it, worked out exactly (deep down a face's corners are far bigger than the tiles' places near the drone, and the
-        distance of a line near the drone, from floats of them, would be all rounding), once a face (kept until the
-        tiles or roots change)."""
+        it: exactly once its corners are big (deep down a face's corners are far bigger than the tiles' places near the
+        drone, and the distance of a line near the drone, from floats of them, would be all rounding), in float64 while
+        they're under FLOAT_SIDES (shallow levels, thousands of faces: exactly, they were most of a first build,
+        2026-11-22). Kept a face and root at a time, whatever the tiles."""
         kept = self.__dict__.setdefault("_face_sides", {})
-        grow = self.rule.power(self.d)
-        for f in np.unique(self.face[rows]).tolist():
-            if f in kept:
-                continue
-            polygon = faces.polygon[f]
+        fs, index = np.unique(self.face[rows], return_inverse=True)
+        offsets = np.empty((len(fs), 4))
+        grow = None
+        for i, f in enumerate(fs.tolist()):
             root = self.roots[f][0]
-            corners = [RING.sub(RING.mul(grow, c), root) for c in polygon]
-            normals, offsets = [], []
-            for i in range(len(polygon)):
-                e = RING.sub(polygon[(i + 1) % len(polygon)], polygon[i])
-                ex, ey = RING.xy_float(e)
-                length = math.hypot(ex, ey)
-                # n = (ey, -ex) / |e|, and n . a = (ey ax - ex ay) / |e| for the side's corner a, exactly
-                (exa, exb), (eya, eyb) = RING.exact_xy(e)
-                (axa, axb), (aya, ayb) = RING.exact_xy(corners[i])
-                cross = q_sub(q_mul((eya, eyb), (axa, axb)), q_mul((exa, exb), (aya, ayb)))
-                normals.append((ey / length, -ex / length))
-                offsets.append(float_sqrt(cross[0], cross[1], 5) * RING.stretch / length)
-            while len(normals) < 4:
-                normals.append(normals[-1])
-                offsets.append(offsets[-1])
-            kept[f] = (np.array(normals), np.array(offsets))
-        normals = np.array([kept[f][0] for f in self.face[rows].tolist()]).reshape(-1, 4, 2)
-        offsets = np.array([kept[f][1] for f in self.face[rows].tolist()]).reshape(-1, 4)
-        return normals, offsets
+            found = kept.get((f, root))
+            if found is None:
+                if grow is None:
+                    grow = self.rule.power(self.d)
+                corners = [RING.sub(RING.mul(grow, c), root) for c in faces.polygon[f]]
+                found = kept[(f, root)] = side_offsets(faces, f, corners)
+            offsets[i] = found
+        return faces.side_normals[fs][index], offsets[index]
 
     def outside(self, faces, rows, points):
         """How far points (t, 2: level units from each one's face's root) of tiles rows are outside their faces (the
@@ -460,6 +486,8 @@ class Level:
         fresh.__dict__.update(self.__dict__)
         fresh.coef = self.coef.copy()
         fresh.roots = {f: list(r) for f, r in self.roots.items()}
+        if "_face_sides" in self.__dict__:
+            fresh._face_sides = dict(self._face_sides)
         fresh.source = (self, self.window)
         return fresh
 
@@ -694,13 +722,35 @@ def level_below(world, parent, center):
         face, kind, rot, mirror, coef = (np.concatenate([p[i] for p in parts]) for i in range(5))
         if rule.straddle:
             keys = np.column_stack([face, kind.astype(np.int64), rot.astype(np.int64), mirror.astype(np.int64), coef])
-            _unique, first = np.unique(keys, axis=0, return_index=True)
+            first, _inverse = unique_rows(keys)
             if len(first) < len(face):
                 first = np.sort(first)
                 face, kind, rot, mirror, coef = face[first], kind[first], rot[first], mirror[first], coef[first]
         level.set_tiles(face, kind, rot, mirror, coef)
     return level
 
+
+
+def unique_rows(a):
+    """The distinct rows of a whole-number array (n, k): each one's first row, and each row's distinct one's index
+    (in sorted order). np.unique(axis=0) was a fifth of a level's build."""
+    if not len(a):
+        return np.zeros(0, np.int64), np.zeros(0, np.int64)
+    # Mostly the columns' spans multiply to under 2^62: one whole number a row, sorted at once
+    low = a.min(axis=0)
+    spans = (a.max(axis=0) - low + 1).tolist()
+    if math.prod(spans) < 1 << 62:
+        code = np.zeros(len(a), dtype=np.int64)
+        for k, span in enumerate(spans):
+            code = code * span + (a[:, k] - low[k])
+        _codes, first, inverse = np.unique(code, return_index=True, return_inverse=True)
+        return first, inverse.reshape(-1)
+    order = np.lexsort(a.T[::-1])
+    ordered = a[order]
+    new = np.r_[True, np.any(ordered[1:] != ordered[:-1], axis=1)]
+    inverse = np.empty(len(a), dtype=np.int64)
+    inverse[order] = np.cumsum(new) - 1
+    return order[new], inverse
 
 # ----- per map: the kept levels and the drawn ones -----
 
@@ -949,10 +999,19 @@ def cut_levels(world, faces, below, parents, cuts, center, centers_window):
             level.keep_near(world, faces, centers, window, center)
         else:
             parent = out.get(k - 1) or parents[k - 1]
+            source = parent
+            # A parent kept far wider than this window (a coarse level the floor keeps out to the clip end) is cut to
+            # what its children can reach first: its children straddle it by its rule's PAD at most (stretched faces
+            # allowed for). Cut whole, a Darb-i Imam parent's 211 children a tile were made and thrown away, up to a
+            # million a cut, and the 3D frames' builds took seconds (2026-11-23).
+            reach = window + PAD_STRETCH * parent.rule.pad * surface_tile(world, faces, below, k - 1)
+            if len(parent.face) * parent.rule.most_children > TRIM_MIN and parent.window > schedule.OVERBUILT * reach:
+                parent = parent.copy()
+                parent.keep_near(world, faces, centers, reach, center)
             level = level_below(world, parent, center)
             level.keep_near(world, faces, centers, window, center)
             with np.errstate(over="ignore", invalid="ignore"):
-                held = float(parent.window - np.linalg.norm(parent.center - center))
+                held = float(source.window - np.linalg.norm(source.center - center))
             if math.isfinite(held):
                 level.window = min(level.window, held)
         out[k] = level
@@ -1202,7 +1261,8 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
                     normals, offsets = level.face_sides(faces, rows)
                     for j in range(4):
                         ideal, row_counts = substitution.clip_half_planes(ideal, row_counts, normals[:, j], offsets[:, j])
-                    good = row_counts >= 3
+                    # Slivers left where a bar's side lies along a face's side (kept or not by the last bit) dropped
+                    good = (row_counts >= 3) & (np.abs(polygon_areas(ideal, row_counts)) > SLIVER)
                     ideal, row_counts, rows, row_codes = ideal[good], row_counts[good], rows[good], row_codes[good]
                     row_long, row_seen, row_step = row_long[good], row_seen[good], row_step[good]
                 if box:
@@ -1265,6 +1325,20 @@ WRITE_FACES = 20000
 # a later tick (it was due with slack to spare: BUILD_SLACK, half its outlines' reach). Several levels coming due in
 # one tick took it to 150-270 ms on bent maps (2026-11-13).
 BUILD_BUDGET = 0.012
+# A bar cut to its face with less area than this (level units: its tile's edge is 1) is a sliver along a face's side
+SLIVER = 1e-9
+
+
+def polygon_areas(corners, counts):
+    """Each polygon's area, its corners (r, k, 2) the first counts of each row, counterclockwise"""
+    k = corners.shape[1]
+    index = np.arange(k)[None, :]
+    following = np.where(index + 1 < counts[:, None], index + 1, 0)
+    x, y = corners[..., 0], corners[..., 1]
+    xn, yn = np.take_along_axis(x, following, axis=1), np.take_along_axis(y, following, axis=1)
+    return 0.5 * np.where(index < counts[:, None], x * yn - xn * y, 0.0).sum(axis=1)
+
+
 def box_cut(level, world, faces, rows, ideal, counts, center, window):
     """Polygons of level units (tiles rows) cut to the box of half side window round center (map units): (their
     corners in level units, counts, which rows are left). Those wholly in the box stay as they are; those across its
@@ -2032,6 +2106,9 @@ def built_level(world, faces, level, motifs, coarse, foot, center, reach, camera
 # A build trims a level only if it has more tiles than this (built_level()): trimming a few is more work than it saves,
 # and the trimmed copy can't be kept (keep_copy())
 TRIM_MIN = 4000
+# How much a face may stretch a tile beyond the level's tile edge where the drone is (surface_tile()), for the reach of
+# a parent's children past it (cut_levels())
+PAD_STRETCH = 4.0
 # A coarse level's box (level_bars()) reaches this many times its half side, at its corners
 BOX_CORNER = math.sqrt(2.0)
 
