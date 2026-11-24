@@ -87,7 +87,8 @@ FLOOR_KEY = "surface_floor_of"       # on the floor object: its map's object's n
 # - factor: how many ways a level's cell's sides split at the next, a whole number from 2 (the map loops by its powers)
 # - endless: an endless plane's ({"seed": a whole number}), None for a map with a top: see retop()
 # - chart: the shape the lattice stands on: "bilinear" (each face its corners' bilinear patch, BilinearChart) or
-#   "catmull_clark" (the mesh's smooth Catmull-Clark limit surface, subdivision.CatmullClarkChart)
+#   "catmull_clark" (an all-quad mesh's smooth Catmull-Clark limit surface, subdivision.CatmullClarkChart) or "loop"
+#   (an all-triangle mesh's Loop limit surface, subdivision.LoopChart)
 # The rules whose floors surface_substitution.py draws (substitution.RULES' names)
 SUBSTITUTION_RULES = ("penrose", "darb_imam")
 DEFAULTS = {"rho": 1.0, "window": 1.25, "floor_cells": 4.0, "floor_color": [0.04, 0.03, 0.10, 1.0], "rule": "square",
@@ -454,12 +455,12 @@ class Topology:
         # As plain lists too, for the lookups made a point at a time
         self._corners = [list(c) for c in faces]
         self._sides = self.sides.tolist()
-        if chart == "catmull_clark":
+        if chart in ("catmull_clark", "loop"):
             try:
                 from . import subdivision
             except ImportError:
                 import subdivision
-            self.chart = subdivision.CatmullClarkChart(self)
+            self.chart = (subdivision.CatmullClarkChart if chart == "catmull_clark" else subdivision.LoopChart)(self)
         else:
             self.chart = BilinearChart(self.positions, faces, self.sides)
         self.E = self.chart.E
@@ -716,11 +717,17 @@ class LevelLattice:
         self._top, self._M, self._key_rows, self._rows = top, M, key_rows, rows
         self._slopes = self._neighbors = None
         self.cells = []
+        # Each cell's corners' (I, J) in its face, (m, k, 2) a group (a curved chart's floor splits cells by them)
+        self.cell_at = []
         quads, triangles = np.flatnonzero(top.sides == 4), np.flatnonzero(top.sides == 3)
         if len(quads):
             r = rows[quads]
             corners = np.stack([r[:, :-1, :-1], r[:, 1:, :-1], r[:, 1:, 1:], r[:, :-1, 1:]], axis=-1)
             self.cells.append((corners.reshape(-1, 4), np.repeat(quads, M * M)))
+            ci, cj = (x.ravel() for x in np.meshgrid(np.arange(M), np.arange(M), indexing="ij"))
+            at = np.stack([np.stack([ci, cj], -1), np.stack([ci + 1, cj], -1), np.stack([ci + 1, cj + 1], -1),
+                           np.stack([ci, cj + 1], -1)], axis=1)
+            self.cell_at.append(np.tile(at, (len(quads), 1, 1)))
         if len(triangles):
             r = rows[triangles]
             # A triangle's cells: each (I, J) with I + J < M has one pointing out (to I + 1 and J + 1), and with
@@ -731,6 +738,11 @@ class LevelLattice:
             back = np.stack([r[:, di + 1, dj], r[:, di + 1, dj + 1], r[:, di, dj + 1]], axis=-1)
             self.cells.append((np.concatenate([out.reshape(-1, 3), back.reshape(-1, 3)]),
                                np.concatenate([np.repeat(triangles, len(ui)), np.repeat(triangles, len(di))])))
+            out_at = np.stack([np.stack([ui, uj], -1), np.stack([ui + 1, uj], -1), np.stack([ui, uj + 1], -1)], 1)
+            back_at = np.stack([np.stack([di + 1, dj], -1), np.stack([di + 1, dj + 1], -1), np.stack([di, dj + 1], -1)],
+                               1)
+            self.cell_at.append(np.concatenate([np.tile(out_at, (len(triangles), 1, 1)),
+                                                np.tile(back_at, (len(triangles), 1, 1))]))
 
     def _around(self):
         """The points' neighbors, worked out when first asked for (by the 3D parts: the floor needs none). Inside a
@@ -1461,8 +1473,17 @@ def face_grid(top, f, IR, JR, M, ref, reach, cap, scale=1.0):
     dI = np.arange(max(0, IR - D) - IR, min(M, IR + D) - IR + 1, dtype=np.float64)
     dJ = np.arange(max(0, JR - D) - JR, min(M, JR + D) - JR + 1, dtype=np.float64)
     gi, gj = np.meshgrid(dI, dJ, indexing="ij")
-    places = ref + scale * top.chart.grid_offsets(f, IR, JR, M, gi, gj)
-    return D, gi, gj, places, min(M - IR - JR, 1 << 60)
+    rem = min(M - IR - JR, 1 << 60)
+    if top._sides[f] == 3 and not top.chart.flat_cells:
+        # A curved triangle's points past its long side aren't its surface's (a subdivision surface's tree has no
+        # piece there: asked for one next to an extraordinary corner, its exact walk went on toward the corner for
+        # ever, 14 GB, 2026-11-24): left out (nan), as every caller leaves them out anyway
+        inside = gi + gj <= rem
+        places = np.full(gi.shape + (3,), np.nan)
+        places[inside] = ref + scale * top.chart.grid_offsets(f, IR, JR, M, gi[inside], gj[inside])
+    else:
+        places = ref + scale * top.chart.grid_offsets(f, IR, JR, M, gi, gj)
+    return D, gi, gj, places, rem
 
 
 def face_cells(k, grid, offsets, rem):
@@ -1518,37 +1539,43 @@ def refine(corners, faces, near):
     return np.concatenate(out_corners), np.concatenate(out_faces), len(out_corners) > 1
 
 
-def refine_smooth(corners, faces, near, chart, M, scale, g0, bases):
-    """refine() for a curved chart (one whose cells aren't their corners' bilinear blend: a subdivision surface's): a
-    cell splits 2 x 2 while its true middle, or its corners' twist, bulges off the two triangles it's drawn as by more
-    than FLOOR_FLATNESS of its distance (or near), and its new corners are the surface's own, from its face's base
-    point: g0 (m, 2) is each cell's first corner's offset from its face's base (floats, level steps), bases[f] = (I, J,
-    place from the camera) that base, a point of the level of M cells across, scale map units its steps' units. Split
-    by averaging, its corners were on the big cell's chords, off the surface by its sag (the smooth torus's floor, 0.14
-    off by a cell 4 across, curving at 12: the user, 2026-11-23). A split cell's side meets an unsplit neighbor's
-    chord within the flatness (about a pixel)."""
+def refine_smooth(corners, faces, near, chart, M, scale, at, bases):
+    """refine() for a curved chart (one whose cells aren't their corners' blend: a subdivision surface's): a cell (a
+    quad or a triangle) splits into four while its true middle (or a quad's corners' twist) bulges off the triangles
+    it's drawn as by more than FLOOR_FLATNESS of its distance (or near), and its new corners are the surface's own, from
+    its face's base point: at (m, k, 2) is each cell's corners' offsets from its face's base (floats, level steps),
+    bases[f] = (I, J, place from the camera) that base, a point of the level of M cells across, scale map units its
+    steps' units. Split by averaging, its corners were on the big cell's chords, off the surface by its sag (the smooth
+    torus's floor, 0.14 off by a cell 4 across, curving at 12: the user, 2026-11-23). A split cell's side meets an
+    unsplit neighbor's chord within the flatness (about a pixel)."""
 
-    def place(faces_, gi, gj):
-        shape = gi.shape
-        faces_, gi, gj = faces_.ravel(), gi.ravel(), gj.ravel()
-        out = np.empty((len(gi), 3))
+    def place(faces_, offsets):
+        """The surface's points at offsets (..., 2) of faces_ (...), from the camera"""
+        shape = offsets.shape[:-1]
+        faces_, offsets = faces_.ravel(), offsets.reshape(-1, 2)
+        out = np.empty((len(offsets), 3))
         for f in np.unique(faces_).tolist():
             # (On a worker thread, out of the main thread's way: a curved face's offsets are mostly Python)
             background.give_way()
             rows = np.flatnonzero(faces_ == f)
             I, J, ref = bases[f]
-            out[rows] = ref + scale * chart.grid_offsets(f, I, J, M, gi[rows], gj[rows])
+            out[rows] = ref + scale * chart.grid_offsets(f, I, J, M, offsets[rows, 0], offsets[rows, 1])
         return out.reshape(shape + (3,))
 
+    k = corners.shape[1]
     out_corners, out_faces = [], []
-    h = 1.0
     for _ in range(FLOOR_SPLITS):
-        across = np.cross(corners[:, 2] - corners[:, 0], corners[:, 3] - corners[:, 1])
-        across /= np.maximum(np.linalg.norm(across, axis=1, keepdims=True), 1e-300)
-        twist = corners[:, 0] - corners[:, 1] + corners[:, 2] - corners[:, 3]
         middle = corners.mean(axis=1)
-        true = place(faces, g0[:, 0] + h / 2.0, g0[:, 1] + h / 2.0)
-        bulge = np.abs(np.sum(twist * across, axis=1)) / 4.0 + np.abs(np.sum((true - middle) * across, axis=1))
+        true = place(faces, at.mean(axis=1))
+        if k == 4:
+            across = np.cross(corners[:, 2] - corners[:, 0], corners[:, 3] - corners[:, 1])
+            across /= np.maximum(np.linalg.norm(across, axis=1, keepdims=True), 1e-300)
+            twist = corners[:, 0] - corners[:, 1] + corners[:, 2] - corners[:, 3]
+            bulge = np.abs(np.sum(twist * across, axis=1)) / 4.0 + np.abs(np.sum((true - middle) * across, axis=1))
+        else:
+            across = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+            across /= np.maximum(np.linalg.norm(across, axis=1, keepdims=True), 1e-300)
+            bulge = np.abs(np.sum((true - middle) * across, axis=1))
         radius = np.linalg.norm(corners - middle[:, None], axis=-1).max(axis=1)
         distance = np.maximum(np.linalg.norm(middle, axis=1) - radius, near)
         split = bulge > FLOOR_FLATNESS * distance
@@ -1556,16 +1583,28 @@ def refine_smooth(corners, faces, near, chart, M, scale, g0, bases):
         out_faces.append(faces[~split])
         if not split.any():
             break
-        faces, g0, h = faces[split], g0[split], h / 2.0
-        # The split cells' 3 x 3 points, (m, 3, 3, 3): [i][j] at g0 + (i, j) h
-        steps = np.arange(3) * h
-        gi = g0[:, 0, None, None] + steps[None, :, None] + 0.0 * steps[None, None, :]
-        gj = g0[:, 1, None, None] + 0.0 * steps[None, :, None] + steps[None, None, :]
-        grid = place(np.repeat(faces, 9).reshape(-1, 3, 3), gi, gj)
-        quarter = lambda i, j: np.stack([grid[:, i, j], grid[:, i + 1, j], grid[:, i + 1, j + 1], grid[:, i, j + 1]],
-                                        axis=1)
-        corners = np.concatenate([quarter(0, 0), quarter(1, 0), quarter(1, 1), quarter(0, 1)])
-        g0 = np.concatenate([g0, g0 + (h, 0.0), g0 + (h, h), g0 + (0.0, h)])
+        faces, at, corners, true = faces[split], at[split], corners[split], true[split]
+        # Its sides' middles, on the surface; the four cells in it (a quad's round its middle, a triangle's three at
+        # its corners and the one between them, turned)
+        sides = (at + np.roll(at, -1, axis=1)) / 2.0
+        mids = place(np.repeat(faces, k).reshape(-1, k), sides)
+        if k == 4:
+            c, m = corners, mids
+            quads = [(c[:, 0], m[:, 0], true, m[:, 3]), (m[:, 0], c[:, 1], m[:, 1], true),
+                     (true, m[:, 1], c[:, 2], m[:, 2]), (m[:, 3], true, m[:, 2], c[:, 3])]
+            a, s_ = at, sides
+            centre = at.mean(axis=1)
+            offsets = [(a[:, 0], s_[:, 0], centre, s_[:, 3]), (s_[:, 0], a[:, 1], s_[:, 1], centre),
+                       (centre, s_[:, 1], a[:, 2], s_[:, 2]), (s_[:, 3], centre, s_[:, 2], a[:, 3])]
+        else:
+            c, m = corners, mids
+            quads = [(c[:, 0], m[:, 0], m[:, 2]), (m[:, 0], c[:, 1], m[:, 1]), (m[:, 2], m[:, 1], c[:, 2]),
+                     (m[:, 1], m[:, 2], m[:, 0])]
+            a, s_ = at, sides
+            offsets = [(a[:, 0], s_[:, 0], s_[:, 2]), (s_[:, 0], a[:, 1], s_[:, 1]), (s_[:, 2], s_[:, 1], a[:, 2]),
+                       (s_[:, 1], s_[:, 2], s_[:, 0])]
+        corners = np.concatenate([np.stack(q, axis=1) for q in quads])
+        at = np.concatenate([np.stack(o, axis=1) for o in offsets])
         faces = np.tile(faces, 4)
     else:
         out_corners.append(corners)
@@ -1592,17 +1631,17 @@ def build_floor(world, camera, below, window, settings_cells):
     smooth = not top.chart.flat_cells
     bases = {}                       # a curved chart's: face -> its cells' base point (refine_smooth())
 
-    def keep(corners, face_of, g0=None, scale=None):
+    def keep(corners, face_of, at=None, scale=None):
         nonlocal split
         middle = corners.mean(axis=-2)
         radius = np.linalg.norm(corners - middle[..., None, :], axis=-1).max(axis=-1)
         near = (np.linalg.norm(middle, axis=-1) - radius <= window) & np.all(np.isfinite(corners), axis=(-1, -2))
         cells, faces = corners[near], np.broadcast_to(face_of, near.shape)[near]
-        if cells.shape[-2] == 4 and len(cells):
-            if smooth:
-                cells, faces, refined = refine_smooth(cells, faces, height, top.chart, M, scale, g0[near], bases)
-            else:
-                cells, faces, refined = refine(cells, faces, height)
+        if len(cells) and smooth:
+            cells, faces, refined = refine_smooth(cells, faces, height, top.chart, M, scale, at[near], bases)
+            split |= refined
+        elif cells.shape[-2] == 4 and len(cells):
+            cells, faces, refined = refine(cells, faces, height)
             split |= refined
         out.append((cells, faces))
         return near
@@ -1610,14 +1649,12 @@ def build_floor(world, camera, below, window, settings_cells):
     if is_whole(top, M) and N < GLOBAL_UNITS:
         whole = top.level_lattice(M)
         from_camera = (whole.places - d_float(camera_point)) * (world.rho * N)
-        for rows, faces in whole.cells:
-            if smooth and rows.shape[-1] == 4:
-                # Each quad's cells in order, (I, J) row by row: each one's first corner from its face's (0, 0)
-                cell = np.arange(len(rows)) % (M * M)
-                g0 = np.stack([cell // M, cell % M], axis=1).astype(float)
+        for (rows, faces), at in zip(whole.cells, whole.cell_at):
+            if smooth:
+                # Each cell's corners from its face's (0, 0)
                 for f in np.unique(faces).tolist():
                     bases[f] = (0, 0, (top.chart.points(f, 0.0, 0.0) - d_float(camera_point)) * (world.rho * N))
-                keep(from_camera[rows], faces, g0, world.rho * N / M)
+                keep(from_camera[rows], faces, at.astype(float), world.rho * N / M)
             else:
                 keep(from_camera[rows], faces)
     else:
@@ -1641,7 +1678,7 @@ def build_floor(world, camera, below, window, settings_cells):
             offsets = np.stack([gi, gj], axis=-1).astype(np.int64)
             cells, at = face_cells(k, grid, offsets, rem)
             bases[f] = (IR, JR, ref)
-            near = keep(cells, f, at[:, 0].astype(float), scale)
+            near = keep(cells, f, at.astype(float), scale)
             if not near.any():
                 continue
             # The faces across the sides its kept cells reach, from a kept cell's corner on that side: each side as
