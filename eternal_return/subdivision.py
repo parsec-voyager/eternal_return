@@ -75,6 +75,9 @@ EXACT_DEPTH = 1 << 16
 BORDER_DEPTH = 24
 COARSE_DEPTH = 10
 NORMAL_DEPTH = 14
+# By a border, a step's float points come from pieces this many levels finer than its tiles (BORDER_DEPTH at most):
+# within some 4e-6 of a tile by the UV sphere's poles, 2026-11-24 (4 levels: 0.5% for a tile half a face across)
+STEP_EXTRA = 6
 # How many levels a normal at a piece's corner by a border goes on toward it, and to how deep at least (its rough
 # piece's slope, from a piece 2^-3 of that one across, and at most 2^-8 of the face: a coarse level's corners' normals,
 # from pieces three levels down, were a degree off)
@@ -134,7 +137,7 @@ def quad_control(loops, faces_of, f, regular):
 
 class LocalMesh:
     """A few quads of a mesh: their corners' points (id -> numbers over scale: whole numbers over a whole scale,
-    exactly, or floats over 1.0), each vertex's valence in the whole mesh (how many faces it has there), and the quads
+    exactly, or floats over 1.0; any number of coordinates: a Shape's are unit vectors), each vertex's valence in the whole mesh (how many faces it has there), and the quads
     (loops of ids). A vertex has its whole ring here when as many of its faces are. (In Fractions, every sum reduced
     by a gcd: quadico's first floor split its faces' trees for 3 s, 2026-11-24.)"""
 
@@ -185,7 +188,8 @@ class LocalMesh:
             k = loop.index(x)
             edge |= {loop[(k + 1) % 4], loop[(k - 1) % 4]}
             diagonal.add(loop[(k + 2) % 4])
-        sums = [n * n * P[x][k] + 4 * sum(P[y][k] for y in edge) + sum(P[y][k] for y in diagonal) for k in range(3)]
+        sums = [n * n * P[x][k] + 4 * sum(P[y][k] for y in edge) + sum(P[y][k] for y in diagonal)
+                for k in range(len(P[x]))]
         return self._over(sums, n * (n + 5))
 
     def subdivide(self):
@@ -194,7 +198,8 @@ class LocalMesh:
         without its whole ring, an edge without both its faces). Exactly, its points are whole numbers over this scale
         times every rule's denominator (16 and 4 n^2)."""
         P = self.points
-        sums = [tuple(P[a][k] + P[b][k] + P[c][k] + P[d][k] for k in range(3)) for a, b, c, d in self.loops]
+        dims = len(next(iter(P.values())))
+        sums = [tuple(P[a][k] + P[b][k] + P[c][k] + P[d][k] for k in range(dims)) for a, b, c, d in self.loops]
         whole = [x for x, faces in self.faces_of.items() if len(faces) == self.valence[x]]
         if self.exact:
             L = math.lcm(16, *(4 * self.valence[x] ** 2 for x in whole))
@@ -215,12 +220,12 @@ class LocalMesh:
 
         w = weight(4)
         for t, S in enumerate(sums):
-            add(("f", t), (S[0] * w, S[1] * w, S[2] * w), 4)
+            add(("f", t), tuple(c * w for c in S), 4)
         w = weight(16)
         for (a, b), faces in edge_faces.items():
             if len(faces) == 2:
                 S0, S1 = sums[faces[0]], sums[faces[1]]
-                add(("e", a, b), tuple((4 * (P[a][k] + P[b][k]) + S0[k] + S1[k]) * w for k in range(3)), 4)
+                add(("e", a, b), tuple((4 * (P[a][k] + P[b][k]) + S0[k] + S1[k]) * w for k in range(dims)), 4)
         for x in whole:
             n = self.valence[x]
             faces = self.faces_of[x]
@@ -232,7 +237,7 @@ class LocalMesh:
             # (Q + 2 R + (n - 3) P) / n, Q the faces' points' mean, R the edges' middles': over 4 n^2
             w = weight(4 * n * n)
             add(("v", x), tuple((sum(sums[t][k] for t in faces) + 4 * sum(P[x][k] + P[y][k] for y in ring)
-                                 + 4 * n * (n - 3) * P[x][k]) * w for k in range(3)), n)
+                                 + 4 * n * (n - 3) * P[x][k]) * w for k in range(dims)), n)
         loops, children = [], []
         for t, (a, b, c, d) in enumerate(self.loops):
             e = lambda x, y: ids.get(("e", min(x, y), max(x, y)))
@@ -866,12 +871,6 @@ def patch_ints(patch, P, scale):
                        for a in range(n)]
 
 
-def patch_floats(patch, P):
-    M, D = patch
-    n = len(M)
-    return [[[sum(m * p[k] for m, p in zip(M[a][b], P) if m) / D for k in range(3)] for b in range(n)] for a in range(n)]
-
-
 def padded(patch, order):
     """A patch (M, D) with M grown to order x order with zeros (a mixed mesh's quads' and triangles' coefficients in
     one array)"""
@@ -898,10 +897,13 @@ class Leaf:
     mesh's units) and as floats"""
 
     def __init__(self, u0, v0, size, sign, Q=None, ints=None):
-        """Q: the coefficients (floats, or Fractions); or ints: (D, whole numbers), the coefficients times D"""
+        """Q: the coefficients (floats, or Fractions); or ints: (D, whole numbers), the coefficients times D. A float
+        tree's leaves: Q an array, the place floats."""
         self.u0, self.v0, self.size, self.sign = u0, v0, size, sign
         self._Q, self._ints = Q, ints
-        if ints is not None:
+        if isinstance(Q, np.ndarray):
+            self.Qf = Q
+        elif ints is not None:
             D, C = ints
             # (A whole number over a whole number, rounded once however big they are)
             self.Qf = np.array([[[c / D for c in cell] for cell in row] for row in C])
@@ -986,6 +988,105 @@ class CornerLeaf:
         self.Ql = Qf.tolist()
 
 
+# ----- node shapes: the float trees' splits as matrices -----
+
+class Shape:
+    """A tree's node as a pattern: its local mesh's faces (loops) and its vertices' valences, the vertices numbered
+    from the node's own face (face 0, its corners 0, 1, ...: canonical()), the same for every node alike, anywhere in
+    any mesh and at any depth. What a node's points make is linear in them, so a child's points are the shape's matrix
+    for it times the node's (child()), and its corners' limit points likewise (limits()), each worked out once from a
+    split of unit vectors (the shape as a mesh whose vertex k is the k-th unit vector). By a border between quads and
+    triangles every node is a split: the UV sphere's float trees made 38,000 nodes in a start and a flight, each a split
+    of its own (a millisecond of Python each, 12 s of its start), of 126 shapes (2026-11-24). control: its regular
+    patch's control points (vertex numbers), or None if it isn't one."""
+
+    def __init__(self, mesh_class, loops, valence):
+        self.mesh_class, self.loops, self.valence = mesh_class, loops, valence
+        self.n = len(valence)
+        self._unit = None
+        self._children = None
+        self._limits = None
+        self.control = self.unit().control(0)
+
+    def unit(self):
+        """The shape as a mesh of unit vectors"""
+        if self._unit is None:
+            n = self.n
+            eye = {x: tuple(1.0 if y == x else 0.0 for y in range(n)) for x in range(n)}
+            self._unit = self.mesh_class(eye, dict(enumerate(self.valence)), list(self.loops), 1.0)
+        return self._unit
+
+    def child(self, c):
+        """Child c of the node: (its Shape, the matrix (its n, this n) taking this node's points to its), or (None,
+        None) if it can't be worked out from the node's rings"""
+        if self._children is None:
+            finer, children = self.unit().subdivide()
+            found = []
+            for index in children[0]:
+                if index is None:
+                    found.append((None, None))
+                    continue
+                mesh, t = finer.around(index, 2)
+                shape, order = shape_of(mesh, t)
+                found.append((shape, np.array([mesh.points[x] for x in order])))
+            # (Whole, at once: a worker thread may be asking too)
+            self._children = found
+        return self._children[c]
+
+    def limits(self):
+        """The node's corners' limit masks (its corners, n): a corner's limit point is its row times the points"""
+        if self._limits is None:
+            unit = self.unit()
+            self._limits = np.array([unit.limit(x) for x in self.loops[0]])
+        return self._limits
+
+
+_shapes = {}         # (mesh class, canonical()'s key) -> Shape
+
+
+def canonical(mesh, t):
+    """Mesh's vertices numbered from its face t: t's corners first, in its loop's order, then each face's new corners as
+    the faces are reached across edges, a face's loop read from its corner numbered least. (key: the faces as loops of
+    those numbers and the vertices' valences, the same for any mesh alike; the vertices in that order)"""
+    loops = mesh.loops
+    edge_faces = {}
+    for g, loop in enumerate(loops):
+        n = len(loop)
+        for i in range(n):
+            a, b = loop[i], loop[(i + 1) % n]
+            edge_faces.setdefault((min(a, b), max(a, b)), []).append(g)
+    number, order = {}, []
+    seen, queue, out = {t}, [t], []
+    for g in queue:
+        loop = loops[g]
+        n = len(loop)
+        first = 0 if g == t else min(range(n), key=lambda i: number.get(loop[i], math.inf))
+        turned = [loop[(first + i) % n] for i in range(n)]
+        for x in turned:
+            if x not in number:
+                number[x] = len(order)
+                order.append(x)
+        out.append(tuple(number[x] for x in turned))
+        for i in range(n):
+            a, b = turned[i], turned[(i + 1) % n]
+            for h in edge_faces[(min(a, b), max(a, b))]:
+                if h not in seen:
+                    seen.add(h)
+                    queue.append(h)
+    if len(queue) != len(loops):
+        raise ExtraordinaryError("a node's faces aren't joined by their edges")
+    return (tuple(out), tuple(mesh.valence[x] for x in order)), order
+
+
+def shape_of(mesh, t):
+    """The Shape of mesh about its face t (made the first time), and mesh's vertices in its order"""
+    key, order = canonical(mesh, t)
+    found = _shapes.get((type(mesh), key))
+    if found is None:
+        found = _shapes[(type(mesh), key)] = Shape(type(mesh), *key)
+    return found, order
+
+
 # ----- the chart -----
 
 class SubdivisionChart:
@@ -1016,6 +1117,7 @@ class SubdivisionChart:
         used = sorted(set(self.schemes), key=lambda scheme: scheme.sides)
         self.order = max(scheme.order for scheme in used)
         self.patches = {scheme: padded(scheme.patch, self.order) for scheme in used}
+        self._patch_floats = {scheme: (np.array(M, dtype=float), D) for scheme, (M, D) in self.patches.items()}
         self._loops = loops
         self._faces_of = [{f for f, _s in vf} for vf in top.vertex_faces]
         self._valence = [len(vf) for vf in top.vertex_faces]
@@ -1050,6 +1152,8 @@ class SubdivisionChart:
         # sampling the bounds of quadico's 60 faces took 4.5 s)
         self._positions = top.positions
         self._nodes, self._leaves = {}, {}
+        self._float_nodes = {}
+        self._corner_points = None
         self._float_leaf_of = {}
         self._corners = {}
         self._splits = {}
@@ -1088,13 +1192,10 @@ class SubdivisionChart:
             if rows:
                 ju[rows] = np.einsum("ga,gb,fabk->fgk", powers(u, 1, n), powers(v, 0, n), self.C[rows])
                 jv[rows] = np.einsum("ga,gb,fabk->fgk", powers(u, 0, n), powers(v, 1, n), self.C[rows])
-        # (By a border, the same walks give the search patches, _search_patches(), their points fitted)
-        search = self.C.copy() if self.border else None
+        # (The same walks give the search patches, _search_patches(), their points fitted)
+        search = self.C.copy()
         for f in np.flatnonzero(~self.regular).tolist():
             u, v = inner[self.schemes[f]]
-            if search is None:
-                ju[f], jv[f] = self.jacobians(np.full(G, f), u, v)
-                continue
             P, ju[f], jv[f] = self._evaluate(np.full(G, f), u, v, orders=((0, 0), (1, 0), (0, 1)))
             terms = self._terms(f)
             fit = np.linalg.lstsq(np.stack([u ** a * v ** b for a, b in terms], axis=1), P, rcond=None)[0]
@@ -1109,12 +1210,27 @@ class SubdivisionChart:
         slack = (np.maximum(uu, vv) + uv) * math.sqrt(0.5) / (SIGMA_GRID - 1)
         self.sigma_lo = np.where(self.regular, np.maximum(small.min(axis=1) - slack, 0.0), 0.5 * small.min(axis=1))
         self.sigma_hi = np.where(self.regular, big_.max(axis=1) + slack, 1.5 * big_.max(axis=1))
-        # How much each face bends at most (its mixed derivative's length): a regular one's bound, an irregular one's
-        # sampled away from its corners, half again
+        # A regular face's ball from its own points on the grid, and the most a point between them can be from one
+        # (a step's way times sigma_hi): its control points' hull spans the faces round it too, three times as wide,
+        # and the search for the face below Newton-stepped over 54 faces where the flat torus had 14 (2026-11-24)
+        for scheme in used:
+            rows = [f for f in range(F) if self.regular[f] and self.schemes[f] is scheme]
+            if rows:
+                u, v = scheme.sample(*square)
+                P = np.einsum("ga,gb,fabk->fgk", powers(u, 0, n), powers(v, 0, n), self.C[rows])
+                middle = P.mean(axis=1)
+                gap = self.sigma_hi[rows] * math.sqrt(2.0) / (SIGMA_GRID - 1)
+                self.middle[rows] = middle
+                self.radius[rows] = np.linalg.norm(P - middle[:, None], axis=2).max(axis=1) + gap
+        # How much each face bends at most: its mixed derivative's length (twist), and the longest of its second
+        # derivatives (bend): a regular one's bounds, an irregular one's sampled away from its corners, half again
         self._twist = uv.copy()
+        self._bend = np.maximum(np.maximum(uu, vv), uv)
         for f in np.flatnonzero(~self.regular).tolist():
-            mixed = self._evaluate(np.full(G, f), *inner[self.schemes[f]], du=1, dv=1)
-            self._twist[f] = 1.5 * float(np.linalg.norm(mixed, axis=1).max())
+            seconds = self._evaluate(np.full(G, f), *inner[self.schemes[f]], orders=((1, 1), (2, 0), (0, 2)))
+            lengths = [float(np.linalg.norm(d, axis=1).max()) for d in seconds]
+            self._twist[f] = 1.5 * lengths[0]
+            self._bend[f] = 1.5 * max(lengths)
 
     def exact_of(self, f):
         """Regular face f's coefficients of u^a v^b, exactly: whole numbers over D 2^E (denominator), C[a][b][k]"""
@@ -1141,23 +1257,28 @@ class SubdivisionChart:
 
     # ----- an irregular face's tree -----
 
+    def _root(self, f, exact):
+        """Face f's tree's root: the faces within two rings of it as a local mesh (Fractions or floats), and f's index
+        there"""
+        keep = {f}
+        for _ in range(2):
+            keep |= {g for h in keep for x in self._loops[h] for g in self._faces_of[x]}
+        order = sorted(keep)
+        loops = [tuple(self._loops[g]) for g in order]
+        used = {x for loop in loops for x in loop}
+        points = ({x: self.ints[x] for x in used} if exact else {x: tuple(self._positions[x].tolist()) for x in used})
+        mesh = self.mesh_class(points, {x: self._valence[x] for x in used}, loops, 1 << self.E if exact else 1.0)
+        return mesh, order.index(f)
+
     def _node(self, f, path, exact=True):
-        """The node of irregular face f's tree down path (children's indices): (its local mesh, its face there), in
-        Fractions or floats"""
+        """The node of irregular face f's exact tree down path (children's indices): (its local mesh, its face there),
+        in Fractions; in floats, _float_node()'s"""
+        if not exact:
+            return self._float_node(f, path)
         found = self._nodes.get((exact, f, path))
         if found is None:
             if not path:
-                keep = {f}
-                for _ in range(2):
-                    keep |= {g for h in keep for x in self._loops[h] for g in self._faces_of[x]}
-                order = sorted(keep)
-                loops = [tuple(self._loops[g]) for g in order]
-                used = {x for loop in loops for x in loop}
-                points = ({x: self.ints[x] for x in used} if exact else
-                          {x: tuple(self._positions[x].tolist()) for x in used})
-                mesh = self.mesh_class(points, {x: self._valence[x] for x in used}, loops,
-                                       1 << self.E if exact else 1.0)
-                found = (mesh, order.index(f))
+                found = self._root(f, exact)
             else:
                 mesh, t = self._node(f, path[:-1], exact)
                 # The parent's split, kept for its other children (each split it again: quadico's first floor did
@@ -1170,23 +1291,43 @@ class SubdivisionChart:
                 if child is None:
                     raise ExtraordinaryError(f"face {f}: a child down {path} can't be worked out from its rings")
                 found = finer.around(child, 2)
-            if not exact and len(self._nodes) > NODES_KEPT:
-                # The float tree's nodes and splits let go of now and then (by a border every float point walks its own
-                # BORDER_DEPTH levels): the exact ones stay, what an exact point costs being far more
-                for table in (self._nodes, self._splits, self._leaves):
-                    # (A snapshot of the keys: a worker thread's walk adds to them meanwhile)
-                    for k in [k for k in list(table) if not k[0]]:
-                        table.pop(k, None)
-                self._float_leaf_of.clear()
-                self._corner_leaves.clear()
-                self._rough.clear()
             self._nodes[(exact, f, path)] = found
         return found
 
-    def _place(self, f, path):
-        """Where the node down face f's path is in its parameters: (u0, v0, size, sign), Fractions"""
-        u0 = v0 = Fraction(0)
-        size, sign = Fraction(1), 1
+    def _float_node(self, f, path):
+        """The node of irregular face f's float tree down path: (its Shape, its points (n, 3) in the shape's order), a
+        child's its parent's points times the shape's matrix for it"""
+        found = self._float_nodes.get((f, path))
+        if found is None:
+            if not path:
+                mesh, t = self._root(f, exact=False)
+                shape, order = shape_of(mesh, t)
+                found = (shape, np.array([mesh.points[x] for x in order]))
+            else:
+                shape, P = self._float_node(f, path[:-1])
+                child, W = shape.child(path[-1])
+                if child is None:
+                    raise ExtraordinaryError(f"face {f}: a child down {path} can't be worked out from its rings")
+                found = (child, W @ P)
+            if len(self._float_nodes) > NODES_KEPT:
+                # The float tree's nodes let go of now and then (by a border every float point walks its own levels):
+                # the exact ones stay, what an exact point costs being far more
+                self._float_nodes.clear()
+                # (A snapshot of the keys: a worker thread's walk adds to them meanwhile)
+                for k in [k for k in list(self._leaves) if not k[0]]:
+                    self._leaves.pop(k, None)
+                self._float_leaf_of.clear()
+                self._corner_leaves.clear()
+                self._rough.clear()
+            self._float_nodes[(f, path)] = found
+        return found
+
+    def _place(self, f, path, exact=True):
+        """Where the node down face f's path is in its parameters: (u0, v0, size, sign), Fractions, or floats (exactly:
+        halves, quarters, ... to 53 levels; in Fractions, a float tree's leaves' places were most of what was left of
+        the UV sphere's start, 2026-11-24)"""
+        u0 = v0 = Fraction(0) if exact else 0.0
+        size, sign = Fraction(1) if exact else 1.0, 1
         for c in path:
             (ou, ov), turn = self.schemes[f].children[c]
             u0 += sign * size * ou / 2
@@ -1200,15 +1341,18 @@ class SubdivisionChart:
         key = (exact, f, path)
         if key in self._leaves:
             return self._leaves[key]
-        mesh, t = self._node(f, path, exact)
-        control = mesh.control(t)
         leaf = None
-        if control is not None:
-            P = [mesh.points[x] for x in control]
-            place = self._place(f, path)
-            patch = self.patches[self.schemes[f]]
-            leaf = (Leaf(*place, ints=patch_ints(patch, P, mesh.scale)) if exact else
-                    Leaf(*place, Q=patch_floats(patch, P)))
+        if exact:
+            mesh, t = self._node(f, path)
+            control = mesh.control(t)
+            if control is not None:
+                P = [mesh.points[x] for x in control]
+                leaf = Leaf(*self._place(f, path), ints=patch_ints(self.patches[self.schemes[f]], P, mesh.scale))
+        else:
+            shape, P = self._float_node(f, path)
+            if shape.control is not None:
+                M, D = self._patch_floats[self.schemes[f]]
+                leaf = Leaf(*self._place(f, path, exact=False), Q=np.einsum("abi,ik->abk", M, P[shape.control]) / D)
         self._leaves[key] = leaf
         return leaf
 
@@ -1364,15 +1508,15 @@ class SubdivisionChart:
         border, BORDER_DEPTH levels down, within its size squared times the curvature of the surface"""
         found = self._rough.get((f, path))
         if found is None:
-            mesh, t = self._node(f, path, exact=False)
-            c = [np.array(mesh.limit(x), dtype=float) for x in mesh.loops[t]]
+            shape, P = self._float_node(f, path)
+            c = shape.limits() @ P
             Q = np.zeros((self.order, self.order, 3))
             Q[0, 0], Q[1, 0] = c[0], c[1] - c[0]
             if len(c) == 4:
                 Q[0, 1], Q[1, 1] = c[3] - c[0], c[0] - c[1] + c[2] - c[3]
             else:
                 Q[0, 1] = c[2] - c[0]
-            u0, v0, size, sign = self._place(f, path)
+            u0, v0, size, sign = self._place(f, path, exact=False)
             if len(self._rough) > 65536:
                 self._rough.clear()
             found = self._rough[(f, path)] = CornerLeaf(float(u0), float(v0), float(size), sign, Q)
@@ -1396,12 +1540,11 @@ class SubdivisionChart:
         2026-11-24)."""
         found = self._corner_leaves.get((f, corner))
         if found is None:
-            mesh, t = self._node(f, (), exact=False)
-            x = mesh.loops[t][corner]
-            if mesh.kind_regular(x, self.sides[f]):
+            shape, P = self._float_node(f, ())
+            if shape.unit().kind_regular(corner, self.sides[f]):
                 found = False
             else:
-                limit = mesh.limit(x)
+                limit = shape.limits()[corner] @ P
                 path = ()
                 while len(path) < CORNER_DEPTH and self._leaf(f, path, exact=False) is None:
                     path += (corner,)
@@ -1592,12 +1735,12 @@ class SubdivisionChart:
     def points(self, f, u, v, search=False):
         """Faces f's points at (u, v); search: only good enough to tell which face is nearest (by a border: from the
         search patches, _search_patches())"""
-        if search and self.border:
+        if search:
             return self._search_evaluate(f, u, v, ((0, 0),))[0]
         return self._evaluate(f, u, v)
 
     def jacobians(self, f, u, v, search=False):
-        if search and self.border:
+        if search:
             return tuple(self._search_evaluate(f, u, v, ((1, 0), (0, 1))))
         return tuple(self._evaluate(f, u, v, orders=((1, 0), (0, 1))))
 
@@ -1610,8 +1753,8 @@ class SubdivisionChart:
     def _search_patches(self):
         """Every face's polynomial for the search for the face below (surface.Below.global_face()): a regular face's
         own, an irregular one's fitted to its points on a grid (least squares, its kind's monomials), good to some
-        1e-3: by a border its walks are a split a level, and the search's Newton steps over some 50 faces walked new
-        ones every tick, 12 ms a point below on the UV sphere (2026-11-24)"""
+        1e-3: the search's Newton steps over some 40 faces walked their trees every tick, 2 ms a point below on the
+        smooth icosphere, 12 ms by the UV sphere's borders (2026-11-24)"""
         return self._search
 
     def _terms(self, f):
@@ -1629,14 +1772,16 @@ class SubdivisionChart:
         return nx / length, ny / length, nz / length
 
     def expansion(self, f, u, v):
-        """Regular face f's Taylor coefficients about exact (u, v), as floats (n, n, 3): S(u + du, v + dv) = sum
-        T[a][b] du^a dv^b, worked out exactly first. Kept for the points asked again (a walk asks at the same base point
-        tick after tick)."""
+        """Regular face f's Taylor coefficients about (u, v) (exact numbers), as floats (n, n, 3): S(u + du, v + dv) = sum
+        T[a][b] du^a dv^b, its constant term aside (the point itself is placed exactly elsewhere). In floats, from the
+        float coefficients at (u, v) rounded: the derivatives there are good to a float's precision relative to
+        themselves, however deep (a point 2^-53 off has the same derivatives to as many bits); worked out exactly, with
+        numbers growing with every level, a smooth map's point below cost some 2 ms more a tick (2026-11-24). Kept for
+        the points asked again (a walk asks at the same base point tick after tick)."""
         key = (f, u, v)
         found = self._expansions.get(key)
         if found is None:
-            T = shifted(self.exact_of(f), Fraction(u), Fraction(v))
-            found = np.array([[[float(Fraction(c) / self._denominator(f)) for c in cell] for cell in row] for row in T])
+            found = np.array(shifted(self._C[f], float(u), float(v)))
             if len(self._expansions) > 4096:
                 self._expansions.clear()
             self._expansions[key] = found
@@ -1883,13 +2028,14 @@ class SubdivisionChart:
                 d = moved
                 break
             d = moved
-        E, c = self._steps_expansion(f, I, J, N, d)
         if N < (1 << 40):
             # From the surface's own point (the leaf's expansion about the base, stretched to a far leaf, cancels)
             P, ju, jv = self._point_frame(f, float(uv[0]), float(uv[1]), depth)
             X = (np.array(P) - base) * N
             gu, gv = float(np.array(ju) @ (X - r)), float(np.array(jv) @ (X - r))
         else:
+            # (Only deep down: worked out shallower too and not used, an exact walk and point a call, 2026-11-24)
+            E, c = self._steps_expansion(f, I, J, N, d)
             X = c + evaluate(E, d)
             gu, gv = float(evaluate(E, d, 1, 0) @ (X - r)), float(evaluate(E, d, 0, 1) @ (X - r))
         past = self._past(f, d, box, gu, gv, None, None)
@@ -1898,36 +2044,75 @@ class SubdivisionChart:
 
     def step(self, f, ur, vr, du, dv, small):
         """Faces f's points at (ur + small du, vr + small dv) from their points at (ur, vr), over small (see
-        surface.BilinearChart.step()): from each face's expansion at (ur, vr), so a small step isn't lost to rounding"""
+        surface.BilinearChart.step()): ur and vr (t,), du and dv (t, ...), as (t, ..., 3). A regular face's from its
+        patch's Taylor expansion about (ur, vr), every tile's at once (one product: a tile at a time, the motif levels
+        of a smooth icosphere took 15 s to start, 2026-11-24); an irregular face's, where floats hold small (2^-24 of
+        the face and more), from its points in floats, all at once, else a tile at a time from its leaves' exact
+        expansions (_offsets())."""
+        f = np.asarray(f)
+        ur, vr = np.asarray(ur, dtype=float), np.asarray(vr, dtype=float)
+        du, dv = np.asarray(du, dtype=float), np.asarray(dv, dtype=float)
         out = np.zeros(du.shape + (3,))
-        h = Fraction(float(small))
+        if not len(f):
+            return out
         n = self.order
-        for t, face in enumerate(np.asarray(f).tolist()):
-            U, V = Fraction(float(ur[t])), Fraction(float(vr[t]))
-            if not self.regular[face]:
-                out[t] = self._offsets(face, U, V, h, du[t], dv[t])
-                continue
-            T = self.expansion(face, U, V)
+        extra = (1,) * (du.ndim - 1)
+        regular = self.regular[f]
+        rows = np.flatnonzero(regular)
+        if len(rows):
+            # T[t, a, b] = sum over i >= a, j >= b of C[i, j] binom(i, a) ur^(i - a) binom(j, b) vr^(j - b) (in numpy
+            # alone: a worker thread's Python loops here kept the main thread waiting for Python's lock, 2026-11-24)
+            T = np.einsum("tai,tbj,tijk->tabk", shift_matrices(ur[rows], n), shift_matrices(vr[rows], n),
+                          self.C[f[rows]])
+            d_u, d_v = du[rows], dv[rows]
+            total = np.zeros(d_u.shape + (3,))
             for a in range(n):
                 for b in range(n):
                     if a + b:
-                        out[t] += ((du[t] ** a) * (dv[t] ** b) * small ** (a + b - 1))[..., None] * T[a][b]
+                        k = (d_u ** a) * (d_v ** b) * small ** (a + b - 1)
+                        total += k[..., None] * T[:, a, b].reshape((len(rows),) + extra + (3,))
+            out[rows] = total
+        rows = np.flatnonzero(~regular)
+        if len(rows):
+            if small >= FLOAT_STEP:
+                # (By a border, every piece is a split: as deep as the tiles need, STEP_EXTRA levels under them. A
+                # coarse level's bars over the whole UV sphere walked 10 levels split its pole's borders 12,500 times,
+                # 12 s of its start, while 10 levels were too few for tiles 2^-12 of a face and finer, 0.5-2% off,
+                # 2026-11-24.)
+                depth = min(BORDER_DEPTH, max(0, math.ceil(-math.log2(small))) + STEP_EXTRA)
+                faces = np.broadcast_to(f[rows].reshape((len(rows),) + extra), du[rows].shape)
+                ends = self._evaluate(faces, ur[rows].reshape((len(rows),) + extra) + small * du[rows],
+                                      vr[rows].reshape((len(rows),) + extra) + small * dv[rows], depth=depth)
+                starts = self._evaluate(f[rows], ur[rows], vr[rows], depth=depth)
+                out[rows] = (ends - starts.reshape((len(rows),) + extra + (3,))) / small
+            else:
+                h = Fraction(float(small))
+                for t in rows.tolist():
+                    U, V = Fraction(float(ur[t])), Fraction(float(vr[t]))
+                    out[t] = self._offsets(int(f[t]), U, V, h, du[t], dv[t])
         return out
 
-    def mixed(self, f):
-        raise NotImplementedError("a curved patch's mixed derivative isn't the same all over it (phase 6 step 5)")
+    def hessians(self, f, u, v):
+        """Faces f's second derivatives at (u, v): (d2/du2, d2/du dv, d2/dv2), each (..., 3)"""
+        return tuple(self._evaluate(f, u, v, orders=((2, 0), (1, 1), (0, 2))))
 
     def corners(self):
         """Each face's corner points on the limit surface (F, 4, 3), in its loop's order (exactly, then rounded), a
-        triangle's last twice"""
-        F = len(self.C)
-        out = np.zeros((F, 4, 3))
-        for f in range(F):
-            corners = self.schemes[f].corners
-            for k in range(4):
-                u, v = corners[min(k, len(corners) - 1)]
-                out[f, k] = [float(c) for c in self._exact_point(f, Fraction(u), Fraction(v))]
-        return out
+        triangle's last twice: each vertex's limit point, once (from a face of its's root; a face's point at each of its
+        corners walked its tree, 0.2 s of the UV sphere's start), kept"""
+        if self._corner_points is None:
+            limits = {}
+            out = np.zeros((len(self.C), 4, 3))
+            for f, loop in enumerate(self._loops):
+                for k in range(4):
+                    x = loop[min(k, len(loop) - 1)]
+                    if x not in limits:
+                        mesh, _t = self._node(f, ())
+                        limits[x] = [float(c) for c in mesh.limit(x)]
+                    out[f, k] = limits[x]
+            out.flags.writeable = False
+            self._corner_points = out
+        return self._corner_points
 
     def edge_sizes(self):
         """Each face's size: the geometric mean of its sides' lengths at its corner 0 (as chords)"""
@@ -1937,6 +2122,10 @@ class SubdivisionChart:
 
     def twist_norms(self):
         return self._twist
+
+    def bend_norms(self):
+        """How much each face bends at most: the longest of its second derivatives, a bound (over it)"""
+        return self._bend
 
     # ----- exactly -----
 
@@ -2051,13 +2240,57 @@ def evaluate(E, d, du=0, dv=0):
     return total
 
 
+_shift_tables = {}
+
+
+def shift_matrices(x, n):
+    """For each x (t,): the matrix (n, n) taking a polynomial's coefficients of powers of t to those of powers of
+    (t - x): [a][i] = binom(i, a) x^(i - a), i >= a"""
+    found = _shift_tables.get(n)
+    if found is None:
+        i, a = np.meshgrid(np.arange(n), np.arange(n), indexing="xy")
+        found = _shift_tables[n] = (np.where(i >= a, [[math.comb(int(ii), int(aa)) if ii >= aa else 0 for ii in range(n)]
+                                                      for aa in range(n)], 0), np.clip(i - a, 0, None), i >= a)
+    comb, power, keep = found
+    x = np.asarray(x, dtype=float)
+    powers_ = x[:, None] ** np.arange(n)[None, :]                     # (t, n)
+    return np.where(keep[None], comb[None] * powers_[:, power], 0.0)
+
+
+def derivatives(E, d):
+    """An expansion E (n, n, 3) at the offset d: its value (less its constant term) and its derivatives up to the
+    second, D[i, j] = d^(i + j) / du^i dv^j, (3, 3, 3), in one product (term by term, a smooth map's Newton steps for
+    the point below took most of its tick, 2026-11-24)"""
+    n = len(E)
+    E = np.asarray(E, dtype=float)
+    if E[0, 0].any():
+        E = E.copy()
+        E[0, 0] = 0.0
+    return np.einsum("ia,jb,abk->ijk", _powers3(d[0], n), _powers3(d[1], n), E)
+
+
+def _powers3(t, n):
+    """(1, t, t^2, ...) and its first and second derivatives, (3, n)"""
+    out = np.zeros((3, n))
+    p = 1.0
+    for k in range(n):
+        out[0, k] = p
+        p *= t
+    for k in range(1, n):
+        out[1, k] = k * out[0, k - 1]
+    for k in range(2, n):
+        out[2, k] = k * (k - 1) * out[0, k - 2]
+    return out
+
+
 def newton(E, r, d):
     """The offset d nearest r on an expansion's whole patch: Newton's steps from d (Gauss-Newton's when the full step
     wouldn't descend)"""
     for _ in range(NEWTON_STEPS):
-        e = evaluate(E, d) - r
-        u, v = evaluate(E, d, 1, 0), evaluate(E, d, 0, 1)
-        uu, uv, vv = evaluate(E, d, 2, 0), evaluate(E, d, 1, 1), evaluate(E, d, 0, 2)
+        D = derivatives(E, d)
+        e = D[0, 0] - r
+        u, v = D[1, 0], D[0, 1]
+        uu, uv, vv = D[2, 0], D[1, 1], D[0, 2]
         g = np.array([u @ e, v @ e])
         G = np.array([[u @ u, u @ v], [u @ v, v @ v]])
         H = G + np.array([[uu @ e, uv @ e], [uv @ e, vv @ e]])
@@ -2078,9 +2311,10 @@ def side_newton(E, r, origin, direction, lo, hi, t):
     du, dv = direction
     for _ in range(NEWTON_STEPS):
         d = origin + t * direction
-        e = evaluate(E, d) - r
-        first = du * evaluate(E, d, 1, 0) + dv * evaluate(E, d, 0, 1)
-        second = du * du * evaluate(E, d, 2, 0) + 2 * du * dv * evaluate(E, d, 1, 1) + dv * dv * evaluate(E, d, 0, 2)
+        D = derivatives(E, d)
+        e = D[0, 0] - r
+        first = du * D[1, 0] + dv * D[0, 1]
+        second = du * du * D[2, 0] + 2 * du * dv * D[1, 1] + dv * dv * D[0, 2]
         g, h = float(first @ e), float(first @ first + second @ e)
         step = -g / h if h > 0.0 else -g / max(float(first @ first), 1e-300)
         new = min(max(t + step, lo), hi)

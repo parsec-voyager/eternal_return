@@ -548,12 +548,13 @@ class Level:
 
     def tile_frames(self, world, faces, rows, turn):
         """For tiles rows, turned by turn (t, 2, 2): each one's map place (t, 3) and frame G (t, 3, 2), so the point p
-        of its prototile is at place + G p + bend (G p's (u, v) parts multiplied), bend (t, 3) and the (u, v) parts'
-        maker B (t, 2, 2: (du, dv) = B p, level units). What map_points() works out a point at a time, taken apart
-        into the tile's own share and its prototile's, so a kind's bars' corners are one product for all its tiles:
-        with (du0, dv0) the tile's place from its face's root and (du, dv) a point's from the tile, the patch's
-        u eu + v ev + u v w gives the point place + du (eu + (vr + s dv0) w) + dv (ev + (ur + s du0) w) + s du dv w,
-        s = phi^-d."""
+        of its prototile is at place + G p + bend's rows times (du^2, du dv, dv^2) of p's (u, v) parts, bend (t, 3, 3)
+        and the (u, v) parts' maker B (t, 2, 2: (du, dv) = B p, level units). What map_points() works out a point at a
+        time, taken apart into the tile's own share and its prototile's, so a kind's bars' corners are one product for
+        all its tiles: with (du0, dv0) the tile's place from its face's root and (du, dv) a point's from the tile, the
+        patch's Taylor expansion about the tile, to its second terms: the Jacobian there, and its second derivatives
+        times s = phi^-d (a bilinear patch u eu + v ev + u v w's exactly: place + du (eu + (vr + s dv0) w) + dv (ev +
+        (ur + s du0) w) + s du dv w; a curved one's to within its third derivatives times the tile's size cubed)."""
         top = world.topology
         face = self.face[rows]
         _place, ur, vr = self.face_params(world, faces, rows)
@@ -567,10 +568,14 @@ class Level:
         rel = self.rel[rows]
         dv0 = rel[:, 1] / sin
         du0 = rel[:, 0] - dv0 * cos
-        w = top.chart.mixed(face)
-        axes = np.stack(top.chart.jacobians(face, ur + small * du0, vr + small * dv0), axis=2)      # (t, 3, 2)
+        at_u, at_v = ur + small * du0, vr + small * dv0
+        axes = np.stack(top.chart.jacobians(face, at_u, at_v), axis=2)                               # (t, 3, 2)
+        # The patch's second terms about the tile (Taylor's: a curved patch's, du^2 / 2, du dv, dv^2 / 2; a bilinear
+        # one's only its twist, du dv, which is all there is of them there)
+        uu, uv, vv = top.chart.hessians(face, at_u, at_v)
+        bent = (self.scale * small) * np.stack([uu / 2.0, uv, vv / 2.0], axis=1)                    # (t, 3, 3)
         B = to_uv @ turn
-        return self.map_points(world, faces, rows, rel), self.scale * (axes @ B), (self.scale * small) * w, B
+        return self.map_points(world, faces, rows, rel), self.scale * (axes @ B), bent, B
 
     def map_points(self, world, faces, rows, ideal):
         """Ideal points of tiles rows (level units, from each one's face's root: (t, ..., 2)) as map points (this
@@ -1177,7 +1182,7 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
     rule = level.rule
     rots = level.rot.astype(np.int64)
     top = world.topology
-    twist = top.chart.twist_norms()
+    twist = top.chart.bend_norms()
     small = rule.shrink_float(level.d)
     for kind in rule.kinds:
         for mirror in (False, True):
@@ -1252,12 +1257,15 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
                     turned = G.transpose(0, 2, 1)
                     corners = place[:, None, :] + flat @ turned                  # (t, p k, 3)
                     inside = place[:, None, :] + middles @ turned                # (t, p, 3)
-                    # The blend's twist within a tile, unless it's under a float32 step of the tile by far (deep down)
+                    # The patch's bend within a tile, unless it's under a float32 step of the tile by far (deep down)
                     if np.abs(bent).max() > 1e-12 * np.abs(G).max():
-                        uv = flat @ B.transpose(0, 2, 1)
-                        corners += (uv[..., 0] * uv[..., 1])[..., None] * bent[:, None, :]
-                        uv = middles @ B.transpose(0, 2, 1)
-                        inside += (uv[..., 0] * uv[..., 1])[..., None] * bent[:, None, :]
+                        for points, out in ((flat, corners), (middles, inside)):
+                            uv = points @ B.transpose(0, 2, 1)
+                            du, dv = uv[..., 0], uv[..., 1]
+                            out += (du * dv)[..., None] * bent[:, None, 1, :]
+                            if bent[:, 0].any() or bent[:, 2].any():
+                                out += (du * du)[..., None] * bent[:, None, 0, :]
+                                out += (dv * dv)[..., None] * bent[:, None, 2, :]
                     with np.errstate(over="ignore", invalid="ignore"):
                         inside = np.linalg.norm(inside - center, axis=2) <= window
                     corners = corners.reshape(len(place), len(polygons), polygons.shape[1], 3)

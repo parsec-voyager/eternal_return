@@ -1749,6 +1749,7 @@ class FlightFeatures:
         the drone flies a step on every frame change"""
         self._gamepad = gamepad.open_gamepad(controller)
         hud.gimbal_axes = gamepad.gimbal_axes(self._gamepad)
+        background.hold_heap(True)
 
         if fly_frame not in bpy.app.handlers.frame_change_pre:
             bpy.app.handlers.frame_change_pre.append(fly_frame)
@@ -1815,6 +1816,7 @@ class FlightFeatures:
         if fly_frame in bpy.app.handlers.frame_change_pre:
             bpy.app.handlers.frame_change_pre.remove(fly_frame)
         physics.stop()
+        background.hold_heap(False)
         for key in STICKS:
             dict_controls[key] = 0.0
 

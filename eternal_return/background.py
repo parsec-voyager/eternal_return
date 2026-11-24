@@ -42,9 +42,16 @@ every switch interval, 5 ms by default, and the main thread waited that long eac
 does many times a frame (the tick, each handler, each draw's), with or without foreground. Climbing out of a deep
 dive, where every coarser level's tiles are placed exactly, the frame rate fell from 30 to 7 (2026-11-19). So the
 workers start with a switch interval of SWITCH_INTERVAL, and their exact steps give way a face at a time.
+
+Python's garbage collector holds the lock through a whole collection, whichever thread it runs in, and a full one goes
+over every object Python is keeping: with a smooth map's subdivision trees kept (some 5 million objects) that was 1.3 s,
+the frame stopped while a worker collected, and a start's dozen of them 3.4 s of 16 (2026-11-24, the smooth UV sphere).
+So while flying (hold_heap()), what has come through a collection of the younger generations is frozen out of the later
+ones (gc.freeze()): the caches the engines keep are long-lived, and a full collection then goes over only what's new.
 """
 
 import functools
+import gc
 import inspect
 import sys
 import threading
@@ -74,6 +81,26 @@ WORKERS = 2
 # Python's switch interval once the workers run, seconds (above: at 1 ms the climb still fell to 17 frames a second, at
 # 0.2 to 23 at worst)
 SWITCH_INTERVAL = 0.0002
+
+
+# ----- the garbage collector -----
+
+def _freeze_survivors(phase, info):
+    # Right after a collection of the middle generation: what's left in them is long-lived (and nothing new is yet)
+    if phase == "stop" and info.get("generation", 0) >= 1:
+        gc.freeze()
+
+
+def hold_heap(on):
+    """On (a flight starts): from now on, what lives through a collection of Python's younger generations is frozen, so
+    no collection goes over it again (see the top). Off (it ends): thawed, back in the oldest generation, for Python's
+    own collections to go over in their time. A cycle that becomes garbage once frozen waits until then."""
+    if on:
+        if _freeze_survivors not in gc.callbacks:
+            gc.callbacks.append(_freeze_survivors)
+    elif _freeze_survivors in gc.callbacks:
+        gc.callbacks.remove(_freeze_survivors)
+        gc.unfreeze()
 
 
 # ----- taking turns -----

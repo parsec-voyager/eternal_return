@@ -463,6 +463,10 @@ def start_flight(m, op, clock, keep_state=False):
     op._gamepad = None
     op._sound = types.SimpleNamespace(update=lambda *a: None, stop=lambda: None)
     context.scene.sync_mode = 'NONE'
+    # As FlightFeatures.start_flight() does: the garbage collector leaves what's long-lived alone while flying
+    background = importlib.import_module(m.__package__ + ".background")
+    if hasattr(background, "hold_heap"):
+        background.hold_heap(True)
     frame_handler = frame_step_handler(m)
     if frame_handler not in bpy.app.handlers.frame_change_pre:
         bpy.app.handlers.frame_change_pre.append(frame_handler)

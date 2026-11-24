@@ -316,9 +316,11 @@ class BilinearChart:
         u, v = np.asarray(u, dtype=float), np.asarray(v, dtype=float)
         return self.eu[f] + v[..., None] * self.w[f], self.ev[f] + u[..., None] * self.w[f]
 
-    def mixed(self, f):
-        """Faces f's mixed second derivatives (d2 / du dv): a bilinear patch's twist, the same all over it"""
-        return self.w[f]
+    def hessians(self, f, u, v):
+        """Faces f's second derivatives at (u, v): (d2/du2, d2/du dv, d2/dv2), each (..., 3). A bilinear patch's are
+        none but its twist, the same all over it."""
+        w = self.w[f] + 0.0 * np.asarray(u, dtype=float)[..., None]
+        return np.zeros_like(w), w, np.zeros_like(w)
 
     def normal(self, f, u, v):
         """Face f's unit normal at (u, v), as three floats (a point at a time: plain floats are quicker)"""
@@ -379,6 +381,10 @@ class BilinearChart:
     def twist_norms(self):
         """How much each face's patch bends at most (its mixed second derivative's length)"""
         return np.linalg.norm(self.w, axis=1)
+
+    def bend_norms(self):
+        """The longest of each face's second derivatives: a bilinear patch's twist"""
+        return self.twist_norms()
 
     # ----- exactly -----
 
@@ -1177,6 +1183,11 @@ def world_of(obj):
     topology = topology_of(obj)
     k = factor(obj)
     if cached is None or cached[0] != version or cached[1].topology is not topology or cached[1].k != k:
+        if getattr(topology.chart, "border", False) and (k & (k - 1) or is_substitution(obj)):
+            # Along a border between quads and triangles the surface has exact points only where a split puts a
+            # vertex (halves, quarters, ...): a 3 x 3 lattice's, or Penrose's, aren't there
+            raise ValueError(f"{obj.name}: a mesh of quads and triangles (chart stam_loop) takes lattices split 2 x 2 "
+                             f"(a factor 2, 4, 8 ...), not {'a substitution rule' if is_substitution(obj) else k}")
         world = World.from_text(obj[STATE], float(setting(obj, "rho")), topology, k)
         _worlds[obj.name] = cached = (version, world)
     return cached[1]
@@ -1264,8 +1275,13 @@ def crossing(obj, start_world, end_world):
     signed), else None (see ER_OT_Fly.stop_at_surface())"""
     world = world_of(obj)
     scale = float(np.linalg.norm(world_vector(obj, (1.0, 0.0, 0.0))))
-    h0 = below_of(obj, world, map_point(obj, start_world)).height
-    h1 = below_of(obj, world, map_point(obj, end_world)).height
+    start, end = map_point(obj, start_world), map_point(obj, end_world)
+    h0 = below_of(obj, world, start).height
+    # A move starting under the surface, or shorter than the height it starts at, can't cross it: then its end's point
+    # below isn't needed (a smooth map's are a millisecond or two each, 2026-11-24)
+    if h0 <= 0.0 or h0 > float(np.linalg.norm(end - start)) / world.rho:
+        return None
+    h1 = below_of(obj, world, end).height
     h0, h1 = h0 * world.rho * scale, h1 * world.rho * scale
     return (h0, h1) if h0 > 0.0 >= h1 else None
 
