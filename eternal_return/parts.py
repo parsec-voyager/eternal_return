@@ -966,12 +966,19 @@ class MapState:
         self.queued = {}             # level -> (world text, the point its build was asked round), map units
         self.on_worker = False       # whether its lattice's builds go to the worker thread (lattice.pieces_job())
         self.early = {}              # level -> how long until it's wanted (s), for those built early (settle())
+        self.exact_failed = False    # whether the giant levels' last build on the worker thread failed (settle_exact())
 
 
 def jobs_owner(obj):
     """Whose jobs a map's parts builds are on the worker thread (background.py): not the map's own name, which its
     strapwork's builds go by (each takes what's finished by its owner)"""
     return "parts:" + obj.name
+
+
+def exact_jobs_owner(obj):
+    """Whose jobs a map's giant levels' window builds are (settle_exact()): apart from its levels' (jobs_owner()), whose
+    finished jobs settle() takes by level"""
+    return "parts-exact:" + obj.name
 
 
 _maps = {}           # map object name -> MapState
@@ -1014,6 +1021,9 @@ def settle(obj, camera_world, budget=BUILD_BUDGET, view=None):
     state = _maps.get(obj.name)
     if state is None:
         state = _maps[obj.name] = MapState(obj.name)
+    # The giant levels' window builds finished on the worker thread, taken in first: a level they hand over to the
+    # giant levels is hidden below in this same tick (sinking)
+    exact_landed = land_exact(lattice, obj, state)
     exact_from = exact_ratio(settings, shape, window / h)
     wanted = wanted_levels(lattice, world, settings, h, 2.0 * exact_from * h)
     sizes = lattice.cell_sizes(world, wanted)
@@ -1033,7 +1043,15 @@ def settle(obj, camera_world, budget=BUILD_BUDGET, view=None):
         rising.append(boundary - 1 - len(rising))
     # A level with no parts (drawn()) has nothing to build before it's handed over
     rising = [k for k in rising if drawn(lattice, k, first)]
-    instanced = rising + [k for k in wanted if k >= boundary and drawn(lattice, k, first)]
+    # Diving, a level past the boundary whose pieces the giant levels' window doesn't have yet (built on the worker
+    # thread, settle_exact()) stays instanced until they're written: sinking, the way a rising level waits for its
+    # instances (built here, the window had it in the same tick)
+    sinking = []
+    if exact_async(lattice, state) and wanted:
+        have = set(state.exact.levels)
+        sinking = [k for k in range(first, boundary) if k not in have and drawn(lattice, k, first)
+                   and any(o.get(LEVEL_KEY) == k and _built.get(o.name) is not None for o in objects)]
+    instanced = rising + sinking + [k for k in wanted if k >= boundary and drawn(lattice, k, first)]
     # Diving, the next finer levels with parts, built before they're wanted (EARLY_TIME): each with how long until it
     # is, from the dive's rate, d(ln h)/dt. A level is wanted (wanted_levels()) once the one level_step coarser has
     # cells of h / fade[1] (or "fine").
@@ -1127,6 +1145,9 @@ def settle(obj, camera_world, budget=BUILD_BUDGET, view=None):
     # What's due: (stake, wanted in s, level, its object, radius, lead, the point to build round or None)
     due = []
     for level in instanced + sorted(early):
+        if level in sinking:
+            # Only kept drawn as it was until the giant levels' window has it: not built again
+            continue
         level_obj = by_level.get(level)
         if level_obj is None:
             if not free:
@@ -1259,7 +1280,7 @@ def settle(obj, camera_world, budget=BUILD_BUDGET, view=None):
         built = _built.get(level_obj.name)
         if built is None:
             continue
-        if level < boundary or level not in instanced:
+        if level < boundary and level not in sinking or level not in instanced:
             # Rising, not handed over yet: built, but the giant levels still draw it; or early, not wanted yet
             _hide_level(level_obj, built)
             continue
@@ -1271,7 +1292,7 @@ def settle(obj, camera_world, budget=BUILD_BUDGET, view=None):
             fade(level_obj, built, (camera - offset) / scale, settings)
     giant = [k for k in range(first, boundary) if drawn(lattice, k, first)] if wanted else []
     settle_exact(lattice, obj, state, world, text, camera, q, h, clip_end, window, giant, settings, shape, phases,
-                 placer)
+                 placer, exact_landed)
 
 
 def _hide_level(level_obj, built):
@@ -1435,12 +1456,72 @@ class Exact(schedule.Window):
         self.pieces = []
 
 
+# The giant levels' window builds go before the levels' (background.submit()'s priority, lower first): a level handed
+# over waits for one, instanced (sinking), holding a level object (after the levels', a dive at a plane kept 13 levels
+# sinking, and the finest ran out of objects, 2026-11-24)
+EXACT_PRIORITY = -1e29
+
+
+def exact_async(lattice, state):
+    """Whether the map's giant levels' window is built on the worker thread (settle_exact()): once there is one, if its
+    lattice can (lattice.add_levels_job()) and the last one there didn't fail"""
+    return (background.enabled and state.exact is not None and not state.exact_failed
+            and getattr(lattice, "add_levels_job", None) is not None)
+
+
+def exact_job(function, args, world, camera, window, levels, fresh, window_for):
+    """A giant levels' window build on the worker thread: lattice.add_levels_job()'s (function, args), function(*args)
+    -> (pieces, then: what the main thread does with them first, or None), its world args[0]; with what it was built
+    for (land_exact())"""
+    pieces, then = function(*args)
+    return world, camera, window, levels, fresh, window_for, pieces, then
+
+
+def land_exact(lattice, obj, state):
+    """The giant levels' window builds finished on the worker thread, taken into the map's window (a fresh one, or
+    the levels added to the one it was asked for, if that's still the map's): whether any was"""
+    landed = False
+    for _key, result in background.finished(exact_jobs_owner(obj)):
+        if result is background.FAILED:
+            state.exact_failed = True
+            continue
+        world, camera, window, levels, fresh, window_for, pieces, then = result
+        if then is not None:
+            then()
+        if fresh:
+            built = state.exact = Exact(world.text(), world.n, (), camera, window)
+        else:
+            built = state.exact
+            if built is None or built is not window_for:
+                continue
+        add_pieces(lattice, built, world, camera, pieces)
+        built.levels = tuple(sorted(set(built.levels) | set(levels)))
+        landed = True
+    return landed
+
+
+def add_pieces(lattice, built, world, camera, pieces):
+    """Giant levels' pieces (lattice.add_levels(): from camera, in world's map units) into the window, in its units"""
+    offset, scale = lattice.transform(world, world.text(), built)
+    at = (camera - offset) / scale - built.center
+    for piece in pieces:
+        piece.rescale(scale)
+        piece.at = at
+        piece.faces = [face + at for face in piece.faces]
+        built.pieces.append(piece)
+
+
 def settle_exact(lattice, obj, state, world, text, camera, q, h, clip_end, window, levels, settings, shape, phases,
-                 placer):
+                 placer, landed=False):
     """The giant levels' pieces in the window (add_levels()), built again when the camera's view (clip_end) reaches
     past it or it's grown far wider than wanted (the drone has shrunk: its corners are float32 from its middle, so
     they'd be a growing share of the drone's height off), and a level's own added or taken away when it crosses the
-    boundary; and put where they are in today's map. Loops don't build it: they only scale it, by a power of 2."""
+    boundary; and put where they are in today's map. Loops don't build it: they only scale it, by a power of 2.
+
+    Once there's a window, a lattice that can (lattice.add_levels_job()) has those builds done on the worker thread
+    (exact_async()): the window stays as it was until they're taken in (land_exact(), at the start of the next
+    settle()), a level handed over meanwhile still instanced (sinking). Built here, the plane maps' took 50 to 110 ms
+    two or three times a loop, which a dive at a plane comes to once a second (2026-11-24)."""
     exact_obj = exact_object(obj)
     built = state.exact
     # A loop changes only the window's transform (by a power of 2, exactly): it's the same window, the same size
@@ -1450,28 +1531,55 @@ def settle_exact(lattice, obj, state, world, text, camera, q, h, clip_end, windo
         local = (camera - offset) / scale
         rebuild = (not built.covers(float(np.linalg.norm(local - built.center)), clip_end / scale)
                    or built.overbuilt(window / scale))
-    if rebuild:
-        built = state.exact = Exact(world.text(), world.n, (), np.array(camera, dtype=float), window)
-        offset, scale = lattice.transform(world, text, built)
-    # A level crossing the boundary (three times a loop) only adds or takes away its own pieces: the window's other
-    # levels stay as they were, and an added level's are taken to the window's units (map units when it was built)
-    if built.levels != tuple(levels):
-        built.pieces = [piece for piece in built.pieces if piece.level in levels]
-        added = [level for level in levels if level not in built.levels]
-        if added:
-            at = (camera - offset) / scale - built.center
-            for piece in lattice.add_levels(world, camera, q, h, window, added, settings, shape, phases, placer):
-                piece.rescale(scale)
-                piece.at = at
-                piece.faces = [face + at for face in piece.faces]
-                built.pieces.append(piece)
-        built.levels = tuple(levels)
-        rebuild = True
+    write = landed
+    if exact_async(lattice, state):
+        key = (exact_jobs_owner(obj), 0)
+        # A level no longer giant goes at once (its instances are drawn: it rose); those to add, and a fresh window,
+        # one job at a time. (Sets: a plane map has a thousand giant levels, and lists compared item by item cost the
+        # tick 5 ms.)
+        added = []
+        if built.levels != tuple(levels):
+            wanted, have = set(levels), set(built.levels)
+            if not have <= wanted:
+                built.pieces = [piece for piece in built.pieces if piece.level in wanted]
+                built.levels = tuple(level for level in built.levels if level in wanted)
+                have &= wanted
+                write = True
+            added = [level for level in levels if level not in have]
+        if (rebuild or added) and not background.pending(key):
+            asked = levels if rebuild else added
+            plain = settings.to_dict() if hasattr(settings, "to_dict") else settings
+            job = lattice.add_levels_job(world, camera, q, h, window, asked, plain, shape, phases, placer)
+            if job is not None:
+                function, args = job
+                background.submit(key, exact_job, function, args, args[0], np.array(camera, dtype=float), window,
+                                  tuple(asked), rebuild, built, priority=EXACT_PRIORITY)
+    else:
+        if rebuild:
+            built = state.exact = Exact(world.text(), world.n, (), np.array(camera, dtype=float), window)
+            offset, scale = lattice.transform(world, text, built)
+        # A level crossing the boundary (three times a loop) only adds or takes away its own pieces: the window's other
+        # levels stay as they were, and an added level's are taken to the window's units (map units when it was built)
+        if built.levels != tuple(levels):
+            built.pieces = [piece for piece in built.pieces if piece.level in levels]
+            added = [level for level in levels if level not in built.levels]
+            if added:
+                at = (camera - offset) / scale - built.center
+                for piece in lattice.add_levels(world, camera, q, h, window, added, settings, shape, phases, placer):
+                    piece.rescale(scale)
+                    piece.at = at
+                    piece.faces = [face + at for face in piece.faces]
+                    built.pieces.append(piece)
+            built.levels = tuple(levels)
+            rebuild = True
+        write |= rebuild
+    built = state.exact
+    offset, scale = lattice.transform(world, text, built)
     if built.placed != text:
         from mathutils import Matrix, Vector
         built.placed = text
         exact_obj.matrix_basis = Matrix.Translation(Vector(offset + scale * built.center)) @ Matrix.Scale(scale, 4)
-    if rebuild:
+    if write:
         write_exact(exact_obj, built)
 
 
@@ -1625,6 +1733,9 @@ def window_faces(shape, kind, u, half, size, number):
         if number is float and inside[f]:
             corners.append((near_all[starts[f]:ends[f]] * float(size), index))
             continue
+        # (On a worker thread, out of the main thread's way between faces: the cut is pure Python, exactly, and without
+        # these the tick's own Python ran at half speed beside it, 2026-11-24)
+        background.give_way()
         cut = cut_to_window([[number(float(c)) - u[i] for i, c in enumerate(corner)] for corner in face.tolist()], half)
         if len(cut) >= 3:
             corners.append((np.array([[float(c * size) for c in corner] for corner in cut]), index))
@@ -1710,6 +1821,7 @@ def forget(_dummy=None):
     _built.clear()
     for name in _maps:
         background.forget("parts:" + name)
+        background.forget("parts-exact:" + name)
     _maps.clear()
     _local.clear()
     schedule.forget()

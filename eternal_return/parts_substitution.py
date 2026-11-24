@@ -34,6 +34,7 @@ from fractions import Fraction
 
 import numpy as np
 
+from . import background
 from . import parts
 from . import penrose
 from . import schedule
@@ -43,8 +44,12 @@ from . import surface_substitution as SS
 from .cyclotomic import (RING10 as RING, im_pair, q_add, q_float, q_fraction, q_mul, q_scale,
                          q_sub, re2_pair, ring_im, ring_re2)
 
-# A rhomb mesh's tiles (rhombs_near()) are Penrose's
-RULE = substitution.RULES["penrose"]
+
+# A rhomb mesh's tiles (rhombs_near()) are Penrose's (penrose_rule(): built when first asked for, substitution.Rules)
+def penrose_rule():
+    return substitution.RULES["penrose"]
+
+
 EDGE, VERTEX = surface.EDGE, surface.VERTEX
 
 # Each kind, turn and mirroring's corners A, B, C as ring coefficients (kind, rot, mirror, corner, 4), and its legs AB
@@ -89,7 +94,7 @@ class FaceSides:
 
     def __init__(self, faces, f, root, d):
         self.k2 = k2 = E2[int(faces.kind[f])]
-        self.length = L = RULE.power(d)                   # phi^d: a side's length in level units
+        self.length = L = penrose_rule().power(d)         # phi^d: a side's length in level units
         self.root = root
         self.turns = turns = (0, -k2, 0, -k2)
         constants = (RING.zero, turned(L, -k2), turned(L, k2), RING.zero)
@@ -279,7 +284,8 @@ def rhombs_near(world, faces, level, rows):
     rel = level.coef[rows][:, None, :] + CORNERS[kind, rot, mirror]                    # (t, 3, 4)
     T = len(rows)
     # Ideal places from the faces' roots, then map places and normals of every corner as its tile has it
-    ideal = np.stack([rel @ RULE.basis_x, rel @ RULE.basis_y], axis=-1)                # (t, 3, 2)
+    rule = penrose_rule()
+    ideal = np.stack([rel @ rule.basis_x, rel @ rule.basis_y], axis=-1)                # (t, 3, 2)
     maps = level.map_points(world, faces, rows, ideal) if T else np.zeros((0, 3, 3))
     normals = copy_normals(world, faces, level, rows, ideal)
     fu = np.repeat(face, 3)
@@ -847,46 +853,78 @@ class SubstitutionLattice(surface.MeshLattice):
         """The giant levels' pieces within window of the camera (map units), as parts.ExactPieces, finest first: each
         level's pieces round the corner nearest the point below, in float64 against the camera, and those in reach
         worked out for the window (exact_piece()): in float64 where its rounding is well under the drone's height,
-        exactly past that"""
-        found = []
+        exactly past that (add_levels_job(), worked out here)"""
+        function, args = self.levels_job(world, camera, q, h, window, levels, settings, shape, phases, placer)
+        found, then = function(*args)
+        if then is not None:
+            then()
+        return found
+
+    # The giant levels' window built here (parts.settle_exact()): on the worker thread (levels_job()), a dive at the
+    # Penrose plane lost its frames' fourth finest level in 87% of its frames, against 11%, the levels' own builds
+    # (some 100 ms each) waiting behind it (2026-11-24)
+    add_levels_job = None
+
+    def levels_job(self, world, camera, q, h, window, levels, settings, shape, phases, placer):
+        """add_levels() as (function, args), for the worker thread: what reads and keeps the map's levels (its
+        state's kept levels and giant tiles, the levels known to have nothing round the camera) done here, the pieces
+        there, on a world of its own; (function, args)"""
         faces, st = world.substitution
         text = world.text()
+        own = surface.World.from_text(text, world.rho, world.topology, world.k)
         # Levels known to have nothing round the camera aren't looked at again (NO_PIECES_SHARE)
-        camera = np.asarray(camera, dtype=float)
+        camera = np.array(camera, dtype=float)
         levels = [d for d in levels if not (d in st.no_pieces and st.no_pieces[d][0] is shape
                                             and SS.covers(world, text, st.no_pieces[d][1], camera, window))]
         if not levels:
-            return found
+            return levels_pieces, (own, faces, st, [], None, camera, None, window, settings, shape, phases, h)
         below = surface.Below(world, np.asarray(q, dtype=float))
         foot = world.rho * below.foot
         camera_point = camera_exact(world, camera)
-        reach_cells = max(shape.plan[0], shape.plan[1], shape.past, float(shape.reach.max()))
         SS.kept_levels(world, faces, below, st, max(levels), foot, lambda d: window)
-        for d in reversed(levels):
-            tiles = self.giant_tiles(world, faces, st, d, below, foot, window)
-            cell = self.cell_sizes(world, [d])[d]
-            radius = math.ceil(1.5 + 1.25 * window / cell + reach_cells)
-            try:
-                pieces = SubstitutionPieces(world, faces, tiles, foot, radius, settings, shape)
-            except ValueError:
-                continue
-            local, rounding = pieces.camera(camera)
-            scale = pieces.scale()
-            rows, distances, tolerance = parts.window_rows(shape, pieces, local, rounding, scale, window)
-            if not len(rows):
-                least = float(np.abs(distances).min()) * scale if len(distances) else math.inf
-                st.no_pieces[d] = (shape, SS.Drawn(text, world.n, camera.copy(),
-                                                   NO_PIECES_SHARE * min(least, window), 1.0))
-            else:
+        level_tiles = [(d, self.giant_tiles(world, faces, st, d, below, foot, window), self.cell_sizes(world, [d])[d])
+                       for d in reversed(levels)]
+        return levels_pieces, (own, faces, st, level_tiles, foot, camera, camera_point, window, settings, shape,
+                               phases, h)
+
+
+def levels_pieces(world, faces, st, level_tiles, foot, camera, camera_point, window, settings, shape, phases, h):
+    """SubstitutionLattice.add_levels_job()'s pieces, level by level ((level, its tiles, its cells' size)): (the
+    pieces, then: the levels with nothing round the camera noted in the map's state, st, on the main thread)"""
+    found, nothing = [], {}
+    text = world.text()
+    reach_cells = max(shape.plan[0], shape.plan[1], shape.past, float(shape.reach.max()))
+    for d, tiles, cell in level_tiles:
+        background.give_way()
+        radius = math.ceil(1.5 + 1.25 * window / cell + reach_cells)
+        try:
+            pieces = SubstitutionPieces(world, faces, tiles, foot, radius, settings, shape)
+        except ValueError:
+            continue
+        local, rounding = pieces.camera(camera)
+        scale = pieces.scale()
+        rows, distances, tolerance = parts.window_rows(shape, pieces, local, rounding, scale, window)
+        if not len(rows):
+            least = float(np.abs(distances).min()) * scale if len(distances) else math.inf
+            nothing[d] = (shape, SS.Drawn(text, world.n, camera.copy(), NO_PIECES_SHARE * min(least, window), 1.0))
+        else:
+            nothing[d] = None
+        for row in rows:
+            background.give_way()
+            # float64 is enough while its rounding is well under the drone's height (parts.add_levels())
+            floats = tolerance[row] * scale < parts.EXACT_SHARE * h
+            piece = exact_piece(world, pieces, int(row), camera_point, window, shape, settings, phases, h,
+                                local if floats else None)
+            if piece is not None:
+                found.append(piece)
+
+    def then():
+        for d, noted in nothing.items():
+            if noted is None:
                 st.no_pieces.pop(d, None)
-            for row in rows:
-                # float64 is enough while its rounding is well under the drone's height (parts.add_levels())
-                floats = tolerance[row] * scale < parts.EXACT_SHARE * h
-                piece = exact_piece(world, pieces, int(row), camera_point, window, shape, settings, phases, h,
-                                    local if floats else None)
-                if piece is not None:
-                    found.append(piece)
-        return found
+            else:
+                st.no_pieces[d] = noted
+    return found, then
 
 
 _lattices = {}

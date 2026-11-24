@@ -54,6 +54,7 @@ from fractions import Fraction
 import numpy as np
 
 try:
+    from . import background
     from . import loops
     from . import parts
     from . import schedule
@@ -61,6 +62,7 @@ try:
     from . import tiling
     from .cyclotomic import q_add, q_mul, q_scale
 except ImportError:          # tests import it by itself
+    import background
     import loops
     import parts
     import schedule
@@ -1452,7 +1454,10 @@ def face_grid(top, f, IR, JR, M, ref, reach, cap, scale=1.0):
     is, in steps of I + J; past 2^60, out of reach anyway). The parameters can be any size (Python ints); the offsets
     are small."""
     sigma = max(float(top.sigma_lo[f]), 1e-12 * float(top.sigma_hi[f]), 1e-300) * scale
-    D = min(int(math.ceil((float(np.linalg.norm(ref)) + reach) / sigma)) + 1, cap)
+    # (A face some 1e154 units off overflows the distance: as far as the cap, its points then out of reach)
+    with np.errstate(over="ignore"):
+        far = (float(np.linalg.norm(ref)) + reach) / sigma
+    D = min(int(math.ceil(far)) + 1, cap) if math.isfinite(far) else cap
     dI = np.arange(max(0, IR - D) - IR, min(M, IR + D) - IR + 1, dtype=np.float64)
     dJ = np.arange(max(0, JR - D) - JR, min(M, JR + D) - JR + 1, dtype=np.float64)
     gi, gj = np.meshgrid(dI, dJ, indexing="ij")
@@ -1528,6 +1533,8 @@ def refine_smooth(corners, faces, near, chart, M, scale, g0, bases):
         faces_, gi, gj = faces_.ravel(), gi.ravel(), gj.ravel()
         out = np.empty((len(gi), 3))
         for f in np.unique(faces_).tolist():
+            # (On a worker thread, out of the main thread's way: a curved face's offsets are mostly Python)
+            background.give_way()
             rows = np.flatnonzero(faces_ == f)
             I, J, ref = bases[f]
             out[rows] = ref + scale * chart.grid_offsets(f, I, J, M, gi[rows], gj[rows])
@@ -1622,6 +1629,7 @@ def build_floor(world, camera, below, window, settings_cells):
             f, IR, JR = queue.pop(0)
             if f in done:
                 continue
+            background.give_way()
             done.add(f)
             k = top._sides[f]
             ref = world.rho * d_float(d_sub(top.point(f, IR, JR, M), camera_point), N)
@@ -1664,14 +1672,48 @@ def build_floor(world, camera, below, window, settings_cells):
     return corners, sizes, colors, level, split
 
 
+def floor_job(world, camera, below, window, settings_cells):
+    """The floor built round camera, ready to write (write_floor()): on a worker thread once the floor is drawn
+    (settle_floor()), touching no bpy"""
+    corners, sizes, colors, level, split = build_floor(world, camera, below, window, settings_cells)
+    # Cells far bigger than their distance from the camera cut smaller near it (tiling.split_near(): a cell a
+    # quarter of the window across had its depth by the camera off by as much as the levels over it are apart)
+    if len(sizes):
+        points, counts, rows = tiling.split_near(*tiling.polygons_of(corners, sizes), np.zeros(3),
+                                                 FLOOR_SPLIT_TILE * abs(below.height) * world.rho)
+        corners, sizes = tiling.corners_of(points, counts)
+        colors = np.asarray(colors)[rows]
+    height = abs(below.height) * world.rho if split else None
+    return (FloorBuilt(world.text(), world.n, np.array(camera, dtype=float), window, level, height), corners, sizes,
+            colors)
+
+
+def floor_jobs(obj):
+    """Whose jobs a map's floor builds are on the worker thread (background.py)"""
+    return "floor:" + obj.name
+
+
+# The floor's builds go before every other build waiting (background.submit()'s priority, lower first)
+FLOOR_PRIORITY = -1e30
+_floor_failed = set()        # map object names whose floor's last build on the worker thread failed
+
+
 def settle_floor(obj, world, camera, below, clip_end):
     """The floor in today's map: built again when the camera's view (clip_end) reaches past its window or it's grown far
     wider than wanted (the drone has shrunk: its corners are float32 from its middle), or with cells split for where the
     camera was (a bent quad's, refine()) once it's moved on FLOOR_FOLLOW of its heights or come down to half its height,
-    else only moved and scaled"""
+    else only moved and scaled. Once there's a floor, it's built again on a worker thread (background.py) and stays as
+    it was until that's written in a later tick: built here, a smooth chart's floor took 0.1 to 0.3 s, a freeze at every
+    loop of a dive (the user, 2026-11-24)."""
     window = float(setting(obj, "window")) * clip_end
     floor_obj = floor_object(obj)
     text = world.text()
+    owner = floor_jobs(obj)
+    for _key, result in background.finished(owner):
+        if result is background.FAILED:
+            _floor_failed.add(obj.name)
+        else:
+            write_floor(obj, floor_obj, *result)
     built = _floors.get(obj.name)
     rebuild = built is None
     if not rebuild:
@@ -1683,19 +1725,19 @@ def settle_floor(obj, world, camera, below, clip_end):
             height = abs(below.height) * world.rho / scale
             rebuild |= moved > FLOOR_FOLLOW * height or height < 0.5 * built.split_height
     if rebuild:
-        corners, sizes, colors, level, split = build_floor(world, camera, below, window,
-                                                           float(setting(obj, "floor_cells")))
-        # Cells far bigger than their distance from the camera cut smaller near it (tiling.split_near(): a cell a
-        # quarter of the window across had its depth by the camera off by as much as the levels over it are apart)
-        if len(sizes):
-            points, counts, rows = tiling.split_near(*tiling.polygons_of(corners, sizes), np.zeros(3),
-                                                     FLOOR_SPLIT_TILE * abs(below.height) * world.rho)
-            corners, sizes = tiling.corners_of(points, counts)
-            colors = np.asarray(colors)[rows]
-        height = abs(below.height) * world.rho if split else None
-        built = _floors[obj.name] = FloorBuilt(text, world.n, np.array(camera, dtype=float), window, level, height)
-        tiling.write_mesh(floor_obj, corners, sizes, colors)
-        offset, scale = transform(world, text, built)
+        job = (World.from_text(text, world.rho, world.topology, world.k), np.array(camera, dtype=float), below, window,
+               float(setting(obj, "floor_cells")))
+        key = (owner, 0)
+        if built is not None and background.enabled and obj.name not in _floor_failed:
+            # Handed in again round the newest camera while it waits; left alone once it's under way
+            if not background.running(key):
+                background.submit(key, floor_job, *job, priority=FLOOR_PRIORITY, replace=True)
+        else:
+            _floor_failed.discard(obj.name)
+            background.cancel(key)
+            write_floor(obj, floor_obj, *floor_job(*job))
+    built = _floors[obj.name]
+    offset, scale = transform(world, text, built)
     if built.placed != text:
         built.placed = text
         if "sub_push" in floor_obj:
@@ -1707,6 +1749,12 @@ def settle_floor(obj, world, camera, below, clip_end):
         else:
             from mathutils import Matrix, Vector
             floor_obj.matrix_basis = Matrix.Translation(Vector(offset + scale * built.center)) @ Matrix.Scale(scale, 4)
+
+
+def write_floor(obj, floor_obj, built, corners, sizes, colors):
+    """A floor build (floor_job()) into the floor's object, placed in the next settle_floor()"""
+    _floors[obj.name] = built
+    tiling.write_mesh(floor_obj, corners, sizes, colors)
 
 
 def settle(obj, camera_world):
@@ -1807,6 +1855,7 @@ class LocalLattice:
             f, IR, JR, PR = queue.pop(0)
             if f in done:
                 continue
+            background.give_way()
             done.add(f)
             k = top._sides[f]
             _D, gi, gj, pos, rem = face_grid(top, f, IR, JR, M, PR, r_out, 4 * int(math.ceil(radius)) + 16)
@@ -2081,6 +2130,7 @@ def add_levels(world, camera, q, h, window, levels, settings, shape, phases, pla
         if (level, kind, keys) in done:
             return
         done.add((level, kind, keys))
+        background.give_way()
         piece = exact_piece(world, level, kind, keys, camera_point, window, shape, settings, phases)
         if piece is not None:
             found.append(piece)
@@ -2186,8 +2236,14 @@ class MeshLattice:
         return MeshPieces(world, level, center, radius, settings, shape)
 
     def pieces_job(self, world, level, center, radius, settings, shape):
-        """A level's build for the worker thread (parts.SphereLattice.pieces_job()); None: built here"""
-        return None
+        """A level's build for the worker thread (parts.SphereLattice.pieces_job()); None: built here. A curved chart's
+        (a subdivision surface's) on the worker: 0.2 to 0.6 s a level on quadico's, built here they froze the flight.
+        A flat one's here: a few ms each, and on the worker, in a dive at a plane (some 46 a second, beside the giant
+        levels' window builds), the finest level was missing in 31% of the frames, against 3.5% (2026-11-24)."""
+        if world.topology.chart.flat_cells:
+            return None
+        own = World.from_text(world.text(), world.rho, world.topology, world.k)
+        return built_mesh_pieces, own, level, center, radius, settings, shape
 
     def cell_sizes(self, world, levels):
         return cell_sizes(world, levels)
@@ -2197,6 +2253,23 @@ class MeshLattice:
 
     def add_levels(self, world, camera, q, h, window, levels, settings, shape, phases, placer):
         return add_levels(world, camera, q, h, window, levels, settings, shape, phases, placer)
+
+    def add_levels_job(self, world, camera, q, h, window, levels, settings, shape, phases, placer):
+        """add_levels() for the worker thread (parts.settle_exact()), on a world of its own: (function, args)"""
+        own = World.from_text(world.text(), world.rho, world.topology, world.k)
+        return levels_pieces, (own, np.array(camera, dtype=float), np.array(q, dtype=float), h, window, list(levels),
+                               settings, shape, phases)
+
+
+def levels_pieces(world, camera, q, h, window, levels, settings, shape, phases):
+    """MeshLattice.add_levels_job()'s pieces: (add_levels(), nothing for the main thread to do then)"""
+    return add_levels(world, camera, q, h, window, levels, settings, shape, phases), None
+
+
+def built_mesh_pieces(world, level, center, radius, settings, shape):
+    """A level's pieces (MeshPieces) built on the worker thread, as parts.write_level() takes them"""
+    pieces = MeshPieces(world, level, center, radius, settings, shape)
+    return world, pieces, pieces.origin(), radius
 
 
 _lattices = {}       # factor -> MeshLattice

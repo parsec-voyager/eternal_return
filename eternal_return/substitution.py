@@ -11,13 +11,12 @@ square (cut(), and shows(), which the endless planes' build script uses to keep 
 drone), and fade(), how much of its colors a level shows by how wide its bars are on screen.
 """
 
+import importlib
 import math
 from fractions import Fraction
 
 import numpy as np
 
-from . import darb_imam
-from . import penrose
 from .cyclotomic import phi_power_float, q_phi, q_scale
 
 MARGIN = 1e-9               # float tests closer than this (relative) are too close to call
@@ -69,10 +68,7 @@ class Rule:
                                      for kind in self.kinds])                     # (kind, rot, mirror)
         # Each kind's corners' middle and how far its corners are from it (prototile units), indexed by kind: how far a
         # tile can reach from its middle
-        true = {kind: np.array([R.xy_small(v) for v in m.PROTOTILE[kind]]) for kind in self.kinds}
-        self.middles = np.array([true[kind].mean(axis=0) for kind in self.kinds])
-        self.radii = np.array([float(np.linalg.norm(true[kind] - true[kind].mean(axis=0), axis=1).max())
-                               for kind in self.kinds])
+        self.middles, self.radii = prototile_reach(m)
         self.two_power, self.phi_power = m.LAMBDA_POWERS
         self._powers = {}
 
@@ -132,7 +128,51 @@ def orient_matrix(n, rotation, mirror):
     return turn @ np.diag([1.0, -1.0]) if mirror else turn
 
 
-RULES = {module.NAME: Rule(module) for module in (penrose, darb_imam)}
+def prototile_reach(m):
+    """A rule module's kinds' corners' middles and how far their corners are from them (prototile units), indexed by
+    kind: how far a tile can reach from its middle (without building its Rule)"""
+    true = {kind: np.array([m.RING.xy_small(v) for v in m.PROTOTILE[kind]]) for kind in m.KINDS}
+    middles = np.array([true[kind].mean(axis=0) for kind in m.KINDS])
+    radii = np.array([float(np.linalg.norm(true[kind] - true[kind].mean(axis=0), axis=1).max()) for kind in m.KINDS])
+    return middles, radii
+
+
+class Rules:
+    """The rules by name (penrose.py's and darb_imam.py's NAME), each built the first time a map asks for it: both built
+    when this was imported, the first flight on any substitution or cell map waited 0.7 s for them, the rule it doesn't
+    use too (2026-11-24)"""
+
+    MODULES = ("penrose", "darb_imam")
+
+    def __init__(self):
+        self._built = {}
+
+    def __getitem__(self, name):
+        rule = self._built.get(name)
+        if rule is None:
+            if name not in self.MODULES:
+                raise KeyError(name)
+            module = importlib.import_module(f"{__package__}.{name}" if __package__ else name)
+            rule = self._built[name] = Rule(module)
+        return rule
+
+    def __contains__(self, name):
+        return name in self.MODULES
+
+    def __iter__(self):
+        return iter(self.MODULES)
+
+    def keys(self):
+        return self.MODULES
+
+    def values(self):
+        return [self[name] for name in self.MODULES]
+
+    def items(self):
+        return [(name, self[name]) for name in self.MODULES]
+
+
+RULES = Rules()
 
 
 # --- Exact helpers ----------------------------------------------------------------------------------------------------

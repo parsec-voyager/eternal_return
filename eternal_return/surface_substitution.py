@@ -1333,7 +1333,7 @@ SPLIT_AHEAD = 0.5
 # inside_bar() looks at the tiles within this many level units of the point (for Penrose halves, whose furthest corner
 # is PENROSE_RADIUS from their middle; a rule with bigger tiles, as many times as far)
 INSIDE_REACH = 2.5
-PENROSE_RADIUS = float(substitution.RULES["penrose"].radii.max())
+PENROSE_RADIUS = float(substitution.prototile_reach(penrose)[1].max())
 # The finest levels fade in in this many steps: each step writes every corner's color again and has Blender send the
 # mesh to the GPU again, and with substitution.fade()'s 32, three or four levels fading in at once in a dive came to
 # 70 a second, more than one a tick (2026-11-14)
