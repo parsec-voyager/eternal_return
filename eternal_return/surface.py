@@ -87,8 +87,9 @@ FLOOR_KEY = "surface_floor_of"       # on the floor object: its map's object's n
 # - factor: how many ways a level's cell's sides split at the next, a whole number from 2 (the map loops by its powers)
 # - endless: an endless plane's ({"seed": a whole number}), None for a map with a top: see retop()
 # - chart: the shape the lattice stands on: "bilinear" (each face its corners' bilinear patch, BilinearChart) or
-#   "catmull_clark" (an all-quad mesh's smooth Catmull-Clark limit surface, subdivision.CatmullClarkChart) or "loop"
-#   (an all-triangle mesh's Loop limit surface, subdivision.LoopChart)
+#   "catmull_clark" (an all-quad mesh's smooth Catmull-Clark limit surface, subdivision.CatmullClarkChart), "loop"
+#   (an all-triangle mesh's Loop limit surface, subdivision.LoopChart) or "stam_loop" (a mesh of quads and triangles,
+#   Stam and Loop's, subdivision.QuadTriChart)
 # The rules whose floors surface_substitution.py draws (substitution.RULES' names)
 SUBSTITUTION_RULES = ("penrose", "darb_imam")
 DEFAULTS = {"rho": 1.0, "window": 1.25, "floor_cells": 4.0, "floor_color": [0.04, 0.03, 0.10, 1.0], "rule": "square",
@@ -305,12 +306,12 @@ class BilinearChart:
 
     # ----- in floats -----
 
-    def points(self, f, u, v):
+    def points(self, f, u, v, search=False):
         """Faces f's points at (u, v) (arrays that broadcast together; f indexes the faces), (..., 3)"""
         u, v = np.asarray(u, dtype=float), np.asarray(v, dtype=float)
         return self.P0[f] + u[..., None] * self.eu[f] + v[..., None] * self.ev[f] + (u * v)[..., None] * self.w[f]
 
-    def jacobians(self, f, u, v):
+    def jacobians(self, f, u, v, search=False):
         """The columns of faces f's Jacobians at (u, v): how a step of u, and of v, moves the point, ((..., 3), (..., 3))"""
         u, v = np.asarray(u, dtype=float), np.asarray(v, dtype=float)
         return self.eu[f] + v[..., None] * self.w[f], self.ev[f] + u[..., None] * self.w[f]
@@ -455,12 +456,13 @@ class Topology:
         # As plain lists too, for the lookups made a point at a time
         self._corners = [list(c) for c in faces]
         self._sides = self.sides.tolist()
-        if chart in ("catmull_clark", "loop"):
+        if chart in ("catmull_clark", "loop", "stam_loop"):
             try:
                 from . import subdivision
             except ImportError:
                 import subdivision
-            self.chart = (subdivision.CatmullClarkChart if chart == "catmull_clark" else subdivision.LoopChart)(self)
+            self.chart = {"catmull_clark": subdivision.CatmullClarkChart, "loop": subdivision.LoopChart,
+                          "stam_loop": subdivision.QuadTriChart}[chart](self)
         else:
             self.chart = BilinearChart(self.positions, faces, self.sides)
         self.E = self.chart.E
@@ -1112,8 +1114,8 @@ class Below:
         u = np.where(triangle, 1.0 / 3.0, 0.5)
         v = np.where(triangle, 1.0 / 3.0, 0.5)
         for _ in range(4):
-            X = chart.points(faces, u, v)
-            ju, jv = chart.jacobians(faces, u, v)
+            X = chart.points(faces, u, v, search=True)
+            ju, jv = chart.jacobians(faces, u, v, search=True)
             r = s - X
             # The normal equations of the 2 x 2 least squares step, per face
             a11, a12, a22 = np.sum(ju * ju, 1), np.sum(ju * jv, 1), np.sum(jv * jv, 1)
@@ -1124,7 +1126,7 @@ class Below:
             # Back into a triangle across its long side
             over = np.where(triangle, np.maximum(u + v - 1.0, 0.0), 0.0) / 2.0
             u, v = np.clip(u - over, 0.0, 1.0), np.clip(v - over, 0.0, 1.0)
-        X = chart.points(faces, u, v)
+        X = chart.points(faces, u, v, search=True)
         k = int(np.argmin(np.sum((X - s) ** 2, axis=1)))
         return int(faces[k]), (float(u[k]), float(v[k]))
 
