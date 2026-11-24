@@ -438,7 +438,8 @@ ON_SIDE = 1e-6
 class Prototiles:
     """A rule's tiles as ring coefficients, for a level's corners at once: each kind, turn and mirroring's corners
     (kind, rot, mirror, corner, 4, padded with copies of the last), each kind's corner count, and each edge's direction
-    (corner i to i + 1, a power of zeta)"""
+    (corner i to i + 1, a power of zeta; -1 for a side that isn't one of the tiling's edges: a Penrose half's base, the
+    diagonal inside its rhomb, which has no frame)"""
 
     def __init__(self, rule):
         m = rule.module
@@ -455,7 +456,8 @@ class Prototiles:
                     self.corners[kind, r, mi] = c
                     n = self.count[kind]
                     for i in range(n):
-                        self.directions[kind, r, mi, i] = RING.unit_index(RING.sub(c[(i + 1) % n], c[i]))
+                        k = RING.unit_index(RING.sub(c[(i + 1) % n], c[i]))
+                        self.directions[kind, r, mi, i] = -1 if k is None else k
 
 
 _prototiles = {}
@@ -587,9 +589,10 @@ def pieces_near(world, faces, level, rows):
     corner_v = vertex_of.reshape(T, width)
     nexts = (np.arange(width)[None, :] + 1) % tiles.count[kind][:, None]                # (t, k)
     legs = np.stack([corner_v, np.take_along_axis(corner_v, nexts, axis=1)], axis=-1).reshape(-1, 2)
-    directions = ((tiles.directions[kind, rot, mirror] + faces.turn[face][:, None]) % RING.n).reshape(-1)
+    own = tiles.directions[kind, rot, mirror]
+    directions = ((own + faces.turn[face][:, None]) % RING.n).reshape(-1)
     leg_faces = np.repeat(face, width)
-    whole = real & np.all(legs >= 0, axis=1)
+    whole = real & np.all(legs >= 0, axis=1) & (own.reshape(-1) >= 0)
     finish_near(out, count, np.where(holds, vertex_of, -1), fu, normals, legs[whole], directions[whole],
                 leg_faces[whole], atlas.group)
     out.level, out.world_text = level, level.world_text

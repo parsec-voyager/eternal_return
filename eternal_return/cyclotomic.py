@@ -176,13 +176,7 @@ class Ring:
 def float_sqrt_int(p, q, d, den, bits=64):
     """(p + q sqrt d) / den, whole numbers, as the nearest float, to within 2^-bits of its own size, however big p and
     q are (see float_sqrt()). +-inf past float range."""
-    shift = bits + 2 * max(p.bit_length(), q.bit_length()) + 6
-    root = math.isqrt(d * q * q << (2 * shift))
-    num = (p << shift) + (root if q >= 0 else -root)
-    try:
-        return num / (den << shift)
-    except OverflowError:
-        return math.inf if num > 0 else -math.inf
+    return _sqrt_quotient(p, q, d, den, bits)
 
 
 def fixed_sqrt_int(p, q, d, den, bits):
@@ -199,9 +193,23 @@ def float_sqrt(a, b, d, bits=64):
     den = a.denominator * b.denominator
     big_a = a.numerator * b.denominator
     big_b = b.numerator * a.denominator
-    shift = bits + 2 * max(big_a.bit_length(), big_b.bit_length()) + 6
-    root = math.isqrt(d * big_b * big_b << (2 * shift))
-    num = (big_a << shift) + (root if big_b >= 0 else -root)
+    return _sqrt_quotient(big_a, big_b, d, den, bits)
+
+
+def _sqrt_quotient(p, q, d, den, bits):
+    """(p + q sqrt d) / den for whole numbers, to within 2^-bits of its own size: p and q times 2^shift, sqrt d q 2^shift
+    rounded down (off by under 1), so the sum is good to within 2^-bits of itself once it's over 2^(bits + 2). The
+    shift that always does it (2 max(|p|, |q|) bits more: p + q sqrt d is at least about 1 / (2 sqrt d max(|p|, |q|))
+    when not 0) is only needed when they all but cancel; a small one is tried first. Always the big one, deep
+    endless planes' exact places (thousands of bits) were half their first settle in isqrt() (2026-11-23)."""
+    worst = bits + 2 * max(p.bit_length(), q.bit_length()) + 6
+    shift = min(bits + 8, worst)
+    while True:
+        root = math.isqrt(d * q * q << (2 * shift))
+        num = (p << shift) + (root if q >= 0 else -root)
+        if shift >= worst or abs(num) >> (bits + 2):
+            break
+        shift = min(4 * shift, worst)
     try:
         return num / (den << shift)
     except OverflowError:

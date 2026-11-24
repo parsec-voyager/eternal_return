@@ -131,6 +131,9 @@ GIANT = 1e6
 # 2^1000), levels are measured from the coarsest whose tiles are about e^LOG_ROOM
 BIG_TILE = 1e150
 LOG_ROOM = 300.0
+# settle(): the giant levels next to the drawn ones are drawn while one of their bars' edges is within EDGE_DRAW sights
+# of the drone's (EDGE_KEEP once drawn), as many as EDGE_LEVELS of them
+EDGE_DRAW, EDGE_KEEP, EDGE_LEVELS = 1.0, 2.0, 3
 # A coarse level is re-rooted at a tile near the drone once its tiles are further than this from their root (its
 # places are good to ~1e-16 of the distance to the root)
 COARSE_COEF = 16
@@ -342,6 +345,9 @@ def exact_offset(world, f, u, v):
 
 # ----- a level's tiles near the drone -----
 
+# keep_near() places the tiles it keeps (by their roots, exactly deep down) to drop those out of the window only when
+# it keeps more than this many
+FEW_KEPT = 32
 # A kept level keeps at least the tiles within this many of its tiles of the point below (its biggest levels: their
 # window is a speck in a tile, and the drone stays in what's kept for long)
 MIN_KEEP = 0.25
@@ -664,8 +670,11 @@ class Level:
             # through again by every level under this one and every build (2026-11-14). Of those kept, the ones whose
             # map places are out of the window's reach go too, unless the window is a speck in a tile (MIN_KEEP: a
             # big level's places are only good to a ten-thousandth of a tile).
+            # A few kept (a giant level's: the window a speck in its tiles) are near whatever their places: placing
+            # each face's root exactly was a third of a deep endless plane's first settle (a thousand giant levels for
+            # the floor's tint, 2026-11-23)
             rows = np.flatnonzero(keep)
-            if len(rows):
+            if len(rows) > FEW_KEPT:
                 size = self.scale * faces.sigma_hi[self.face[rows]]
                 with np.errstate(over="ignore", invalid="ignore"):
                     places = self.map_points(world, faces, rows, cents[rows])
@@ -876,11 +885,14 @@ def kept_levels(world, faces, below, st, finest, center, need, lowest=None):
     if now:
         cut_below = below_at(center)
         window = lambda k: need(k) * SLACK + min(SLACK_TILES * surface_tile(world, faces, cut_below, k), 8.0 * need(k))
-        for k in now:
-            parents = {} if k == 0 else {k - 1: parent_of(world, faces, st, k)}
-            cut = cut_levels(world, faces, cut_below, parents, [(k, window(k))], center, need(0) * SLACK * 2.0)
-            with st.lock:
-                st.levels.update(cut)
+        # One cut for them all, each from the one cut before it or the kept one above it: its Centers worked out once
+        # (a cut a level, a deep endless plane's first settle worked them out a thousand times, 2026-11-23)
+        asked = set(now)
+        parents = {k - 1: parent_of(world, faces, st, k) for k in now if k > 0 and k - 1 not in asked}
+        cut = cut_levels(world, faces, cut_below, parents, [(k, window(k)) for k in now], center,
+                         need(0) * SLACK * 2.0)
+        with st.lock:
+            st.levels.update(cut)
 
 
 def let_go(st, finest):
@@ -1748,26 +1760,14 @@ def giant_tint(obj, world, faces, below, st, top, foot, sight):
             stop = walk[0]
     else:
         walk = None
-    centers = None
+    centers = [None]
     room = math.inf
     color, source = None, None
     for d in range(top - 1, stop - 1, -1):
-        answer = st.giant.get(d)
-        if answer is None or not covers(world, text, answer[1], foot, sight):
-            if periodic(faces):
-                found, clearance = inside_cell(obj, world, faces, below, d)
-            else:
-                if centers is None:
-                    centers = Centers(world, faces, below, foot, sight)
-                found, clearance = inside_bar(obj, world, faces, below, st.levels.get(d), centers, d)
-            answer = st.giant[d] = (found, Drawn(text, world.n, foot.copy(), clearance, 1.0))
-        # How much further the foot's sight can go before this answer stops holding
-        offset, scale = surface.transform(world, text, answer[1])
-        with np.errstate(over="ignore", invalid="ignore"):
-            left = scale * answer[1].window - float(np.linalg.norm(offset + scale * answer[1].center - foot)) - sight
-        room = min(room, left if math.isfinite(left) else 0.0)
-        if answer[0] is not None:
-            color, source = answer[0], d
+        found, left = giant_answer(obj, world, faces, below, st, d, foot, sight, centers)
+        room = min(room, left)
+        if found is not None:
+            color, source = found, d
             break
     else:
         if stop:
@@ -1783,9 +1783,39 @@ def giant_tint(obj, world, faces, below, st, top, foot, sight):
     return color
 
 
+def giant_answer(obj, world, faces, below, st, d, foot, sight, centers):
+    """A giant level d's answer for the point below (foot): (the color of its bar the point is in, or None; how much
+    further than the sight the nearest of its bars' edges is, map units), kept (st.giant: d -> (color, a Drawn whose
+    window is its clearance)) for as long as the sight round the drone stays clear of them. centers: [Centers or None],
+    made the first time a substitution level needs it."""
+    text = world.text()
+    if st.giant is None:
+        st.giant = {}
+    answer = st.giant.get(d)
+    if answer is None or not covers(world, text, answer[1], foot, sight):
+        if periodic(faces):
+            found, clearance = inside_cell(obj, world, faces, below, d)
+        else:
+            if centers[0] is None:
+                centers[0] = Centers(world, faces, below, foot, sight)
+            level = st.levels.get(d)
+            if level is not None and level.world_text != text:
+                # Kept loops ago: its scale and window in that world's map units, the clearance came out thousands of
+                # times too small or too big (2026-11-23: the endless Penrose plane's tint kept for a bar long left)
+                with st.lock:
+                    level = st.levels[d] = rebased(world, faces, level)
+            found, clearance = inside_bar(obj, world, faces, below, level, centers[0], d)
+        answer = st.giant[d] = (found, Drawn(text, world.n, foot.copy(), clearance, 1.0))
+    offset, scale = surface.transform(world, text, answer[1])
+    with np.errstate(over="ignore", invalid="ignore"):
+        left = scale * answer[1].window - float(np.linalg.norm(offset + scale * answer[1].center - foot)) - sight
+    return answer[0], (left if math.isfinite(left) else 0.0)
+
+
 def inside_bar(obj, world, faces, below, level, centers, d):
     """Whether the point below is in one of a giant level's bars (in its face's ideal coordinates, exact from the
-    anchor however deep), as (its color or None, how far it is from any of its level's bars' edges, map units at least)"""
+    anchor however deep), as (its color or None, how far it is from any of its level's bars' edges, map units at least).
+    The level is in this world (rebased())."""
     f = below.face
     if level is None or f not in centers.ideal or not len(level.face):
         return None, 0.0
@@ -1970,6 +2000,22 @@ def settle(obj, camera_world):
     if drawable > 0 and not periodic(faces):
         kept_levels(world, faces, below, st, drawable - 1, np.asarray(foot_soon), lambda d: plan(d)[1] + plan(d)[2],
                     lowest=drawable - 1)
+    # A giant level one of whose bars' edges is within sight is drawn as a coarse level, not left to the tint: tinted,
+    # it showed all or nothing (the whole floor its color with the drone in its bar, nothing with the drone beside
+    # it), and changed in one frame as the drone shrank it past the threshold, half the view a moment before
+    # (2026-11-23, the endless Penrose plane's dive: 70% seams at recenters). Drawn until the edge is EDGE_KEEP sights
+    # off, so a drone hovering by it doesn't switch it every tick.
+    giant_centers = [None]
+    for _ in range(EDGE_LEVELS if world.n >= FLOAT_N else 0):
+        d = drawable - 1
+        if d < 0:
+            break
+        if not periodic(faces) and d not in st.levels:
+            kept_levels(world, faces, below, st, d, np.asarray(foot_soon), lambda k: plan(k)[1] + plan(k)[2], lowest=d)
+        _found, left = giant_answer(obj, world, faces, below, st, d, foot, sight, giant_centers)
+        if left > (EDGE_KEEP if d in st.drawn else EDGE_DRAW) * sight:
+            break
+        drawable = d
     let_go(st, finest + 2)
 
     # How much of its colors level d shows (None: not drawn at all), in fade steps (asked some 60 times a tick)
