@@ -346,12 +346,6 @@ def make_operator(m, events, clock, snap, click_select=None, moved=None, out=Non
 
     original_loop_scale, original_wrap = Fly.loop_scale, Fly.wrap
 
-    def build_unbuilt(m):
-        # The add-on builds an endless map's tiling once, at the end of the tick (endless.deferred_builds()), and
-        # nothing draws before then in a real flight. A render in the middle of the tick needs it built now.
-        if getattr(m, "endless", None) and hasattr(m.endless, "build_unbuilt"):
-            m.endless.build_unbuilt()
-
     def seam(kind, text, before, after):
         change = block_change(before, after)
         events.append((clock.t, kind, f"{text}, seam {change:.1f}%"))
@@ -370,7 +364,6 @@ def make_operator(m, events, clock, snap, click_select=None, moved=None, out=Non
         endless_map = m.selected_obj if getattr(m, "endless", None) and m.endless.is_endless(m.selected_obj) else None
         anchor = m.endless.get_anchor(endless_map) if endless_map else None
         result = original_loop_scale(self, loop_factor)
-        build_unbuilt(m)
         bpy.context.view_layer.update()
         tell(loop_factor, camera, anchor_before=anchor)
         text = f"x{loop_factor:g}"
@@ -412,18 +405,6 @@ def make_operator(m, events, clock, snap, click_select=None, moved=None, out=Non
             bpy.context.view_layer.update()
             camera = m.drone_camera.matrix_world.translation
             steps = [m.endless.recenter_steps(obj, camera) for obj in self.endless_maps()]
-            # A substitution floor moves its origin by a vector of its ring instead (substitution.py): measured the
-            # same way, and the tracked point moved back with the drone, or the pilot steers toward where it was
-            substitution = getattr(m, "substitution", None)
-            vectors = ([substitution.recenter_vector(obj, camera) for obj in self.substitution_maps()]
-                       if substitution and hasattr(self, "substitution_maps") else [])
-            if any(v is not None for v in vectors):
-                before, start = snap(), camera.copy()
-                result = original_recenter(self)
-                bpy.context.view_layer.update()
-                tell(1.0, start)
-                seam("WRAP", f"substitution recenter by {next(v for v in vectors if v is not None)}", before, snap())
-                return result
             if not any(any(s) for s in steps):
                 # A sphere or surface map moves its anchor under the drone and the drone back by as much: a recenter
                 # can't be foreseen cheaply, so the view before it is the map as it was, moved with the drone (the
@@ -444,7 +425,6 @@ def make_operator(m, events, clock, snap, click_select=None, moved=None, out=Non
                 return result
             before, start = snap(), camera.copy()
             result = original_recenter(self)
-            build_unbuilt(m)
             bpy.context.view_layer.update()
             tell(1.0, start, steps=next(s for s in steps if any(s)))
             seam("WRAP", f"endless recenter by {steps} steps", before, snap())
@@ -452,47 +432,6 @@ def make_operator(m, events, clock, snap, click_select=None, moved=None, out=Non
 
         Fly.recenter_endless = recenter_endless
 
-    # A substitution floor's level objects are rebuilt at the end of a tick (substitution.settle()), which the pop
-    # check can't follow (it leaves them out). A rebuild or a decision must never change what's in view, so every
-    # settle that does anything (substitution.plan()) is rendered before and after, at the same camera, and a change
-    # is a pop.
-    if hasattr(Fly, "settle_substitutions") and hasattr(getattr(m, "substitution", None), "plan"):
-        original_settle = Fly.settle_substitutions
-
-        def settle_substitutions(self, camera_matrix):
-            maps = self.substitution_maps()
-            if not any(m.substitution.plan(obj, camera_matrix) for obj in maps):
-                return original_settle(self, camera_matrix)
-            state = [(obj[m.substitution.MADE_LEVEL], obj[m.substitution.MADE]) for obj in maps]
-            pools = [o for obj in maps for o in m.substitution.pool(obj)]
-            built = {o.name: (o.get("sub_level"), o.get("sub_center") and tuple(o["sub_center"])) for o in pools}
-            floors = [obj[m.substitution.PROPERTY].get("floor") for obj in maps]
-            tint = lambda: [tuple(round(c, 3) for c in f.get("sub_tint", ())) if f else None for f in floors]
-            tint_before = tint()
-            before = snap()
-            result = original_settle(self, camera_matrix)
-            after = snap()
-            change = block_change(before, after)
-            kind = "decide" if state != [(obj[m.substitution.MADE_LEVEL], obj[m.substitution.MADE]) for obj in maps] \
-                else "rebuild"
-            if change > SEAM_MIN:
-                # Which levels it rebuilt, freed or took on, for finding the culprit
-                changed = sorted((str(o.get("sub_level", "free")), str(built[o.name][0])) for o in pools
-                                 if (o.get("sub_level"), o.get("sub_center") and tuple(o["sub_center"])) != built[o.name])
-                events.append((clock.t, "POP", f"a substitution {kind} changed {change:.1f}% of the view "
-                                               f"(levels now/before: {changed[:12]}; floor tint {tint_before} -> "
-                                               f"{tint()})"))
-                # The state right after the first one, to look into (a copy: the flight goes on with the open file)
-                if out and not any(e[1] == "POP" for e in events[:-1]):
-                    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(out, "first_pop.blend"), copy=True)
-                if out:
-                    for name, pixels in (("before", before), ("after", after)):
-                        save_pixels(pixels, os.path.join(out, f"pop_{clock.t:07.3f}_{kind}_{name}.png"))
-            elif kind == "decide":
-                events.append((clock.t, "DECIDE", f"a level decided, change {change:.1f}%"))
-            return result
-
-        Fly.settle_substitutions = settle_substitutions
     return Fly()
 
 
@@ -590,10 +529,6 @@ def world_snapshot(m, scene, exclude=()):
         # match: their old matrix with their new points was a jumble, every rebuild a fake pop. What they draw follows
         # the map's eye, which is put back instead.
         if "fractal_pool" in obj:
-            continue
-        # The same for a substitution floor's level objects (substitution.py): rebuilt around the drone as it flies.
-        # Loops and moves of their origin are measured as seams, before and after, with what's really drawn.
-        if "substitution_pool" in obj:
             continue
         matrices[obj.name] = Matrix.Translation(offset) @ obj.matrix_world
         if "camera_push_scale" in obj:

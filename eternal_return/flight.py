@@ -17,7 +17,6 @@ from . import odometer
 from . import parts
 from . import physics
 from . import sphere
-from . import substitution
 from . import surface
 from . import velocity
 from . import controls
@@ -134,16 +133,16 @@ def anchored_map(obj):
 
 def loops_go_deeper(obj, scene):
     """Whether a loop about obj goes deeper into the same world, which only a self-similar one does: an endless map
-    (fractals too), a substitution floor, a sphere or surface map, or the scene's Mandelbrot floor, which loops with the
-    drone whatever is selected. Their loops relabel the world's meters (see odometer.py), so the HUD's Scale keeps
-    going down as the drone dives. A loop about any other object (a plain mesh, vr_drone_simple's, 2026-11-23) only
-    makes the drone the loop factor bigger next to the same mesh: there the drone's true scale is its Blender scale,
-    and flying back out it reads its normal size again, not the loops' 64^-n."""
+    (fractals too), a sphere or surface map (substitution floors too), or the scene's Mandelbrot floor, which loops
+    with the drone whatever is selected. Their loops relabel the world's meters (see odometer.py), so the HUD's Scale
+    keeps going down as the drone dives. A loop about any other object (a plain mesh, vr_drone_simple's, 2026-11-23)
+    only makes the drone the loop factor bigger next to the same mesh: there the drone's true scale is its Blender
+    scale, and flying back out it reads its normal size again, not the loops' 64^-n."""
     if mandelbrot.floor_object(scene) is not None:
         return True
     if not isinstance(obj, bpy.types.Object):
         return False
-    return (anchored_map(obj) is not None or endless.is_endless(obj) or substitution.is_substitution(obj))
+    return anchored_map(obj) is not None or endless.is_endless(obj)
 
 
 def scaling_config_text(text):
@@ -293,12 +292,10 @@ class FlightFeatures:
     @background.foreground
     def tick(self, context):
         """One step of flight, every 0.01 s on the modal timer: the controller read (the operator's read_controls()),
-        the drone flown (fly_tick()), and the propellers' sound updated. An endless map's tiling is built once, at the
-        end, however many times the step moved its anchor (endless.deferred_builds())."""
-        with endless.deferred_builds():
-            dict_controls_raw, controller_axes = self.read_controls()
-            self.fly_tick(context, dict_controls_raw, controller_axes)
-            self.update_sound(context)
+        the drone flown (fly_tick()), and the propellers' sound updated."""
+        dict_controls_raw, controller_axes = self.read_controls()
+        self.fly_tick(context, dict_controls_raw, controller_axes)
+        self.update_sound(context)
 
     def fly_tick(self, context, dict_controls_raw, controller_axes):
         """Everything a tick does with the controls (dict_controls_raw, each control's stick position as mapped from
@@ -432,7 +429,6 @@ class FlightFeatures:
             # Last, with the camera where the tick left it
             camera_matrix = get_camera_matrix()
             self.refresh_fractals(camera_matrix.translation, camera_matrix)
-            self.settle_substitutions(camera_matrix)
             self.settle_parts(camera_matrix)
 
 
@@ -1289,13 +1285,8 @@ class FlightFeatures:
         # An endless map is the same after a loop about its origin wherever the drone is, since its anchor scales about
         # it too, exactly (see endless.py), so it's always that. About an endless fractal's closest point (mesh mode),
         # the anchor wouldn't have scaled with the drone.
-        if endless.is_endless(selected_obj) or substitution.is_substitution(selected_obj):
+        if endless.is_endless(selected_obj):
             loop_origin = selected_obj.matrix_world.translation.copy()
-            # A substitution floor's levels are its rule's factor apart (phi, or 8.47 for Darb-i Imam), so it loops by
-            # the power of that nearest the configured factor, exactly, the drone and the floor alike: the factor is a
-            # float32 property, and a config or the UI may round it (1.61803, which stopped the flight, 2026-11-05)
-            if substitution.is_substitution(selected_obj):
-                loop_factor = substitution.exact_factor(selected_obj, loop_factor)
         else:
             loop_origin = get_camera_matrix().translation + self.get_selected_object_diff_vector(selected_obj)
 
@@ -1306,11 +1297,6 @@ class FlightFeatures:
         # A Mandelbrot floor isn't self-similar, so the view stays the same through a loop only if the floor scales
         # with the drone, about the same point (see mandelbrot.py)
         mandelbrot.loop(bpy.context.scene, loop_factor, loop_origin)
-
-        # A substitution floor relabels its levels, exactly: each level's tiles keep their places in its own units,
-        # so there's no remainder
-        if substitution.is_substitution(selected_obj):
-            substitution.loop(selected_obj, loop_factor)
 
         # An endless map's anchor (where its origin is in the endless lattice) scales with the loop too, exactly, and
         # the drone takes what's left over scaling it down
@@ -1349,14 +1335,6 @@ class FlightFeatures:
                     move = obj.matrix_world.to_3x3() @ endless.along_axes(obj, [-s * step for s in steps])
                     fractal.refresh(obj, camera_before + move)
                 self.remeasure_selected_obj(rescale_reference=False)
-        # A substitution floor moves its origin by an exact vector of its ring, and the drone back by it
-        for obj in self.substitution_maps():
-            v = substitution.recenter_vector(obj, get_camera_matrix().translation)
-            if v is not None:
-                move = substitution.recenter(obj, v)
-                with self.jump():
-                    drone_obj.matrix_world = substitution.drone_move(obj, -move) @ drone_obj.matrix_world
-                self.remeasure_selected_obj(rescale_reference=False)
         # A sphere or surface map moves its anchor to the lattice point under the drone, and the drone back by the move
         # of the map's origin (sphere.recenter_move(), surface.recenter_move())
         for obj in self.sphere_maps():
@@ -1372,18 +1350,6 @@ class FlightFeatures:
         if selected_obj_bool:
             return [selected_obj] if anchored_map(selected_obj) is not None else []
         return sphere.sphere_objects(bpy.context.scene) + surface.surface_objects(bpy.context.scene)
-
-    def substitution_maps(self):
-        """The substitution floors to keep the drone near the origin of and build around it: the selected object if
-        it's one, or with nothing selected, every one in the scene, like endless_maps()"""
-        if selected_obj_bool:
-            return [selected_obj] if substitution.is_substitution(selected_obj) else []
-        return [obj for obj in bpy.context.scene.objects if substitution.is_substitution(obj)]
-
-    def settle_substitutions(self, camera_matrix):
-        """At the end of the tick, with the camera where it ended up: build what the substitution floors need"""
-        for obj in self.substitution_maps():
-            substitution.settle(obj, camera_matrix)
 
     def settle_parts(self, camera_matrix):
         """At the end of the tick, with the camera where it ended up: the surface maps' floors (surface.settle()), and
@@ -1756,10 +1722,6 @@ class FlightFeatures:
                 if fractal.is_fractal(obj):
                     fractal.settle(obj, drone_camera.matrix_world)
                     fractal.follow(obj, drone_camera.matrix_world)
-                if substitution.is_substitution(obj):
-                    # Only what's out of date: the file's levels were built for where the drone was left (forcing a
-                    # rebuild of every level froze the start for 1.5 s)
-                    substitution.settle(obj, drone_camera.matrix_world)
                 surface.settle(obj, drone_camera.matrix_world.translation)
                 if parts.is_parts(obj):
                     parts.settle(obj, drone_camera.matrix_world.translation)
