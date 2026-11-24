@@ -202,17 +202,14 @@ class Faces:
         inverse[:, 0, 0] = 1.0
         inverse[:, 0, 1] = -self.ev_x / self.ev_y
         inverse[:, 1, 1] = 1.0 / self.ev_y
-        ju = top.eu[:, None, :] + gv[None, :, None] * top.w[:, None, :]
-        jv = top.ev[:, None, :] + gu[None, :, None] * top.w[:, None, :]
+        ju, jv = top.chart.jacobians(np.arange(count)[:, None], gu[None], gv[None])
         jacobian = np.stack([ju, jv], axis=-1) @ inverse[:, None]                   # (F, grid, 3, 2)
         values = np.linalg.svd(jacobian, compute_uv=False)
         self.sigma = 0.9 * values[..., -1].min(axis=1)
         self.sigma_hi = 1.1 * values[..., 0].max(axis=1)
         # Each face's corners' middle and how far its corners are from it (mesh units), for which faces a window reaches
         quad = (top.sides == 4)[:, None, None]
-        corners = np.stack([top.P0, top.P0 + top.eu, top.P0 + top.eu + top.ev + top.w, top.P0 + top.ev], axis=1)
-        triangle = np.stack([top.P0, top.P0 + top.eu, top.P0 + top.ev, top.P0 + top.ev], axis=1)
-        corners = np.where(quad, corners, triangle)
+        corners = top.chart.corners()
         self.middle = np.where(quad[:, 0], corners.mean(axis=1), corners[:, :3].mean(axis=1))
         self.radius = np.linalg.norm(corners - self.middle[:, None], axis=2).max(axis=1)
 
@@ -329,16 +326,10 @@ def faces_of(obj, top):
 
 def exact_offset(world, f, u, v):
     """The face's point at exact (u, v) (Q(sqrt 5) pairs) from the anchor's, in map units, as floats"""
-    top = world.topology
-    p0, eu, ev, tw = top.exact[f]
-    uv = q_mul(u, v)
     ax, ad = world.anchor_point()
-    scale = 1 << top.E
     out = []
-    for k in range(3):
-        coordinate = q_add(q_add((Fraction(p0[k]), Fraction(0)), q_scale(u, eu[k])),
-                           q_add(q_scale(v, ev[k]), q_scale(uv, tw[k])))
-        coordinate = q_sub(q_scale(coordinate, Fraction(1, scale)), (Fraction(ax[k], ad), Fraction(0)))
+    for k, coordinate in enumerate(world.topology.chart.point_q5(f, u, v)):
+        coordinate = q_sub(coordinate, (Fraction(ax[k], ad), Fraction(0)))
         out.append(float_sqrt(coordinate[0] * (1 << world.n), coordinate[1] * (1 << world.n), 5))
     return world.rho * np.array(out)
 
@@ -411,7 +402,7 @@ class Centers:
                     continue
                 # The step solved in the mesh's units (map units over rho 2^n, as many as there are: 2^n alone is past
                 # a float's range 1024 levels down, an endless plane's from the start), then scaled exactly
-                jacobian = np.stack([top.eu[g] + float(ve) * top.w[g], top.ev[g] + float(ue) * top.w[g]], axis=1)
+                jacobian = np.stack(top.chart.jacobians(g, float(ue), float(ve)), axis=1)
                 step = np.linalg.lstsq(jacobian, gap, rcond=None)[0]
                 unit = Fraction(world.rho) * (1 << n)
                 self.uv[g] = (ue + Fraction(float(step[0])) / unit, ve + Fraction(float(step[1])) / unit)
@@ -530,7 +521,7 @@ class Level:
                 du, dv = faces.uv_float(f, x, y)
                 ur, vr = du * scale, dv * scale
                 top = world.topology
-                mesh = top.P0[f] + ur * top.eu[f] + vr * top.ev[f] + ur * vr * top.w[f]
+                mesh = top.chart.points(f, ur, vr)
                 root[1] = world.rho * math.ldexp(1.0, world.n) * (mesh - surface.d_float(world.anchor_point()))
                 root[2], root[3] = ur, vr
             else:
@@ -576,9 +567,8 @@ class Level:
         rel = self.rel[rows]
         dv0 = rel[:, 1] / sin
         du0 = rel[:, 0] - dv0 * cos
-        w = top.w[face]
-        axes = np.stack([top.eu[face] + (vr + small * dv0)[:, None] * w,
-                         top.ev[face] + (ur + small * du0)[:, None] * w], axis=2)          # (t, 3, 2)
+        w = top.chart.mixed(face)
+        axes = np.stack(top.chart.jacobians(face, ur + small * du0, vr + small * dv0), axis=2)      # (t, 3, 2)
         B = to_uv @ turn
         return self.map_points(world, faces, rows, rel), self.scale * (axes @ B), (self.scale * small) * w, B
 
@@ -592,10 +582,7 @@ class Level:
         shape = lambda a: a.reshape(a.shape[:1] + extra)
         dv = ideal[..., 1] / shape(faces.ev_y[face])
         du = ideal[..., 0] - dv * shape(faces.ev_x[face])
-        small = self.rule.shrink_float(self.d)
-        vec = lambda a: a[face].reshape((len(face),) + extra + (3,))
-        twist = shape(ur) * dv + shape(vr) * du + small * du * dv
-        offset = du[..., None] * vec(top.eu) + dv[..., None] * vec(top.ev) + twist[..., None] * vec(top.w)
+        offset = top.chart.step(face, ur, vr, du, dv, self.rule.shrink_float(self.d))
         return place.reshape((len(face),) + extra + (3,)) + self.scale * offset
 
     def reroot(self, limit=COEF_LIMIT):
@@ -1102,7 +1089,7 @@ def corner_edges(top):
     its first corner), kept on the topology"""
     found = getattr(top, "_corner_edges", None)
     if found is None:
-        edge = np.sqrt(np.linalg.norm(top.eu, axis=1) * np.linalg.norm(top.ev, axis=1))
+        edge = top.chart.edge_sizes()
         found = np.array([float(np.mean([edge[f] for f, _c in vf])) if vf else 0.0 for vf in top.vertex_faces])
         top._corner_edges = found
     return found
@@ -1190,7 +1177,7 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
     rule = level.rule
     rots = level.rot.astype(np.int64)
     top = world.topology
-    twist = np.linalg.norm(top.w, axis=1)
+    twist = top.chart.twist_norms()
     small = rule.shrink_float(level.d)
     for kind in rule.kinds:
         for mirror in (False, True):

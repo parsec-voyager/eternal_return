@@ -116,7 +116,8 @@ class CubeChart:
         half = Fraction(M, 2)
         top = self.topology()
         for f, loop in enumerate(top._corners):
-            p0, eu, ev = top.P0[f], top.eu[f], top.ev[f]
+            p0 = top.positions[loop[0]]
+            eu, ev = top.positions[loop[1]] - p0, top.positions[loop[-1]] - p0
             axis = int(np.flatnonzero(np.abs(np.cross(eu, ev)) > 0.5)[0])
             if cells[axis] != half * int(round(p0[axis])):
                 continue

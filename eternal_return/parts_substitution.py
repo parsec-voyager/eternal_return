@@ -209,9 +209,7 @@ def copy_normals(world, faces, level, rows, ideal):
     u = np.clip(ur[:, None] + small * du, 0.0, 1.0)
     v = np.clip(vr[:, None] + small * dv, 0.0, 1.0)
     fu = np.repeat(face, k)
-    ju = top.eu[fu] + v.reshape(-1)[:, None] * top.w[fu]
-    jv = top.ev[fu] + u.reshape(-1)[:, None] * top.w[fu]
-    normals = np.cross(ju, jv)
+    normals = np.cross(*top.chart.jacobians(fu, u.reshape(-1), v.reshape(-1)))
     normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-300)
     return normals
 
@@ -606,12 +604,7 @@ def exact_point(world, faces, level, f, rel):
     (a, b) pairs of Fractions, a + b sqrt 5"""
     z = RING.add(level.roots[f][0], tuple(int(c) for c in rel))
     u, v = faces.uv_exact(f, z, level.d)
-    top = world.topology
-    p0, eu, ev, tw = top.exact[f]
-    uv = q_mul(u, v)
-    scale = Fraction(1, 1 << top.E)
-    return [q_scale(q_add(q_add((Fraction(p0[k]), Fraction(0)), q_scale(u, eu[k])),
-                                q_add(q_scale(v, ev[k]), q_scale(uv, tw[k]))), scale) for k in range(3)]
+    return world.topology.chart.point_q5(f, u, v)
 
 
 def camera_exact(world, camera):
@@ -760,9 +753,7 @@ class SubstitutionLattice(surface.MeshLattice):
 
     @staticmethod
     def edge(world):
-        top = world.topology
-        f = world.face
-        return math.sqrt(float(np.linalg.norm(top.eu[f])) * float(np.linalg.norm(top.ev[f])))
+        return float(world.topology.chart.edge_sizes()[world.face])
 
     def center(self, world, below, level):
         return world.rho * below.foot

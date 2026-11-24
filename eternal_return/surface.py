@@ -59,12 +59,14 @@ try:
     from . import schedule
     from . import sphere
     from . import tiling
+    from .cyclotomic import q_add, q_mul, q_scale
 except ImportError:          # tests import it by itself
     import loops
     import parts
     import schedule
     import sphere
     import tiling
+    from cyclotomic import q_add, q_mul, q_scale
 
 PROPERTY = "surface"
 STATE = "surface_state"
@@ -239,6 +241,134 @@ def d_fractions(a):
 
 # ----- the mesh -----
 
+class BilinearChart:
+    """The shape a mesh's faces stand for, as the lattice sees it: each face a bilinear patch through its corners (a
+    triangle the plane through its three), P0 + u eu + v ev + u v w with P0 its corner 0, eu and ev its sides from
+    there (to corners 1 and -1) and the twist w = P0 - P1 + P2 - P3 (0 for a triangle). As floats and exactly, as ints
+    over 2^E (the float32 coordinates as they are). Everything the engine asks of the shape is asked here (phase 6 of
+    the unified engines plan, 2026-11-23): its points, in bulk in floats (points(), jacobians()) and exactly (point(),
+    point_q5()), how a level's points step from one placed exactly (frame(), step(): exact for a bilinear patch), its
+    normals, its corners, and bounds (a ball round each face, middle and radius; sigma_lo and sigma_hi, how far a step
+    of a face's parameters moves its point at least and at most; edge_sizes(); twist_norms()). A smooth chart (a
+    subdivision surface's limit) answers the same questions.
+
+    Each method does its arithmetic in the order its callers did when they did it themselves, so the floats come out
+    the same to the last bit."""
+
+    def __init__(self, positions, faces, sides):
+        first, second, third, last = (positions[[c[k] for c in faces]] for k in (0, 1, 2, -1))
+        self.sides = sides
+        self.P0 = first
+        self.eu = second - first
+        self.ev = last - first
+        self.w = np.where((sides == 4)[:, None], first - second + third - last, 0.0)
+        # A ball round each face (its corners' mean, the furthest corner): a patch lies in its corners' hull, so no point
+        # of it is nearer a point than that point's distance to the middle less the radius (Below.global_face())
+        self.middle = np.where((sides == 4)[:, None], (first + second + third + last) / 4.0,
+                               (first + second + third) / 3.0)
+        self.radius = np.max(np.stack([np.linalg.norm(corner - self.middle, axis=1)
+                                       for corner in (first, second, third, last)]), axis=0)
+        self._eu, self._ev, self._w = self.eu.tolist(), self.ev.tolist(), self.w.tolist()
+        # Exactly: every coordinate is an int over 2^E
+        ratios = [v.as_integer_ratio() for v in positions.ravel().tolist()]
+        self.E = max(den.bit_length() - 1 for _, den in ratios)
+        ints = [num << (self.E - (den.bit_length() - 1)) for num, den in ratios]
+        vi = [tuple(ints[3 * k:3 * k + 3]) for k in range(len(positions))]
+        sub = lambda p, q: tuple(x - y for x, y in zip(p, q))
+        self.exact = []
+        for c in faces:
+            p0, p1, p2, pl = vi[c[0]], vi[c[1]], vi[c[2]], vi[c[-1]]
+            twist = tuple(a - b + c_ - d for a, b, c_, d in zip(p0, p1, p2, pl)) if len(c) == 4 else (0, 0, 0)
+            self.exact.append((p0, sub(p1, p0), sub(pl, p0), twist))
+        # A step of 1 in u or v moves a face's point by its Jacobian's columns, eu + v w and ev + u w: their singular
+        # values on a grid of SIGMA_GRID x SIGMA_GRID over the face, give or take what the Jacobian can change between
+        # the grid's points (by |w| times the way to the nearest, Weyl's inequality), bound it over the face (a
+        # triangle's is the same everywhere)
+        grid = np.linspace(0.0, 1.0, SIGMA_GRID)
+        u, v = (g.ravel() for g in np.meshgrid(grid, grid, indexing="ij"))
+        ju, jv = self.jacobians(np.arange(len(faces))[:, None], u[None], v[None])
+        # A 3 x 2 matrix's singular values, from its 2 x 2 Gram matrix's eigenvalues (closed form)
+        a, b, c = np.sum(ju * ju, -1), np.sum(ju * jv, -1), np.sum(jv * jv, -1)
+        mean, gap = (a + c) / 2.0, np.sqrt(((a - c) / 2.0) ** 2 + b * b)
+        small, big = np.sqrt(np.maximum(mean - gap, 0.0)), np.sqrt(mean + gap)
+        slack = np.linalg.norm(self.w, axis=1) * math.sqrt(0.5) / (SIGMA_GRID - 1)
+        self.sigma_lo = np.maximum(small.min(axis=1) - slack, 0.0)
+        self.sigma_hi = big.max(axis=1) + slack
+
+    # ----- in floats -----
+
+    def points(self, f, u, v):
+        """Faces f's points at (u, v) (arrays that broadcast together; f indexes the faces), (..., 3)"""
+        u, v = np.asarray(u, dtype=float), np.asarray(v, dtype=float)
+        return self.P0[f] + u[..., None] * self.eu[f] + v[..., None] * self.ev[f] + (u * v)[..., None] * self.w[f]
+
+    def jacobians(self, f, u, v):
+        """The columns of faces f's Jacobians at (u, v): how a step of u, and of v, moves the point, ((..., 3), (..., 3))"""
+        u, v = np.asarray(u, dtype=float), np.asarray(v, dtype=float)
+        return self.eu[f] + v[..., None] * self.w[f], self.ev[f] + u[..., None] * self.w[f]
+
+    def mixed(self, f):
+        """Faces f's mixed second derivatives (d2 / du dv): a bilinear patch's twist, the same all over it"""
+        return self.w[f]
+
+    def normal(self, f, u, v):
+        """Face f's unit normal at (u, v), as three floats (a point at a time: plain floats are quicker)"""
+        (ex, ey, ez), (fx, fy, fz), (wx, wy, wz) = self._eu[f], self._ev[f], self._w[f]
+        ax, ay, az = ex + v * wx, ey + v * wy, ez + v * wz
+        bx, by, bz = fx + u * wx, fy + u * wy, fz + u * wz
+        nx, ny, nz = ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx
+        length = math.sqrt(nx * nx + ny * ny + nz * nz) or 1e-300
+        return nx / length, ny / length, nz / length
+
+    def frame(self, f, I, J, M):
+        """Face f's patch about its point (I, J) of a level of M cells across: (a, b, w), so its point (I + i, J + j)
+        is i a + j b + i j w / M from there (the mesh's units over M), exactly for a bilinear patch: the Jacobian's
+        columns there in the level's cells, and the twist"""
+        return self.eu[f] + quotient(J, M) * self.w[f], self.ev[f] + quotient(I, M) * self.w[f], self.w[f]
+
+    def step(self, f, ur, vr, du, dv, small):
+        """Faces f's points at (ur + small du, vr + small dv) from their points at (ur, vr), over small: ur and vr (t,),
+        du and dv (t, ...), as (t, ..., 3). Exact for a bilinear patch: du eu + dv ev + (ur dv + vr du + small du dv) w."""
+        extra = (1,) * (du.ndim - 1)
+        shape = lambda a: a.reshape(a.shape[:1] + extra)
+        vec = lambda a: a[f].reshape((len(f),) + extra + (3,))
+        twist = shape(ur) * dv + shape(vr) * du + small * du * dv
+        return du[..., None] * vec(self.eu) + dv[..., None] * vec(self.ev) + twist[..., None] * vec(self.w)
+
+    def corners(self):
+        """Each face's corner points (F, 4, 3), in its loop's order, a triangle's last twice"""
+        quad = (self.sides == 4)[:, None, None]
+        P0, eu, ev, w = self.P0, self.eu, self.ev, self.w
+        corners = np.stack([P0, P0 + eu, P0 + eu + ev + w, P0 + ev], axis=1)
+        triangle = np.stack([P0, P0 + eu, P0 + ev, P0 + ev], axis=1)
+        return np.where(quad, corners, triangle)
+
+    def edge_sizes(self):
+        """Each face's size: the geometric mean of its sides' lengths at its corner 0"""
+        return np.sqrt(np.linalg.norm(self.eu, axis=1) * np.linalg.norm(self.ev, axis=1))
+
+    def twist_norms(self):
+        """How much each face's patch bends at most (its mixed second derivative's length)"""
+        return np.linalg.norm(self.w, axis=1)
+
+    # ----- exactly -----
+
+    def point(self, f, I, J, M):
+        """Face f's point (I, J) of a level of M cells across, exactly: (ints, d), the place in the mesh's units being
+        the ints over d. (I M eu + J M ev + I J w + M^2 P0) / (M^2 2^E)."""
+        p0, eu, ev, w = self.exact[f]
+        MM, IM, JM, IJ = M * M, I * M, J * M, I * J
+        return tuple(MM * p + IM * x + JM * y + IJ * z for p, x, y, z in zip(p0, eu, ev, w)), MM << self.E
+
+    def point_q5(self, f, u, v):
+        """Face f's point at (u, v), Q(sqrt 5) pairs (a, b: a + b sqrt 5), exactly: three such pairs, the mesh's units"""
+        p0, eu, ev, tw = self.exact[f]
+        uv = q_mul(u, v)
+        scale = Fraction(1, 1 << self.E)
+        return [q_scale(q_add(q_add((Fraction(p0[k]), Fraction(0)), q_scale(u, eu[k])),
+                              q_add(q_scale(v, ev[k]), q_scale(uv, tw[k]))), scale) for k in range(3)]
+
+
 class Topology:
     """A mesh of quads and triangles as the lattice sees it: each face's corners (vertex indices, in its loop's order)
     and their places (float64, the float32 coordinates as they are), its number of sides, each face's sides' edges (and
@@ -291,48 +421,17 @@ class Topology:
         self.vertex_edges = [sorted({self._side_edge[f][c] for f, c in vf}
                                     | {self._side_edge[f][(c - 1) % len(faces[f])] for f, c in vf})
                              for vf in self.vertex_faces]
-        first, second, third, last = (self.positions[[c[k] for c in faces]] for k in (0, 1, 2, -1))
-        self.P0 = first
-        self.eu = second - first
-        self.ev = last - first
-        self.w = np.where((self.sides == 4)[:, None], first - second + third - last, 0.0)
-        # A ball round each face (its corners' mean, the furthest corner): a patch lies in its corners' hull, so no point
-        # of it is nearer a point than that point's distance to the middle less the radius (Below.global_face())
-        self.middle = np.where((self.sides == 4)[:, None], (first + second + third + last) / 4.0,
-                               (first + second + third) / 3.0)
-        self.radius = np.max(np.stack([np.linalg.norm(corner - self.middle, axis=1)
-                                       for corner in (first, second, third, last)]), axis=0)
+        # The shape over the faces: its points, exactly and in floats, and the bounds the lattice's walks use (a ball
+        # round each face, middle and radius, and how far a step of a face's parameters moves its point at least and
+        # at most, sigma_lo and sigma_hi)
+        self.chart = BilinearChart(self.positions, faces, self.sides)
+        self.E = self.chart.E
         # As plain lists too, for the lookups made a point at a time
         self._corners = [list(c) for c in faces]
         self._sides = self.sides.tolist()
-        self._eu, self._ev, self._w = self.eu.tolist(), self.ev.tolist(), self.w.tolist()
+        self.middle, self.radius = self.chart.middle, self.chart.radius
+        self.sigma_lo, self.sigma_hi = self.chart.sigma_lo, self.chart.sigma_hi
         self._levels = {}
-        # Exactly: every coordinate is an int over 2^E
-        ratios = [v.as_integer_ratio() for v in self.positions.ravel().tolist()]
-        self.E = max(den.bit_length() - 1 for _, den in ratios)
-        ints = [num << (self.E - (den.bit_length() - 1)) for num, den in ratios]
-        vi = [tuple(ints[3 * k:3 * k + 3]) for k in range(count)]
-        sub = lambda p, q: tuple(x - y for x, y in zip(p, q))
-        self.exact = []
-        for c in faces:
-            p0, p1, p2, pl = vi[c[0]], vi[c[1]], vi[c[2]], vi[c[-1]]
-            twist = tuple(a - b + c_ - d for a, b, c_, d in zip(p0, p1, p2, pl)) if len(c) == 4 else (0, 0, 0)
-            self.exact.append((p0, sub(p1, p0), sub(pl, p0), twist))
-        # A step of 1 in u or v moves a face's point by its Jacobian's columns, eu + v w and ev + u w: their singular
-        # values on a grid of SIGMA_GRID x SIGMA_GRID over the face, give or take what the Jacobian can change between
-        # the grid's points (by |w| times the way to the nearest, Weyl's inequality), bound it over the face (a
-        # triangle's is the same everywhere)
-        grid = np.linspace(0.0, 1.0, SIGMA_GRID)
-        u, v = (g.ravel() for g in np.meshgrid(grid, grid, indexing="ij"))
-        ju = self.eu[:, None, :] + v[None, :, None] * self.w[:, None, :]
-        jv = self.ev[:, None, :] + u[None, :, None] * self.w[:, None, :]
-        # A 3 x 2 matrix's singular values, from its 2 x 2 Gram matrix's eigenvalues (closed form)
-        a, b, c = np.sum(ju * ju, -1), np.sum(ju * jv, -1), np.sum(jv * jv, -1)
-        mean, gap = (a + c) / 2.0, np.sqrt(((a - c) / 2.0) ** 2 + b * b)
-        small, big = np.sqrt(np.maximum(mean - gap, 0.0)), np.sqrt(mean + gap)
-        slack = np.linalg.norm(self.w, axis=1) * math.sqrt(0.5) / (SIGMA_GRID - 1)
-        self.sigma_lo = np.maximum(small.min(axis=1) - slack, 0.0)
-        self.sigma_hi = big.max(axis=1) + slack
         self.colors = np.tile(np.asarray(color, dtype=np.float64), (F, 1))
         attribute = mesh.attributes.get("Col") if mesh is not None else None
         if attribute is not None and attribute.data_type in ('FLOAT_COLOR', 'BYTE_COLOR'):
@@ -465,9 +564,7 @@ class Topology:
     def point(self, f, I, J, M):
         """Face f's point (I, J) of a level of M cells across, exactly: (ints, d), the place in the mesh's units being
         the ints over d. (I M eu + J M ev + I J w + M^2 P0) / (M^2 2^E)."""
-        p0, eu, ev, w = self.exact[f]
-        MM, IM, JM, IJ = M * M, I * M, J * M, I * J
-        return tuple(MM * p + IM * x + JM * y + IJ * z for p, x, y, z in zip(p0, eu, ev, w)), MM << self.E
+        return self.chart.point(f, I, J, M)
 
     def key_point(self, key, M):
         f, I, J = self.params(key, M)[0]
@@ -475,20 +572,15 @@ class Topology:
 
     def frame(self, f, I, J, M):
         """The columns of face f's Jacobian at (I, J) of a level of M cells across: how a step of its parameters, in
-        the level's cells, moves its point (the mesh's units over M), (a, b); and the twist w"""
-        return self.eu[f] + quotient(J, M) * self.w[f], self.ev[f] + quotient(I, M) * self.w[f], self.w[f]
+        the level's cells, moves its point (the mesh's units over M), (a, b); and the twist w (BilinearChart.frame())"""
+        return self.chart.frame(f, I, J, M)
 
     def _normal(self, f, u, v):
         """Face f's normal at (u, v), as three floats"""
-        (ex, ey, ez), (fx, fy, fz), (wx, wy, wz) = self._eu[f], self._ev[f], self._w[f]
-        ax, ay, az = ex + v * wx, ey + v * wy, ez + v * wz
-        bx, by, bz = fx + u * wx, fy + u * wy, fz + u * wz
-        nx, ny, nz = ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx
-        length = math.sqrt(nx * nx + ny * ny + nz * nz) or 1e-300
-        return nx / length, ny / length, nz / length
+        return self.chart.normal(f, u, v)
 
     def normal(self, f, u, v):
-        return np.array(self._normal(f, u, v))
+        return np.array(self.chart.normal(f, u, v))
 
     def key_normal(self, key, M):
         """The surface's normal at a key: its face's, or on an edge or a corner, the mean of its faces'. Where those
@@ -549,10 +641,9 @@ class LevelLattice:
         grid = np.arange(M + 1)
         I, J = np.meshgrid(grid, grid, indexing="ij")
         u, v = I / M, J / M
-        places = (top.P0[:, None, None] + u[None, ..., None] * top.eu[:, None, None]
-                  + v[None, ..., None] * top.ev[:, None, None] + (u * v)[None, ..., None] * top.w[:, None, None])
-        normals = np.cross(top.eu[:, None, None] + v[None, ..., None] * top.w[:, None, None],
-                           top.ev[:, None, None] + u[None, ..., None] * top.w[:, None, None])
+        every = np.arange(F)[:, None, None]
+        places = top.chart.points(every, u[None], v[None])
+        normals = np.cross(*top.chart.jacobians(every, u[None], v[None]))
         normals /= np.maximum(np.linalg.norm(normals, axis=-1, keepdims=True), 1e-300)
         # Every face's grid of (M + 1) x (M + 1), a triangle's points the ones with I + J <= M (-1: not a point): each
         # key's row is its place in the order the keys first come up in, face by face. All faces' keys at once
@@ -975,14 +1066,13 @@ class Below:
     def nearest_face(top, faces, s):
         """Among faces (indices), the one whose blend comes nearest the mesh point s, and (u, v) there, by a few
         Gauss-Newton steps from each one's middle"""
-        P0, eu, ev, w = top.P0[faces], top.eu[faces], top.ev[faces], top.w[faces]
+        chart = top.chart
         triangle = top.sides[faces] == 3
         u = np.where(triangle, 1.0 / 3.0, 0.5)
         v = np.where(triangle, 1.0 / 3.0, 0.5)
         for _ in range(4):
-            X = P0 + u[:, None] * eu + v[:, None] * ev + (u * v)[:, None] * w
-            ju = eu + v[:, None] * w
-            jv = ev + u[:, None] * w
+            X = chart.points(faces, u, v)
+            ju, jv = chart.jacobians(faces, u, v)
             r = s - X
             # The normal equations of the 2 x 2 least squares step, per face
             a11, a12, a22 = np.sum(ju * ju, 1), np.sum(ju * jv, 1), np.sum(jv * jv, 1)
@@ -993,7 +1083,7 @@ class Below:
             # Back into a triangle across its long side
             over = np.where(triangle, np.maximum(u + v - 1.0, 0.0), 0.0) / 2.0
             u, v = np.clip(u - over, 0.0, 1.0), np.clip(v - over, 0.0, 1.0)
-        X = P0 + u[:, None] * eu + v[:, None] * ev + (u * v)[:, None] * w
+        X = chart.points(faces, u, v)
         k = int(np.argmin(np.sum((X - s) ** 2, axis=1)))
         return int(faces[k]), (float(u[k]), float(v[k]))
 
@@ -1653,7 +1743,7 @@ class LocalLattice:
             places.append(pos[ii, jj])
             uvals = quotient(IR, M) + dI[ii] * inv_m
             vvals = quotient(JR, M) + dJ[jj] * inv_m
-            nrm = np.cross(top.eu[f] + vvals[:, None] * top.w[f], top.ev[f] + uvals[:, None] * top.w[f])
+            nrm = np.cross(*top.chart.jacobians(f, uvals, vvals))
             normals.append(nrm / np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-300))
             rows[ii, jj] = np.arange(start, start + len(ii))
             for kk in range(start, start + len(ii)):
