@@ -426,7 +426,7 @@ def make_operator(m, events, clock, snap, click_select=None, moved=None, out=Non
                 bpy.context.view_layer.update()
                 shift = m.drone_camera.matrix_world.translation - start
                 before = snap_world((({name: Matrix.Translation(shift) @ matrix
-                                       for name, matrix in old_world[0].items()}), old_world[1], old_world[2]))
+                                       for name, matrix in old_world[0].items()}), *old_world[1:]))
                 tell(1.0, start)
                 seam("WRAP", f"anchor recenter by {tuple(round(c, 3) for c in shift)}", before, snap())
                 return result
@@ -524,14 +524,25 @@ def enclosure(m, scene, depsgraph):
     return behind / len(ENCLOSURE_DIRECTIONS)
 
 
+def mesh_token(obj):
+    """What tells a mesh written again from the one before: its vertex count and first vertex (a rebuild writes its
+    points from its new middle)"""
+    data = obj.data if obj.type == 'MESH' else None
+    if data is None:
+        return None
+    return len(data.vertices), tuple(data.vertices[0].co) if len(data.vertices) else ()
+
+
 def world_snapshot(m, scene, exclude=()):
     """Everything about the map that can change during a flight, in the map's own coordinates (undoing Keep Drone at
     Origin): each object's matrix_world, and the float inputs of its geometry nodes modifiers. A layer a map pushes
     away from the drone camera along its rays (custom property "camera_push_scale": its scale without the push, like
-    the strip floor's layers) moves with the camera without changing the view, so it's kept unpushed, with its push."""
+    the strip floor's layers) moves with the camera without changing the view, so it's kept unpushed, with its push.
+    And each mesh's mesh_token(): a mesh written again since can't be put back, so neither is its matrix
+    (render_with_world())."""
     offset = Vector(scene.drone_rig.world_offset)
     drone_parts = {m.drone_obj, m.drone_camera, m.clip_end_obj, *exclude}
-    matrices, inputs, pushes = {}, {}, {}
+    matrices, inputs, pushes, tokens = {}, {}, {}, {}
     eye = offset + m.drone_camera.matrix_world.translation
     for obj in scene.objects:
         if obj in drone_parts:
@@ -542,6 +553,7 @@ def world_snapshot(m, scene, exclude=()):
         if "fractal_pool" in obj:
             continue
         matrices[obj.name] = Matrix.Translation(offset) @ obj.matrix_world
+        tokens[obj.name] = mesh_token(obj)
         # (A pushed object its drivers haven't placed yet reads a scale of 0: left as it is)
         if "camera_push_scale" in obj and obj.scale.x and obj["camera_push_scale"]:
             pushes[obj.name] = obj.scale.x / obj["camera_push_scale"]
@@ -552,7 +564,7 @@ def world_snapshot(m, scene, exclude=()):
                     if item.item_type == 'SOCKET' and item.in_out == 'INPUT' and item.socket_type == 'NodeSocketFloat':
                         socket = getattr(modifier.properties.inputs, item.identifier)
                         inputs[obj.name, modifier.name, item.identifier] = socket.value
-    return matrices, inputs, pushes
+    return matrices, inputs, pushes, tokens
 
 
 def scaled_about(point, factor):
@@ -562,13 +574,15 @@ def scaled_about(point, factor):
 
 def world_differences(old, new, limit=6):
     """What changed between two world_snapshots: objects moved, turned or scaled, and modifier inputs, for POP events."""
-    (old_matrices, old_inputs, _old_pushes), (new_matrices, new_inputs, _new_pushes) = old, new
+    (old_matrices, old_inputs, _old_pushes, old_tokens), (new_matrices, new_inputs, _new_pushes, new_tokens) = old, new
     changed = []
     for name, matrix in new_matrices.items():
         before = old_matrices.get(name)
         if before is None:
             changed.append(f"{name} appeared")
             continue
+        if old_tokens.get(name) != new_tokens.get(name):
+            changed.append(f"{name} rebuilt")
         moved = matrix.translation - before.translation
         if moved.length > 1e-9 * max(1.0, matrix.translation.length):
             far = abs(moved.z) > 1e5        # the map's patches hide by moving 1e7 down
@@ -585,12 +599,16 @@ def world_differences(old, new, limit=6):
 def render_with_world(m, scene, snapshot, path):
     """Render the current camera view with the map put back to an earlier world_snapshot, then restore it. Comparing
     that with the frame as rendered separates what the map did (a level switching, a patch moving) from what the
-    camera did (moving, passing close to something)."""
-    matrices, inputs, pushes = snapshot
+    camera did (moving, passing close to something). An object whose mesh was written again since stays as it is: its
+    new points are from its new middle, which it's moved to (a floor's rebuild round the camera), and its old matrix
+    with them drew the floor a frame's rebuild away, a slab across the view (every smooth torus rebuild a fake pop,
+    2026-11-24)."""
+    matrices, inputs, pushes, tokens = snapshot
     offset = Vector(scene.drone_rig.world_offset)
     # The pushed layers, pushed as they were, but about the camera now, as the map's drivers do
     eye = offset + m.drone_camera.matrix_world.translation
-    objects = [scene.objects[name] for name in matrices if name in scene.objects]
+    objects = [scene.objects[name] for name in matrices
+               if name in scene.objects and mesh_token(scene.objects[name]) == tokens.get(name)]
     saved_basis = {obj.name: obj.matrix_basis.copy() for obj in objects}
     saved_inputs = {}
     muted = []

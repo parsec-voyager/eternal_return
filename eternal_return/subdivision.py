@@ -2383,6 +2383,25 @@ class SubdivisionChart:
             self._corner_points = out
         return self._corner_points
 
+    def limit_masks(self):
+        """Each vertex's limit point as a blend of the mesh's points, its Shape's mask (from a face of its): (rows,
+        columns, weights), row x's limit point being the sum of its weights times the points of its columns, the rows
+        in order (each vertex's entries together; a vertex on no face has none). For layout.fit(), which moves the
+        points so the limit points land where it wants them."""
+        rows, columns, weights = [], [], []
+        for x, faces in enumerate(self._faces_of):
+            if not faces:
+                continue
+            f = min(faces)
+            mesh, t = self._root(f, exact=False)
+            shape, order = shape_of(mesh, t)
+            mask = shape.limits()[list(self._loops[f]).index(x)]
+            used = np.flatnonzero(mask)
+            rows.extend([x] * len(used))
+            columns.extend(order[i] for i in used.tolist())
+            weights.extend(mask[used].tolist())
+        return np.array(rows, dtype=np.int64), np.array(columns, dtype=np.int64), np.array(weights)
+
     def edge_sizes(self):
         """Each face's size: the geometric mean of its sides' lengths at its corner 0 (as chords)"""
         corners = self.corners()
