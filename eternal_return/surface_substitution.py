@@ -704,12 +704,17 @@ def near_faces(world, faces, center, window):
 
 
 def level_zero(world, faces, centers, center, window):
-    """Level 0: the tiles of the faces near the point below (Faces.tiles), each face's root its first tile's place"""
+    """Level 0: the tiles of the faces near the point below (Faces.tiles), each face's root its first tile's place; on
+    a curved chart its corner 0 (its own frame's origin), always on the face: a girih tile's place is often a face or
+    more off its pieces, and a point off its face is the surface's beyond its sides (relocated()), which around a cone
+    corner is two places, one by each way round (the smooth Darb torus's tiles placed 1.3 off, 2026-11-24). A root is a
+    point, the same one at every level below (LAMBDA times its coefficients)."""
     level = Level(0, world, center, faces.rule)
     face, kind, rot, mirror, coef = [], [], [], [], []
+    on_face = not world.topology.chart.flat_cells
     for f in (near_faces(world, faces, center, window) if world.n < FLOAT_N else centers.uv):
         tiles = faces.tiles[f]
-        root = tiles[0][3]
+        root = RING.zero if on_face else tiles[0][3]
         level.roots[f] = [root, None, 0.0, 0.0]
         for k, r, m, tau in tiles:
             face.append(f)
@@ -1266,9 +1271,23 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
                             if bent[:, 0].any() or bent[:, 2].any():
                                 out += (du * du)[..., None] * bent[:, None, 0, :]
                                 out += (dv * dv)[..., None] * bent[:, None, 2, :]
+                    if not top.chart.flat_cells:
+                        # A curved patch's expansion checked against the surface at the prototile's outermost
+                        # corners: a tile it strays from by more than its bars may (BAR_FLATNESS of the distance) goes a
+                        # polygon at a time, its corners the surface's own (by a corner where 16 triangles meet, the
+                        # smooth Darb torus's, a tile's expansion missed the surface by most of a tile, 2026-11-24)
+                        probe = outermost(flat)
+                        ideal_probe = level.rel[sel[whole]][:, None, :] + flat[probe] @ turn.transpose(0, 2, 1)
+                        true = level.map_points(world, faces, sel[whole], ideal_probe)
+                        with np.errstate(over="ignore", invalid="ignore"):
+                            off = np.linalg.norm(true - corners[:, probe], axis=2).max(axis=1)
+                            good = off <= BAR_FLATNESS * distance[pick][whole]
+                        if not good.all():
+                            corners, inside = corners[good], inside[good]
+                            whole[np.flatnonzero(whole)[~good]] = False
                     with np.errstate(over="ignore", invalid="ignore"):
                         inside = np.linalg.norm(inside - center, axis=2) <= window
-                    corners = corners.reshape(len(place), len(polygons), polygons.shape[1], 3)
+                    corners = corners.reshape(len(corners), len(polygons), polygons.shape[1], 3)
                     for size, columns in by_size.items():
                         kept = inside[:, columns]
                         if kept.any():
@@ -1330,6 +1349,21 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
 # A bar piece strays from its face by at most this share of its distance from the camera: with the floor's own
 # (surface.FLOOR_FLATNESS) well inside the push between layers (PUSH_STEP relative, 0.6%)
 BAR_FLATNESS = 2e-3
+
+
+_outermost = {}
+
+
+def outermost(flat):
+    """A prototile's outermost bar corners (indices into flat, (n, 2)): the furthest out in eight directions"""
+    flat = np.asarray(flat, dtype=float)
+    key = (flat.shape, flat.tobytes())
+    found = _outermost.get(key)
+    if found is None:
+        angles = np.arange(8) * (np.pi / 4.0)
+        found = _outermost[key] = (np.unique(np.argmax(flat @ np.stack([np.cos(angles), np.sin(angles)]), axis=0))
+                                   if len(flat) else np.zeros(0, np.int64))
+    return found
 # A level whose bars were cut into pieces is built again once the drone's height is this share of what it was: its
 # pieces were cut for that distance, and nearer, their sag grew past the push between layers, so a coarse bar poked
 # up through finer levels until its next build (2026-11-13, harness dive on the icosphere: 4.5% of pixels at once)
@@ -1879,10 +1913,10 @@ def inside_cell(obj, world, faces, below, d):
     return (outline_color(obj) if strip else paint_colors(obj, d, 1.0)[paint]), clearance
 
 
-def clear_point(obj, x, y):
-    """Whether the point (x, y) of a square map's cell (its own units) is clear of the motif's pieces (surface.retop():
-    a made-up level puts none under the drone)"""
-    polygons, counts = motif_of(obj).bars[0]
+def clear_point(obj, x, y, kind=0):
+    """Whether the point (x, y) of a cell map's cell of kind (its own units: surface_cells' SQUARE, or a triangle
+    face's UP half) is clear of the motif's pieces (surface.retop(): a made-up level puts none under the drone)"""
+    polygons, counts = motif_of(obj).bars[kind]
     here = np.array([x, y])
     for size in np.unique(counts).tolist():
         c = polygons[np.flatnonzero(counts == size), :size] - here

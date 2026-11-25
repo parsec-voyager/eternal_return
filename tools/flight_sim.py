@@ -535,7 +535,8 @@ def world_snapshot(m, scene, exclude=()):
         if "fractal_pool" in obj:
             continue
         matrices[obj.name] = Matrix.Translation(offset) @ obj.matrix_world
-        if "camera_push_scale" in obj:
+        # (A pushed object its drivers haven't placed yet reads a scale of 0: left as it is)
+        if "camera_push_scale" in obj and obj.scale.x and obj["camera_push_scale"]:
             pushes[obj.name] = obj.scale.x / obj["camera_push_scale"]
             matrices[obj.name] = scaled_about(eye, 1.0 / pushes[obj.name]) @ matrices[obj.name]
         for modifier in obj.modifiers:

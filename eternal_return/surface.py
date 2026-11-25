@@ -1321,7 +1321,7 @@ def at_top(obj):
 
 # ----- an endless plane: no top -----
 
-# An endless plane (the "endless" setting) is a map whose mesh is one square face, the plane's top cell: whatever's
+# An endless plane (the "endless" setting) is a map whose mesh is one face, square or triangle, the plane's top cell: whatever's
 # biggest so far. It's kept at least TOP_ROOM levels over the drone's (n, the depth of the units), and when a climb would
 # leave it fewer, it's re-topped: RETOP_LEVELS levels are made up above it (retop()). Re-topping forgets every build,
 # a pop, so the top is made up so far above (some 500 climbing loops) that a flight never gets there: the exact
@@ -1338,11 +1338,16 @@ def retop(obj, world, levels, clear=None):
     """Make up levels levels above an endless plane's top: each time, the face (the top cell) becomes one of the k x k
     cells of a cell k times its size, a digit along each side, so the world goes a level deeper (n + 1) and the anchor's
     whole numbers shift by where the old top is in the new: the same place, the same units, nothing on screen moves
-    (endless.py's digit stack, as the surface's anchor). The digits are random (seeded by the setting and the depth, so
-    a map makes up the same ones every time) among those that keep the anchor's point at least 1/(2k) of the new top's
-    side in from its sides (there's always one: the one nearest its middle), and of those, the ones where it's clear
-    of the motif's pieces at that level (clear(x, y): the point's place in the new top's cell; none clear, any), so
-    a made-up level never puts its lines or frames under the drone, and climbing never comes back to the top's edge.
+    (endless.py's digit stack, as the surface's anchor). A triangle top becomes one of the new one's upright triangles
+    where one keeps the anchor's point in from its sides, else one turned half round (which turns the lattice under it:
+    the same triangles, but its up cells are the new top's down ones, colored so; a top made up at a corner of the old
+    one is never in from the sides at k = 2 in an upright one, and every level after kept the anchor at a corner, the
+    climb a column of corner posts, 2026-11-24). The digits are random (seeded by the setting and the depth, so a map
+    makes up the same ones every time) among those that keep the anchor's point at least 1/(2k) of the new top's side
+    in from its sides (a square's has one: the one nearest its middle; a triangle's 1/(4k), failing which its furthest
+    in), and of those, the ones where it's clear of the motif's pieces at that level
+    (clear(x, y): the point's place in the new top's cell; none clear, any), so a made-up level never puts its lines or
+    frames under the drone, and climbing never comes back to the top's edge.
 
     Every level is relabeled (level d of the old top is d + 1 of the new), so whatever's built for the map is
     forgotten and built again: one hitch every RETOP_LEVELS - TOP_ROOM levels of climbing."""
@@ -1353,8 +1358,11 @@ def retop(obj, world, levels, clear=None):
             from . import surface_substitution
         except ImportError:
             import surface_substitution
-        clear = lambda x, y: surface_substitution.clear_point(obj, x, y)
+        # (The top cell's kind: a square, or a triangle face's upright half of one, surface_cells.UP)
+        cell = 0 if int(world.topology._sides[0]) == 4 else 1
+        clear = lambda x, y: surface_substitution.clear_point(obj, x, y, cell)
     k, top = world.k, world.topology
+    sides = int(top._sides[0])
     N = world.N
     kind, a, b, c = world.A
     if kind == FACE:
@@ -1362,19 +1370,34 @@ def retop(obj, world, levels, clear=None):
     else:
         I, J = top.param_in(world.A, N, 0)
     n = world.n
-    least = Fraction(1, 2 * k)
+    # (A triangle's upright cells halve two of its point's three barycentric coordinates each level: 1/(2k) is seldom
+    # there to be had, so 1/(4k), which leaves a choice)
+    least = Fraction(1, 2 * k) if sides == 4 else Fraction(1, 4 * k)
     for _ in range(levels):
         rng = random.Random(f"{seed}:{n}")
         x, y = Fraction(I, N), Fraction(J, N)
-        options = []
+        # (room: the point's distances from the new top's sides, least first; the anchor's new whole numbers; its
+        # place in the new top; whether the old top is turned half round)
+        candidates = []
         for dx in range(k):
             for dy in range(k):
-                u, v = (dx + x) / k, (dy + y) / k
-                if min(u, 1 - u, v, 1 - v) >= least:
-                    options.append((dx, dy, u, v))
-        clear_ones = [o for o in options if clear is None or clear(float(o[2]), float(o[3]))]
-        dx, dy, _u, _v = rng.choice(clear_ones or options)
-        I, J = dx * N + I, dy * N + J
+                if sides == 4:
+                    u, v = (dx + x) / k, (dy + y) / k
+                    candidates.append((sorted((u, 1 - u, v, 1 - v)), dx * N + I, dy * N + J, u, v, False))
+                    continue
+                if dx + dy <= k - 1:
+                    u, v = (dx + x) / k, (dy + y) / k
+                    candidates.append((sorted((u, v, 1 - u - v)), dx * N + I, dy * N + J, u, v, False))
+                if dx + dy <= k - 2:
+                    # A triangle turned half round, its corner 0 at the far corner of square (dx, dy)
+                    u, v = (dx + 1 - x) / k, (dy + 1 - y) / k
+                    candidates.append((sorted((u, v, 1 - u - v)), (dx + 1) * N - I, (dy + 1) * N - J, u, v, True))
+        roomy = [o for o in candidates if o[0][0] >= least]
+        # (None in from the sides, the one furthest in by its next nearest side too: from a corner every one is on a
+        # side, and the corner, chosen first, stayed one)
+        options = [o for o in roomy if not o[5]] or roomy or [max(candidates, key=lambda o: o[0])]
+        clear_ones = [o for o in options if clear is None or clear(float(o[3]), float(o[4]))]
+        _room, I, J, _u, _v, _turned = rng.choice(clear_ones or options)
         N *= k
         n += 1
     world.__init__(n, (FACE, 0, I, J), world.rho, top, k)
