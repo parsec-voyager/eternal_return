@@ -118,7 +118,7 @@ COST_FIRST = 0.02
 FRESH = 0.25
 # At most this many tiles in a kept level (the rest dropped, the furthest first): a guard, not a design limit
 MAX_TILES = 60000
-PUSH_STEP = 100000.0 / 2 ** 24
+PUSH_STEP = surface.PUSH_STEP
 # Levels whose tiles are small enough that radius of them fit in the sight are "plain": drawn within radius of their
 # tiles. Bigger ones are "coarse": drawn out to the sight, cut to a box round the drone (their bars reach far past
 # it), and the first whose bar holds the whole box covers everything coarser (coarse_level()). (Until 2026-11-14 a level
@@ -1158,10 +1158,44 @@ def motif_bars(motif, kind, mirror):
     return found
 
 
-def level_bars(world, faces, level, motifs, center, window, box=False, camera=None, outline_within=0.0, height=0.0):
+def push_rooms(frames, camera, distance, height, drop=0.0):
+    """For tiles' frames (Level.tile_frames()): how far each one's bars may stand off its surface toward the camera
+    (surface.push_room(), for the camera's height over its plane, its distance at most, and the drone's height), and
+    how fast a straight piece across it rises off the surface toward the camera, the most it can (map units over level
+    units squared: a piece L long stands L^2 / 4 times that off it at its middle), and the camera's height over it
+    that room is for: the room for a camera come down by drop, to cut for, and the camera's height over it as it is,
+    to measure what's cut by. The rise is the greatest of the tile's curvature form's values along the side the
+    camera's on, or
+    0 where the surface curves away from the camera every way (a dome's, a tube's outside, seen from outside): there a
+    piece sags away, under the layer over it."""
+    place, G, bent, B = frames
+    normal = np.cross(G[:, :, 0], G[:, :, 1])
+    normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-300)
+    toward = np.einsum("tk,tk->t", normal, camera - place)
+    normal *= np.where(toward < 0.0, -1.0, 1.0)[:, None]
+    # The surface's rise toward the camera, in (du, dv): q_uu du^2 + q_uv du dv + q_vv dv^2 (bent's rows), then in the
+    # prototile's own units, (du, dv) = B p
+    q = np.einsum("tk,tik->ti", normal, bent)
+    form = np.empty((len(q), 2, 2))
+    form[:, 0, 0], form[:, 1, 1] = q[:, 0], q[:, 2]
+    form[:, 0, 1] = form[:, 1, 0] = q[:, 1] / 2.0
+    form = B.transpose(0, 2, 1) @ form @ B
+    a, b, c = form[:, 0, 0], form[:, 0, 1], form[:, 1, 1]
+    rise = np.maximum((a + c) / 2.0 + np.sqrt(((a - c) / 2.0) ** 2 + b * b), 0.0)
+    room = surface.push_room(np.maximum(np.abs(toward) - drop, 0.0), distance, height)
+    over = surface.push_room(np.abs(toward), distance, height) / (surface.PUSH_SHARE * surface.PUSH_STEP)
+    return room, rise, over
+
+
+def level_bars(world, faces, level, motifs, center, window, box=False, camera=None, outline_within=0.0, height=0.0,
+               cover_reach=None):
     """Level's bars within window of center, as polygons of map points (this world: level must be of it): (corners
     (m, 3), sizes, codes (CORE, STRIP, BLEND), whether any bar was cut into pieces: its geometry then holds for a
-    camera this near, SPLIT_FOLLOW). Each kind and mirroring's bars for all its tiles at once. With box, every bar
+    camera this near, SPLIT_FOLLOW; and the lift, how far the camera may come down before a piece stands off toward it
+    by more than the layer over it has room for, halve_off()'s; and with box and cover_reach, the code of a bar that
+    holds the disk of that radius round center, as cut to the box before it's cut into pieces, or None: built_level()'s
+    cover, which pieces cut short for a camera low over a bend no longer showed, so every coarser level was drawn and
+    built too). Each kind and mirroring's bars for all its tiles at once. With box, every bar
     that comes within the box of half side window round center, cut to it (a coarse level's).
 
     motifs = (outlined, cores): the tiles within outline_within of the camera (map units) are drawn outlined, the rest
@@ -1181,8 +1215,12 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
     polygon's face and working its corners out one polygon at a time took three times as long (2026-11-14)."""
     out_corners, out_sizes, out_codes = [], [], []
     split_any = False
+    # How far the camera could come down before one of the pieces stood off toward it by more than the layer over it
+    # has room for (halve_off()'s lift): -inf where none was measured
+    lift = -math.inf
+    cover = None
     if not len(level.face):
-        return np.zeros((0, 3)), np.zeros(0, np.int64), np.zeros(0, np.int8), False
+        return np.zeros((0, 3)), np.zeros(0, np.int64), np.zeros(0, np.int8), False, lift, cover
     outlined, cores = motifs
     rule = level.rule
     rots = level.rot.astype(np.int64)
@@ -1232,6 +1270,30 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
                 bend = twist[level.face[every]] * level.scale * small
                 longest = np.where(bend > 0.0, np.sqrt(BAR_FLATNESS * distance / bend), math.inf)
                 step = 4.0 * distance / (level.scale * np.maximum(faces.sigma[level.face[every]], 1e-300))
+            # ... and short enough to stand toward the camera by no more than the layer over this one has room for
+            # (surface.push_room()), from each tile's frame (its Taylor expansion's, which the tiles drawn whole are
+            # placed by below too)
+            frames = None
+            rise = over = None
+            allowed = BAR_FLATNESS * distance
+            if camera is not None and (bend > 0.0).any():
+                frames = level.tile_frames(world, faces, every, rule.orient[rots[every], int(mirror)])
+                # Cut for the drone come down to height (its SPLIT_AHEAD): a build cut for where it is was due
+                # again as soon as it came down at all, and the worker threads did nothing else (2026-11-25)
+                room, rise, over = push_rooms(frames, camera, distance, height, height * (1.0 / SPLIT_AHEAD - 1.0))
+                with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+                    by_push = np.where(rise > 0.0, np.sqrt(4.0 * room / rise), math.inf)
+                    # Out along a bar the room grows with the camera's height over the surface, not with its distance
+                    # (split_along()'s bands, each twice as long as the last, were for the distance's room: a coarse
+                    # bar deep down, the surface under it nearly flat, was cut for the drone's height near the camera
+                    # and was 40,000 heights long pieces near the horizon, standing 10 heights up, 2026-11-25). Where
+                    # the surface rises toward the camera, the camera's height over it grows by that rise: room for
+                    # pieces twice as long (four times the height) once the rise is three times the height here
+                    push_step = np.sqrt(3.0 * over / np.where(rise > 0.0, rise, 1.0))
+                binds = by_push < longest
+                longest = np.where(binds, by_push, longest)
+                step = np.where(binds, np.minimum(step, push_step), step)
+                allowed = np.minimum(allowed, room)
             seen = np.zeros((len(every), 2))
             span = max(bar_span(motif, kind, mirror) for _pick, motif in groups)
             if camera is not None and (longest < span).any():
@@ -1258,7 +1320,14 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
                     whole &= ~crossing[pick]
                 if whole.any():
                     turn = rule.orient[rots[sel[whole]], int(mirror)]            # (t, 2, 2)
-                    place, G, bent, B = level.tile_frames(world, faces, sel[whole], turn)
+                    if frames is not None:
+                        rows_whole = np.flatnonzero(pick)[whole]
+                        place, G, bent, B = (part[rows_whole] for part in frames)
+                        # A whole tile's longest bar rises rise span^2 / 4 off the surface toward the camera at most
+                        lift = max(lift, float(np.max(rise[rows_whole] * bar_span(motif, kind, mirror) ** 2 / 4.0
+                                                      / (surface.PUSH_SHARE * PUSH_STEP) - over[rows_whole])))
+                    else:
+                        place, G, bent, B = level.tile_frames(world, faces, sel[whole], turn)
                     turned = G.transpose(0, 2, 1)
                     corners = place[:, None, :] + flat @ turned                  # (t, p k, 3)
                     inside = place[:, None, :] + middles @ turned                # (t, p, 3)
@@ -1281,7 +1350,8 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
                         true = level.map_points(world, faces, sel[whole], ideal_probe)
                         with np.errstate(over="ignore", invalid="ignore"):
                             off = np.linalg.norm(true - corners[:, probe], axis=2).max(axis=1)
-                            good = off <= BAR_FLATNESS * distance[pick][whole]
+                            good = off <= (allowed[pick][whole] if frames is not None
+                                           else BAR_FLATNESS * distance[pick][whole])
                         if not good.all():
                             corners, inside = corners[good], inside[good]
                             whole[np.flatnonzero(whole)[~good]] = False
@@ -1326,10 +1396,33 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
                     ideal, row_counts, keep = box_cut(level, world, faces, rows, ideal, row_counts, center, window)
                     rows, row_codes, row_long = rows[keep], row_codes[keep], row_long[keep]
                     row_seen, row_step = row_seen[keep], row_step[keep]
+                    if cover_reach is not None and cover is None and len(rows):
+                        # Only a bar at least the disk's width across (in level units, at its face's greatest
+                        # stretch) can hold it: the rest aren't placed for it (all of them took 0.4 s a coarse build)
+                        valid = np.arange(ideal.shape[1]) < row_counts[:, None]
+                        lo = np.where(valid[..., None], ideal, np.inf).min(axis=1)
+                        hi = np.where(valid[..., None], ideal, -np.inf).max(axis=1)
+                        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+                            wide = (hi - lo).min(axis=1) >= 2.0 * cover_reach / (
+                                level.scale * np.maximum(faces.sigma_hi[level.face[rows]], 1e-300))
+                        wide = np.flatnonzero(wide)
+                        if len(wide):
+                            cut = level.map_points(world, faces, rows[wide], np.nan_to_num(ideal[wide]))
+                            cover = covering(cut[valid[wide]], row_counts[wide], row_codes[wide], center, cover_reach)
                 corners2, row_counts, parent = split_along(ideal, row_counts, row_long, row_seen, row_step, span)
                 split_any |= len(parent) > len(ideal)
                 rows, row_codes = rows[parent], row_codes[parent]
                 places2 = level.map_points(world, faces, rows, corners2)           # (r, k, 3)
+                if frames is not None:
+                    # Measured: a coarse level's pieces (its tiles as big as faces, curving every way across one),
+                    # and a plain level's where its tile curves up toward the camera (elsewhere they sag away)
+                    rising = np.zeros(len(level.face), dtype=bool)
+                    rising[every] = rise > 0.0
+                    corners2, row_counts, rows, row_codes, places2, halved, piece_lift = halve_off(
+                        world, faces, level, corners2, row_counts, rows, row_codes, places2, camera, height,
+                        np.ones(len(rows), dtype=bool) if box else rising[rows])
+                    split_any |= halved
+                    lift = max(lift, piece_lift)
                 for size in np.unique(row_counts):
                     which = row_counts == size
                     block, flags = places2[which, :size], row_codes[which]
@@ -1342,8 +1435,9 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
                         out_sizes.append(np.full(len(block), size, dtype=np.int64))
                         out_codes.append(flags)
     if not out_corners:
-        return np.zeros((0, 3)), np.zeros(0, np.int64), np.zeros(0, np.int8), split_any
-    return np.concatenate(out_corners), np.concatenate(out_sizes), np.concatenate(out_codes), split_any
+        return np.zeros((0, 3)), np.zeros(0, np.int64), np.zeros(0, np.int8), split_any, lift, cover
+    return (np.concatenate(out_corners), np.concatenate(out_sizes), np.concatenate(out_codes), split_any, lift,
+            cover)
 
 
 # A bar piece strays from its face by at most this share of its distance from the camera: with the floor's own
@@ -1464,6 +1558,108 @@ def bar_span(motif, kind, mirror):
     return found
 
 
+# halve_off(): at most this many rounds of halving, and this many times the pieces it was given
+HALVINGS = 16
+HALVED_MOST = 4
+
+
+def halve_off(world, faces, level, ideal, counts, rows, codes, places, camera, height, check):
+    """Bar pieces (ideal (r, k, 2) level units, counts, tiles rows, codes, places (r, k, 3) map points: on the surface
+    at their corners, flat between) halved across their long way, again and again, while a piece's middle stands off
+    the surface toward the camera by more than the layer over it has room for there (surface.push_room()), or strays
+    either way by more than BAR_FLATNESS of its distance: the pieces as measured, not as their tile's curvature and
+    split_along()'s bands foretold them (a coarse level's tiles are as big as faces, its pieces cut by one point's
+    curvature and at most MAX_PIECES a band: on the knot's inner bend, deep down, pieces 10 drone heights off the
+    surface were left, 2026-11-25). Only the pieces check says are measured; each round, only the halves it made.
+    Returns them, whether any was
+    halved, and the lift: how far below the camera now a camera would see one of them stand off by more than its room
+    (the most any piece's rise over its room exceeds, as camera heights: negative, it holds that much lower)."""
+    if not check.any():
+        return ideal, counts, rows, codes, places, False, -math.inf
+    unchecked = np.flatnonzero(~check)
+    done = [(ideal[unchecked], counts[unchecked], rows[unchecked], codes[unchecked], places[unchecked])]
+    check = np.flatnonzero(check)
+    ideal, counts, rows, codes, places = ideal[check], counts[check], rows[check], codes[check], places[check]
+    given = len(counts) + len(unchecked)
+    halved = False
+    lift = -math.inf
+    for _ in range(HALVINGS):
+        width = ideal.shape[1]
+        valid = np.arange(width) < counts[:, None]
+        weight = valid / np.maximum(counts, 1)[:, None]
+        flat = np.einsum("rk,rkj->rj", weight, np.nan_to_num(places))
+        middle = np.einsum("rk,rkj->rj", weight, np.nan_to_num(ideal))
+        true = level.map_points(world, faces, rows, middle[:, None, :])[:, 0]
+        # The piece's normal (Newell's), toward the camera
+        c = np.where(valid[..., None], np.nan_to_num(places) - flat[:, None, :], 0.0)
+        nxt = tiling.take_corners(c, (np.arange(width) + 1) % np.maximum(counts, 1)[:, None])
+        normal = np.cross(c, nxt).sum(axis=1)
+        normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-300)
+        toward = np.einsum("rj,rj->r", normal, camera - true)
+        off = flat - true
+        up = np.einsum("rj,rj->r", off, normal) * np.where(toward < 0.0, -1.0, 1.0)
+        with np.errstate(over="ignore", invalid="ignore"):
+            distance = np.maximum(np.linalg.norm(true - camera, axis=1), height)
+            # Cut for the drone come down to height (SPLIT_AHEAD of it), measured for it as it is
+            room = surface.push_room(np.abs(toward), distance, height)
+            bad = ((up > surface.push_room(np.maximum(np.abs(toward) - height * (1.0 / SPLIT_AHEAD - 1.0), 0.0),
+                                           distance, height))
+                   | (np.linalg.norm(off, axis=1) > BAR_FLATNESS * distance))
+        bad &= counts >= 3
+        # At most HALVED_MOST times the pieces it was given, the worst halved first
+        pieces = sum(len(part[1]) for part in done) + len(counts)
+        if bad.sum() > max(HALVED_MOST * given - pieces, 0):
+            worst = np.flatnonzero(bad)[np.argsort(-(up / room)[bad])[:max(HALVED_MOST * given - pieces, 0)]]
+            bad = np.zeros_like(bad)
+            bad[worst] = True
+        keep = np.flatnonzero(~bad)
+        if len(keep):
+            # The camera's height over a piece's plane falls as much as the camera comes down (at most): the margin
+            # each kept piece has, as how far it may come down
+            lift = max(lift, float(np.max((up[keep] - room[keep]) / (surface.PUSH_SHARE * PUSH_STEP))))
+        done.append((ideal[keep], counts[keep], rows[keep], codes[keep], places[keep]))
+        if not bad.any():
+            ideal = None
+            break
+        halved = True
+        # Across its longest side's direction, at the middle of its reach along it
+        sel = np.flatnonzero(bad)
+        pts, cnt = ideal[sel], counts[sel]
+        following = tiling.take_corners(pts, (np.arange(width) + 1) % np.maximum(cnt, 1)[:, None])
+        edge = following - pts
+        ok = np.arange(width) < cnt[:, None]
+        length = np.where(ok, np.hypot(edge[..., 0], edge[..., 1]), -1.0)
+        direction = edge[np.arange(len(sel)), np.argmax(length, axis=1)]
+        direction /= np.maximum(np.hypot(direction[:, 0], direction[:, 1]), 1e-300)[:, None]
+        along = np.where(ok, np.einsum("rkj,rj->rk", pts, direction), np.nan)
+        cut = (np.nanmin(along, axis=1) + np.nanmax(along, axis=1)) / 2.0
+        low, low_n = tiling.clip_half_planes(pts, cnt, direction, cut)
+        high, high_n = tiling.clip_half_planes(pts, cnt, -direction, -cut)
+        new = max(low.shape[1], high.shape[1])
+        ideal = np.full((2 * len(sel), new, 2), np.nan)
+        ideal[:len(sel), :low.shape[1]] = low
+        ideal[len(sel):, :high.shape[1]] = high
+        counts = np.concatenate([low_n, high_n])
+        rows, codes = np.tile(rows[sel], 2), np.tile(codes[sel], 2)
+        good = counts >= 3
+        ideal, counts, rows, codes = ideal[good], counts[good], rows[good], codes[good]
+        places = level.map_points(world, faces, rows, np.nan_to_num(ideal))
+    if ideal is not None:
+        # Still off after HALVINGS rounds: kept as they are
+        done.append((ideal, counts, rows, codes, places))
+    width = max(part[0].shape[1] for part in done)
+    total = sum(len(part[1]) for part in done)
+    out_ideal = np.full((total, width, 2), np.nan)
+    out_places = np.full((total, width, 3), np.nan)
+    at = 0
+    for part_ideal, part_counts, _rows, _codes, part_places in done:
+        out_ideal[at:at + len(part_counts), :part_ideal.shape[1]] = part_ideal
+        out_places[at:at + len(part_counts), :part_places.shape[1]] = part_places
+        at += len(part_counts)
+    return (out_ideal, np.concatenate([part[1] for part in done]), np.concatenate([part[2] for part in done]),
+            np.concatenate([part[3] for part in done]), out_places, halved, lift)
+
+
 def split_along(corners, counts, spacing, seen, step, span=math.inf):
     """Convex polygons (r, k, 2) cut across their long way (their longest side's direction) into pieces spacing long
     (r,) where the camera is nearest (seen (r, 2), its point in their units, taken onto that direction), each band
@@ -1570,12 +1766,14 @@ class Drawn(schedule.Window):
     (cover: its code, level_bars(), or None), and whether it came out empty. placed: placed()'s."""
 
     def __init__(self, world_text, n, center, window, shown, cover=None, edges=None, coarse=False, camera=None,
-                 split_height=None, empty=False, sizes=None):
+                 split_height=None, empty=False, sizes=None, holds=None, urgent=None):
         super().__init__(world_text, n, center, window)
         self.shown = shown
         self.cover, self.edges, self.coarse = cover, edges, coarse
         self.empty = empty           # built coarse, with no bar in its box (stale())
         self.split_height = split_height     # the drone's height if bars were cut into pieces for it (map units then)
+        self.holds = holds           # the drone's height its pieces stay under the levels over it down to (holds())
+        self.urgent = urgent         # the drone's height below which it's as wrong as missing (urgent_below())
         self.camera = camera         # where the camera was, if outlines were drawn for it (map units then), else None
         self.sizes = sizes           # each face's corners, for recoloring
         self.corner_codes = None     # each corner's code, the first time it's recolored
@@ -1614,6 +1812,10 @@ def stale(world, text, record, foot, window, camera, outline_within, height, rea
     if record.overbuilt(window if reach_wanted is None else reach_wanted, scale):
         return True
     if record.split_height is not None and height < SPLIT_FOLLOW * scale * record.split_height:
+        return True
+    if record.holds is not None and height < scale * record.holds:
+        return True
+    if record.urgent is not None and height < scale * record.urgent:
         return True
     if height >= outline_within:
         return False
@@ -2093,6 +2295,9 @@ def settle(obj, camera_world):
         if entry is None:
             return stake, 0.0
         _text, center, _camera, scale = placed(world, text, entry[1])
+        if entry[1].urgent is not None and height_then < scale * entry[1].urgent:
+            # Drawn, but for a drone far higher (urgent_below()): wrong, though not as wrong as missing
+            return stake * URGENT_SHARE, 0.0
         reach = scale * entry[1].window
         with np.errstate(over="ignore", invalid="ignore"):
             gap_now = math.dist(center, foot_now) + window - reach
@@ -2140,17 +2345,20 @@ def settle(obj, camera_world):
     for d in range(plain - 1, drawable - 1, -1):
         wanted[d] = (1.0, True)
         entry = st.drawn.get(d)
-        # One never drawn is built at once: whether its bar holds the view says where the walk ends. One drawn from a
-        # build of when it was plain (diving, every level turns coarse in turn) is built coarse: its plain build reaches
-        # past the sight, so it's never due, and it says nothing of a bar holding the view, so the walk went on to the
-        # giant levels, every one drawn as it was when plain: 50 levels of 8,500 bars where 20 were wanted
+        # One never drawn is built: at a flight's start here and now, whether its bar holds the view saying where the
+        # walk ends; in flight on a worker thread, first in line, the walk going on past it until it's drawn (built
+        # here, by a corner of 3 or 5 faces on the smooth pretzel, deep down, one took 16 s, 2026-11-25). One drawn
+        # from a build of when it was plain (diving, every level turns coarse in turn) is built coarse: its plain build
+        # reaches past the sight, so it's never due, and it says nothing of a bar holding the view, so the walk went on
+        # to the giant levels, every one drawn as it was when plain: 50 levels of 8,500 bars where 20 were wanted
         # (2026-11-19, the user: "the framerate drops off after awhile")
         if entry is None or due(d, entry[1]):
-            ask(d, 1.0, True, first or entry is None, *worth(d, 1.0))
+            ask(d, 1.0, True, first, *worth(d, 1.0))
         elif not entry[1].coarse:
             ask(d, 1.0, True, False, *worth(d, 1.0, quality=True))
         fresh.add(d)
-        if st.drawn[d][1].cover is not None:
+        entry = st.drawn.get(d)
+        if entry is not None and entry[1].cover is not None:
             covered = True
             break
     # Free the levels not wanted, and empty any of the map's level objects not in use (after a file loads, the levels
@@ -2235,6 +2443,35 @@ def recolor(obj, d, level_obj, record, shown):
     return len(record.sizes)
 
 
+# A curved level built for a drone this many times higher than it is now is built again before what's merely due
+# (urgent_below()), at this share of what it'd be worth missing: at its full worth, the 30-odd coarse levels of a
+# dive, each crossing it in turn, kept the worker threads from the finer levels, which came undrawn, were built on the
+# main thread (0.3 s each), and starved the workers more (2026-11-25)
+STALE_HEIGHT = 64.0
+URGENT_SHARE = 0.1
+
+
+def holds(world, height, lift):
+    """How low the drone may come (map units, this world) before a level built for it at height stands off toward the
+    camera through the levels over it (its pieces' margins, lift: level_bars()'s), so it's due again (stale(); at the
+    worth of a refresh, as a level cut for a drone higher always was: 2026-11-25, every curved level due at full
+    worth each time the drone's height halved kept the worker threads from all else, and new levels came undrawn).
+    None for flat faces, whose pieces lie on them at any height, or none measured."""
+    if not math.isfinite(lift) or height + lift <= 0.0:
+        return None
+    return height + lift
+
+
+def urgent_below(world, height):
+    """How low the drone may come (map units, this world) before a level built for it at height is wrong (worth():
+    URGENT_SHARE of missing), so it's built again before what's merely due: on curved faces, STALE_HEIGHT times lower (levels drawn whole for a
+    drone thousands of times higher, never built again as it came down and then only as a refresh, stood up through the
+    finer levels as slabs: the knot, 2026-11-25). None for flat faces."""
+    if world.topology.chart.flat_cells:
+        return None
+    return height / STALE_HEIGHT
+
+
 def built_level(world, faces, level, motifs, coarse, foot, center, reach, camera, outline_within, height, below):
     """A level's bars built round center out to reach (map units), the drone's point below at foot, as write_level()
     takes them: plain, within reach; coarse, cut to a box that size, re-rooted near the drone first, and whether a bar
@@ -2254,13 +2491,13 @@ def built_level(world, faces, level, motifs, coarse, foot, center, reach, camera
         level.reroot(COARSE_COEF)
     near = height < outline_within
     cut_for = height * SPLIT_AHEAD
-    corners, sizes, edges, split = level_bars(world, faces, level, motifs, center, reach, box=coarse,
-                                              camera=camera, outline_within=outline_within if near else 0.0,
-                                              height=cut_for)
     with np.errstate(over="ignore", invalid="ignore"):
         held = float(level.window - np.linalg.norm(level.center - center))
     window = min(reach, held) if math.isfinite(held) else reach
-    cover = covering(corners, sizes, edges, center, window * COVER_SHARE) if coarse and len(sizes) else None
+    corners, sizes, edges, split, lift, cover = level_bars(
+        world, faces, level, motifs, center, reach, box=coarse, camera=camera,
+        outline_within=outline_within if near else 0.0, height=cut_for,
+        cover_reach=window * COVER_SHARE if coarse else None)
     # Bars far bigger than their distance from the camera (a coarse level's band holding the view) cut smaller near it
     # (tiling.split_near(): their depth there would be off by as much as the levels are apart), once the cover's known
     if len(sizes):
@@ -2270,7 +2507,8 @@ def built_level(world, faces, level, motifs, coarse, foot, center, reach, camera
         edges = np.asarray(edges)[rows]
     record = Drawn(level.world_text, world.n, center.copy(), window, 1.0, cover, edges, coarse,
                    np.array(camera, dtype=float) if near else None, cut_for if split else None,
-                   empty=coarse and not len(sizes), sizes=sizes)
+                   empty=coarse and not len(sizes), sizes=sizes,
+                   holds=holds(world, height, lift), urgent=urgent_below(world, height))
     return (corners - center).astype(np.float32), record, level
 
 

@@ -53,6 +53,7 @@ ones (gc.freeze()): the caches the engines keep are long-lived, and a full colle
 import functools
 import gc
 import inspect
+import math
 import sys
 import threading
 import time
@@ -115,6 +116,11 @@ _main = threading.main_thread().ident
 GIVE_WAY_MOST = 0.05
 # Off: workers never wait (to measure what it's worth)
 GIVE_WAY = True
+# A worker gives way at most once this long of its own work (s): asked at every small step (a smooth floor's faces,
+# some 920 a round), each wait up to the main thread's whole tick, a floor build of a few seconds' work took 35 s on
+# the knot, and a 3D parts window 50 s, each a worker's whole flight (2026-11-25)
+GIVE_WAY_EVERY = 0.0005
+_last_wait = threading.local()
 
 
 def foreground(function):
@@ -143,10 +149,14 @@ def foreground(function):
 
 
 def give_way():
-    """From a worker thread, between its steps: waits while the main thread is in its Python (foreground). On the
-    main thread itself, nothing."""
+    """From a worker thread, between its steps: waits while the main thread is in its Python (foreground), if it's
+    worked GIVE_WAY_EVERY since it last did. On the main thread itself, nothing."""
     if _busy and GIVE_WAY and threading.get_ident() != _main:
+        now = time.perf_counter()
+        if now - getattr(_last_wait, "at", -math.inf) < GIVE_WAY_EVERY:
+            return
         _free.wait(GIVE_WAY_MOST)
+        _last_wait.at = time.perf_counter()
 
 
 def _take():

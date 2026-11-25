@@ -132,6 +132,24 @@ FLOOR_REACH = 64
 FLOOR_FLATNESS = 1e-3
 FLOOR_SPLITS = 24
 FLOOR_FOLLOW = 16.0
+# Layers drawn on one surface (a motif's levels, finer on top, and the floor under them all: surface_substitution's
+# push) are kept in order by scaling each about the camera by this much more than the one over it: a share of their
+# distance along its rays, which across the surface is that share of the camera's height over it. A flat piece of a
+# curved layer (a motif level's bar piece) stands off the surface toward the camera by its sag wherever the surface
+# curves up toward the camera (a bowl's, a tube's inner bend), and seen almost edge-on (gliding, the far wall of a bend)
+# a sag of a thousandth of its distance was hundreds of times the push across it: coarse bars stood up through the
+# finer levels as slabs over the camera's height (the knot, 2026-11-25). So a piece may stand toward the camera by at
+# most PUSH_SHARE of the push across the surface (push_room()); sagging away from it never shows (it's under the
+# layer over it anyway), so a convex surface's pieces stay as long as they were.
+PUSH_STEP = 100000.0 / 2 ** 24
+PUSH_SHARE = 0.5
+# ... the camera's height over a piece's plane counted as at least this share of the drone's, and as at least the sine
+# of this angle (radians) times the piece's distance: toward a horizon it falls to nothing, and so would the pieces'
+# length, but a piece seen that nearly edge-on is a sliver a pixel or so tall, whatever's over or under it (the
+# knot's tube seen along its curve: coarse pieces halved 16 times over and still short, every build some 4 times as
+# long, 2026-11-25)
+PUSH_LEAST_HEIGHT = 0.25
+PUSH_LEAST_ANGLE = math.radians(1.0)
 # The grid a face's Jacobian is bounded on (Topology)
 SIGMA_GRID = 9
 # A point's faces' normals cancel (Topology.key_normal()) when their sum is shorter than this share of their count
@@ -1541,6 +1559,15 @@ def face_cells(k, grid, offsets, rem):
     at = np.concatenate([np.stack([offsets[:-1, :-1], offsets[1:, :-1], offsets[:-1, 1:]], axis=-2)[out],
                          np.stack([offsets[1:, :-1], offsets[1:, 1:], offsets[:-1, 1:]], axis=-2)[back]])
     return corners, at
+
+
+def push_room(height_over, distance, near):
+    """How far a flat piece of a layer may stand off the surface toward the camera and keep under the layer over it
+    (PUSH_STEP): PUSH_SHARE of the push across the surface, height_over being the camera's height over the piece's
+    plane (no more than the piece's distance, distance; at least PUSH_LEAST_HEIGHT of the drone's height, near, and the
+    height of PUSH_LEAST_ANGLE at its distance)"""
+    least = np.maximum(PUSH_LEAST_HEIGHT * near, math.sin(PUSH_LEAST_ANGLE) * distance)
+    return PUSH_SHARE * PUSH_STEP * np.maximum(np.minimum(height_over, distance), least)
 
 
 def refine(corners, faces, near):
