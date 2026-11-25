@@ -388,8 +388,9 @@ class FlightFeatures:
                 # it applies to what auto scale still owes, too. Starting over from the drone's scale instead, held at
                 # min_scale against a surface, made its scale for its distance huge, and it blew up in scale flying
                 # away (even after scaling down).
-                self._auto_scale_remainder = self.scale(drone_log_scale * self._auto_scale_remainder, drone_camera,
-                                                        scale_camera, scale_lens_clip, bounded_bool)
+                self._auto_scale_remainder = self.owed(self.scale(drone_log_scale * self._auto_scale_remainder,
+                                                                  drone_camera, scale_camera, scale_lens_clip,
+                                                                  bounded_bool))
 
             if dict_controls["zoom"] != 1.0:
                 drone_log_scale = dict_controls["zoom"]**self._modal_interval
@@ -809,8 +810,9 @@ class FlightFeatures:
         # What min_scale or max_scale holds back is kept for later. Otherwise the drone would stop scaling at the limit
         # while its distance kept changing, then scale out of proportion once it turned back: flown into a surface at
         # min_scale, it blew up in scale as soon as it moved away from it again.
-        self._auto_scale_remainder = self.scale(new_distance / old_distance * self._auto_scale_remainder, drone_camera,
-                                                scale_camera=True, scale_lens_clip=True, bounded=False)
+        held = self.scale(new_distance / old_distance * self._auto_scale_remainder, drone_camera,
+                          scale_camera=True, scale_lens_clip=True, bounded=False)
+        self._auto_scale_remainder = self.owed(held)
         self._auto_scale_reference = selected_obj_diff_vector
 
     def get_auto_scale_distance(self, diff_vector):
@@ -1234,6 +1236,12 @@ class FlightFeatures:
                 # scale's bound like a map that doesn't loop, every tick, so without the depsgraph update (3 ms)
                 if anchored is not None:
                     factor = anchored.loop_factor(selected_obj, factor)
+                    # Nor dives with its surface past the clip end, out of sight at every level: a dive relabels the
+                    # world 2^k times deeper about the map's origin, so the drone's numbers grow by that, and scaled
+                    # down by hand while flying away from a sphere, it dived every two seconds, 5e18 units out in 40
+                    # s, and the drone's scale came out 0 (2026-11-24). There it's held at min_scale instead.
+                    if factor > 1.0 and self.surface_out_of_sight():
+                        factor = 1.0
                 if factor != 1.0:
                     self.loop_scale(factor)
 
@@ -1255,6 +1263,14 @@ class FlightFeatures:
 
         self.apply_scale(scale_factor, scale_origin, scale_camera, scale_lens_clip, bounded)
         return 1.0
+
+    def owed(self, held):
+        """What auto scale still owes after a scaling the limits held back by held (scale()'s return), at most the
+        drone's widest ratio of scales (max_scale / min_scale) either way: owing more is only a longer wait for
+        nothing. Held at a limit no loop gets past (a sphere's globe from far out, scaling down by hand while flying
+        away), it was multiplied in every tick, and a minute later it was 0, divided by (2026-11-24)."""
+        most = self._max_scale / min_scale
+        return min(max(held, 1.0 / most), most)
 
     def loop_scale(self, loop_factor):
         """Loop the drone by loop_factor about the point the selected object's world repeats around: a jump, not
@@ -1545,6 +1561,13 @@ class FlightFeatures:
         drone back (see auto_scale())."""
         distance = self._selected_obj_diff_vector.length if self._selected_obj_diff_vector is not None else 0.0
         return max(1.0, (1.0 - GROWTH_BUFFER) * distance / self.get_lower_bound())
+
+    def surface_out_of_sight(self):
+        """Whether the selected object (its surface, as auto scale measures it) is farther than the camera's clip end
+        (world units: lens clip scaling keeps it so, see scale_lens_clip_objects())"""
+        if self._selected_obj_diff_vector is None:
+            return False
+        return self._selected_obj_diff_vector.length > drone_camera.data.clip_end
 
     def get_lower_bound(self):
         """The shortest clip_start Bounded allows: default_clip_start, in the Drone_Camera's world scale. Worked out

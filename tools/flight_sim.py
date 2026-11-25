@@ -15,7 +15,8 @@ and scaling configs are all the add-on's own code. The harness only replaces wha
 Usage:
     Blender -b <map.blend> --python tools/flight_sim.py -- <plan.json> [--out DIR] [--every N] [--size WxH]
     Blender -b <map.blend> --python tools/flight_sim.py -- --replay <recorded camera object> [same options]
-        [--addon installed|working] [--video] [--engine workbench|scene] [--seed N]
+        [--addon installed|working] [--video] [--engine workbench|scene] [--seed N] [--realtime] [--timing]
+        [--probe SCRIPT]   (probes in tools/probes/)
 
 Nothing is saved to the .blend. Output in DIR (default: a "flight_<plan>" folder next to the plan): frames/NNNNN.png
 (every Nth frame), log.csv (one row per rendered frame), events.txt (loops, wraps, origin moves, clicks, jump cuts,
@@ -23,7 +24,9 @@ being inside geometry), and flight.mp4 with --video. A jump cut is a frame that 
 Every frame is also re-rendered with the map as it was a rendered frame earlier: a POP is the map itself changing
 the view (a level switching, a patch moving) by more than POP_MIN, however fast the camera moves, and a jump's "the map
 did N%" says how much of it was the map rather than the camera (moving fast, passing close to something). Each loop
-and wrap is rendered just before and after, at the same instant: a SEAM is one that changes the view.
+and wrap is rendered just before and after, at the same instant: a SEAM is one that changes the view. The TIMING
+line at the end is the main thread's time: the start (until the first frame), and each frame's ticks and frame step;
+with --timing (no seam renders) and --realtime, what a real flight spends.
 
 The plan is JSON:
 {
@@ -111,13 +114,17 @@ def parse_args():
     parser.add_argument("--addon", choices=("installed", "working"), default="installed",
                         help="fly the installed extension (what Blender loads) or the repo's working copy")
     parser.add_argument("--video", action="store_true")
+    parser.add_argument("--timing", action="store_true",
+                        help="no renders at loops and wraps (seams), so a loop's frame shows the add-on's own time: "
+                             "with --realtime, the TIMING line is what a real flight's main thread spends")
     parser.add_argument("--realtime", action="store_true",
                         help="keep simulated time no faster than the wall clock, and hand builds to the add-on's worker "
                              "threads as a real flight does (background.py keeps them off in a background Blender): "
                              "they get as much time a frame as in a real flight (their schedulers read the real clock)")
     parser.add_argument("--probe", metavar="SCRIPT",
                         help="a Python file whose frame(t, frame, m, scene) runs after every frame and whose "
-                             "report(out) runs at the end, e.g. to count what a map hasn't built yet")
+                             "report(out) runs at the end, e.g. to count what a map hasn't built yet; setup(m), if "
+                             "it has one, runs before the first tick (tools/probes/)")
     parser.add_argument("--save-as", metavar="PATH", help="save the .blend after the flight, e.g. with a recording")
     parser.add_argument("--replay", metavar="OBJECT",
                         help="instead of flying a plan, replay a flight recorded with the add-on's Record Camera into "
@@ -852,12 +859,16 @@ def main():
     snap_path = os.path.join(out, "snap.png")
 
     def snap():
+        if args.timing:
+            return np.zeros((height, width, 3))
         scene.render.filepath = snap_path
         bpy.ops.render.render(write_still=True)
         return load_pixels(snap_path, width, height)
 
     def snap_world(snapshot):
         """The view with the map as in an earlier world_snapshot()"""
+        if args.timing:
+            return np.zeros((height, width, 3))
         render_with_world(m, scene, snapshot, snap_path)
         return load_pixels(snap_path, width, height)
 
@@ -896,6 +907,7 @@ def main():
 
     if args.seed is not None:
         random.seed(args.seed)
+    started = time.perf_counter()
     op = make_operator(m, events, clock, snap, plan.get("start", {}).get("click_select"), moved, out, snap_world)
     # Real flights start wherever the timeline was left, not at the simulation's start frame, so a cleared simulation
     # has nothing to show for a moment
@@ -932,13 +944,21 @@ def main():
         probe = types.ModuleType("probe")
         probe.__file__ = os.path.abspath(args.probe)
         exec(compile(open(args.probe).read(), args.probe, "exec"), probe.__dict__)
+        # (Before the first tick, which builds what the map shows first: wrappers set here see the start too)
+        if hasattr(probe, "setup"):
+            probe.setup(m)
     if args.realtime:
         importlib.import_module(m.__package__ + ".background").enabled = True
     wall_start = time.perf_counter()
+    # The main thread's time: each frame's ticks (ms) and its frame step (the frame_change handlers: the simulation's
+    # step), and how long until the first frame (the start: its first tick builds what the map shows first)
+    tick_ms, step_ms, first_frame = [0.0], [], None
     while min(next_tick, next_frame) <= duration:
         if next_tick <= next_frame:
             clock.t = next_tick
+            timer = time.perf_counter()
             op.tick(bpy.context)
+            tick_ms[-1] += (time.perf_counter() - timer) * 1000
             next_tick += TICK
             if turn_after_click and clock.t >= start.get("turn_at", 0.1):
                 # The origin may have moved, so aim from where the camera is now
@@ -989,7 +1009,12 @@ def main():
             if behind > 0.0:
                 time.sleep(behind)
         camera_before = m.drone_camera.matrix_world.translation.copy()
+        timer = time.perf_counter()
         scene.frame_set(scene.frame_current + 1)     # frame_change_pre feeds the sticks to the simulation
+        step_ms.append((time.perf_counter() - timer) * 1000)
+        if first_frame is None:
+            first_frame = time.perf_counter() - started
+        tick_ms.append(0.0)
         next_frame += 1.0 / fps
         frame_count += 1
         if probe is not None:
@@ -1081,6 +1106,13 @@ def main():
         writer.writerow(["time", "frame", "x", "y", "z", "scale", "clip_end", "selected", "view_change_%",
                          "inside", "sticks", "readouts", "map_change_%"])
         writer.writerows(row + [f"{map_changes.get(row[1], float('nan')):.2f}"] for row in rows)
+    if len(step_ms) > 2:
+        ticks, steps = np.array(tick_ms[1:-1]), np.array(step_ms[1:])
+        frames = ticks + steps[:len(ticks)]
+        print(f"TIMING start {first_frame:.2f} s; tick ms/frame median {np.median(ticks):.1f} p99 "
+              f"{np.percentile(ticks, 99):.0f} max {ticks.max():.0f}; frame step median {np.median(steps):.1f} p99 "
+              f"{np.percentile(steps, 99):.0f}; frames over 33 ms {(frames > 33).sum()}, over 100 ms "
+              f"{(frames > 100).sum()}, worst {frames.max():.0f}")
     if probe is not None and hasattr(probe, "report"):
         probe.report(out)
     for broken in invalid_drivers():
