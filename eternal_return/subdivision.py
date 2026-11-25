@@ -145,23 +145,48 @@ class LocalMesh:
     (loops of ids). A vertex has its whole ring here when as many of its faces are. (In Fractions, every sum reduced
     by a gcd: quadico's first floor split its faces' trees for 3 s, 2026-11-24.)"""
 
-    def __init__(self, points, valence, loops, scale):
+    def __init__(self, points, valence, loops, scale, boundary=frozenset()):
         self.points, self.valence, self.loops, self.scale = points, valence, loops, scale
         self.exact = isinstance(scale, int)
         self.faces_of = {}
         for t, loop in enumerate(loops):
             for x in loop:
                 self.faces_of.setdefault(x, set()).add(t)
+        # The whole mesh's open edges here (a local mesh's own rim isn't one), as (least, greatest) ids, and each
+        # vertex on one its two neighbors along them (rim): split and limit by the rim's cubic B-spline
+        self.boundary = frozenset(boundary)
+        self.rim = {}
+        for a, b in self.boundary:
+            self.rim.setdefault(a, []).append(b)
+            self.rim.setdefault(b, []).append(a)
+
+    def _finer_boundary(self, ids):
+        """The boundary of this mesh's split: each open edge's halves (ids: what made each new vertex -> its id)"""
+        out = set()
+        for a, b in self.boundary:
+            m = ids.get(("e", a, b))
+            for end in (a, b):
+                x = ids.get(("v", end))
+                if m is not None and x is not None:
+                    out.add((min(m, x), max(m, x)))
+        return frozenset(out)
+
+    def _rim_limit(self, x):
+        """A vertex on the boundary's limit point: its rim's cubic B-spline's, (p + 4 x + q) / 6"""
+        p, q = self.rim[x]
+        P = self.points
+        return self._over([P[p][k] + 4 * P[x][k] + P[q][k] for k in range(len(P[x]))], 6)
 
     def complete(self, x):
         return len(self.faces_of.get(x, ())) == self.valence[x]
 
     def regular(self, x):
-        return self.valence[x] == 4 and self.complete(x)
+        return self.valence[x] == 4 and self.complete(x) and x not in self.rim
 
     def kind_regular(self, x, sides):
-        """Whether vertex x is a regular corner for a face of so many sides (here: its scheme's valence)"""
-        return self.valence[x] == 4
+        """Whether vertex x is a regular corner for a face of so many sides (here: its scheme's valence; never on the
+        boundary)"""
+        return self.valence[x] == 4 and x not in self.rim
 
     def control(self, t):
         return quad_control(self.loops, self.faces_of, t, self.regular)
@@ -174,7 +199,8 @@ class LocalMesh:
         order = sorted(keep)
         loops = [self.loops[f] for f in order]
         used = {x for loop in loops for x in loop}
-        return (type(self)({x: self.points[x] for x in used}, {x: self.valence[x] for x in used}, loops, self.scale),
+        return (type(self)({x: self.points[x] for x in used}, {x: self.valence[x] for x in used}, loops, self.scale,
+                           {e for e in self.boundary if e[0] in used and e[1] in used}),
                 order.index(t))
 
     def _over(self, sums, under):
@@ -184,14 +210,19 @@ class LocalMesh:
 
     def limit(self, x):
         """Vertex x's point on the limit surface (its ring must be whole here): Fractions, or floats"""
+        if x in self.rim:
+            return self._rim_limit(x)
         n = self.valence[x]
         P = self.points
-        edge, diagonal = set(), set()
+        # Each face's next corner after x (each edge once round a whole ring) and its far corner, as lists: where two
+        # quads meet on two edges (Suzanne's chin, a corner of two faces), the corner beside one is two quads' far
+        # corner, and sets counted it once (a limit point 0.2 off, 2026-11-24)
+        edge, diagonal = [], []
         for t in self.faces_of[x]:
             loop = self.loops[t]
             k = loop.index(x)
-            edge |= {loop[(k + 1) % 4], loop[(k - 1) % 4]}
-            diagonal.add(loop[(k + 2) % 4])
+            edge.append(loop[(k + 1) % 4])
+            diagonal.append(loop[(k + 2) % 4])
         sums = [n * n * P[x][k] + 4 * sum(P[y][k] for y in edge) + sum(P[y][k] for y in diagonal)
                 for k in range(len(P[x]))]
         return self._over(sums, n * (n + 5))
@@ -230,14 +261,18 @@ class LocalMesh:
             if len(faces) == 2:
                 S0, S1 = sums[faces[0]], sums[faces[1]]
                 add(("e", a, b), tuple((4 * (P[a][k] + P[b][k]) + S0[k] + S1[k]) * w for k in range(dims)), 4)
+            elif (a, b) in self.boundary:
+                # An open edge's middle (the rim's B-spline's), between its quad's two children
+                add(("e", a, b), tuple((P[a][k] + P[b][k]) * weight(2) for k in range(dims)), 2)
         for x in whole:
             n = self.valence[x]
+            if x in self.rim:
+                p, q = self.rim[x]
+                add(("v", x), tuple((P[p][k] + 6 * P[x][k] + P[q][k]) * weight(8) for k in range(dims)), n)
+                continue
             faces = self.faces_of[x]
-            ring = set()
-            for t in faces:
-                loop = self.loops[t]
-                k = loop.index(x)
-                ring |= {loop[(k + 1) % 4], loop[(k - 1) % 4]}
+            # (Each face's next corner after x: each edge once, as in limit())
+            ring = [self.loops[t][(self.loops[t].index(x) + 1) % 4] for t in faces]
             # (Q + 2 R + (n - 3) P) / n, Q the faces' points' mean, R the edges' middles': over 4 n^2
             w = weight(4 * n * n)
             add(("v", x), tuple((sum(sums[t][k] for t in faces) + 4 * sum(P[x][k] + P[y][k] for y in ring)
@@ -256,7 +291,7 @@ class LocalMesh:
                     row.append(len(loops))
                     loops.append(quad)
             children.append(row)
-        return LocalMesh(points, valence, loops, scale), children
+        return LocalMesh(points, valence, loops, scale, self._finer_boundary(ids)), children
 
 
 # ----- Loop, with Warren's weights -----
@@ -300,10 +335,10 @@ class LoopMesh(LocalMesh):
     number of coordinates (loop_patch() splits 14 at once)."""
 
     def regular(self, x):
-        return self.valence[x] == 6 and self.complete(x)
+        return self.valence[x] == 6 and self.complete(x) and x not in self.rim
 
     def kind_regular(self, x, sides):
-        return self.valence[x] == 6
+        return self.valence[x] == 6 and x not in self.rim
 
     def control(self, t):
         return loop_control(self.loops, self.faces_of, t, self.regular)
@@ -313,7 +348,9 @@ class LoopMesh(LocalMesh):
 
     def limit(self, x):
         """Vertex x's point on the limit surface (its ring must be whole here): (n v + its neighbors) / 2n, or
-        (2 v + its neighbors) / 5 where three triangles meet (Warren's weights' limit)"""
+        (2 v + its neighbors) / 5 where three triangles meet (Warren's weights' limit); on the boundary, its rim's"""
+        if x in self.rim:
+            return self._rim_limit(x)
         n = self.valence[x]
         P = self.points
         ring = self.ring(x)
@@ -349,8 +386,15 @@ class LoopMesh(LocalMesh):
             if len(corners) == 2:
                 c, d = corners
                 add(("e", a, b), tuple((3 * (P[a][k] + P[b][k]) + P[c][k] + P[d][k]) * w for k in range(dims)), 6)
+            elif (a, b) in self.boundary:
+                # An open edge's middle (the rim's B-spline's), among its triangle's three children
+                add(("e", a, b), tuple((P[a][k] + P[b][k]) * weight(2) for k in range(dims)), 3)
         for x in whole:
             n = self.valence[x]
+            if x in self.rim:
+                p, q = self.rim[x]
+                add(("v", x), tuple((P[p][k] + 6 * P[x][k] + P[q][k]) * weight(8) for k in range(dims)), n)
+                continue
             ring = self.ring(x)
             own, others, w = (7, 3, weight(16)) if n == 3 else (5 * n, 3, weight(8 * n))
             add(("v", x), tuple((own * P[x][k] + others * sum(P[y][k] for y in ring)) * w for k in range(dims)), n)
@@ -367,10 +411,14 @@ class LoopMesh(LocalMesh):
                     row.append(len(loops))
                     loops.append(triangle)
             children.append(row)
-        return LoopMesh(points, valence, loops, scale), children
+        return LoopMesh(points, valence, loops, scale, self._finer_boundary(ids)), children
 
 
 # ----- quads and triangles: Stam and Loop's scheme -----
+
+# A vertex of a split on the mesh's boundary, smoothed along it (QuadTriMesh.split())
+RIM = "rim"
+
 
 class QuadTriMesh(LocalMesh):
     """A few quads and triangles of a mesh, split by Stam and Loop's quad/triangle rules ("Quad/Triangle Subdivision",
@@ -384,8 +432,9 @@ class QuadTriMesh(LocalMesh):
     numerically, isn't applied.) Its points may have any number of coordinates (mixed_mask() splits unit vectors)."""
 
     def kind_regular(self, x, sides):
-        """Whether x is a regular corner for a face of so many sides: four quads, or six triangles, and no other kind"""
-        return (self.valence[x] == (4 if sides == 4 else 6) and self.complete(x)
+        """Whether x is a regular corner for a face of so many sides: four quads, or six triangles, and no other kind (and
+        not on the boundary)"""
+        return (self.valence[x] == (4 if sides == 4 else 6) and self.complete(x) and x not in self.rim
                 and all(len(self.loops[t]) == sides for t in self.faces_of[x]))
 
     def control(self, t):
@@ -400,14 +449,15 @@ class QuadTriMesh(LocalMesh):
         return self.neighbors(x)[0]
 
     def neighbors(self, x):
-        """Vertex x's neighbors along edges, and across its quads"""
-        edge, diagonal = set(), set()
+        """Vertex x's neighbors along edges, and across its quads: lists, each face's next corner after x (each edge once
+        round a whole ring) and a quad's far corner (as LocalMesh.limit() counts them)"""
+        edge, diagonal = [], []
         for t in self.faces_of[x]:
             loop = self.loops[t]
             k, n = loop.index(x), len(loop)
-            edge |= {loop[(k + 1) % n], loop[(k - 1) % n]}
+            edge.append(loop[(k + 1) % n])
             if n == 4:
-                diagonal.add(loop[(k + 2) % 4])
+                diagonal.append(loop[(k + 2) % 4])
         return edge, diagonal
 
     def weights(self, x):
@@ -423,7 +473,9 @@ class QuadTriMesh(LocalMesh):
 
     def limit(self, x):
         """Vertex x's point on the limit surface (its ring must be whole here): Catmull-Clark's or Warren's among one
-        kind of face, else its subdivision matrix's left eigenvector (mixed_mask())"""
+        kind of face, else its subdivision matrix's left eigenvector (mixed_mask()); on the boundary, its rim's"""
+        if x in self.rim:
+            return self._rim_limit(x)
         sizes = {len(self.loops[t]) for t in self.faces_of[x]}
         if sizes == {4}:
             return LocalMesh.limit(self, x)
@@ -464,9 +516,15 @@ class QuadTriMesh(LocalMesh):
         for t, loop in enumerate(loops):
             if sizes[t] == 4:
                 lin[("f", t)] = tuple(sum(P[x][k] for x in loop) for k in range(dims))
-        smooth = {}            # new vertex -> (edge neighbors, diagonals, edges, quads, kinds of faces)
+        smooth = {}            # new vertex -> (edge neighbors, diagonals, edges, quads, kinds of faces; RIM on the boundary)
         for x, faces in self.faces_of.items():
             if len(faces) != self.valence[x]:
+                continue
+            if x in self.rim:
+                # On the boundary: smoothed along the rim alone (a quarter of each of its two rim edges' middles and half
+                # itself: the rim's B-spline, (p + 6 x + q) / 8)
+                p, q = self.rim[x]
+                smooth[("v", x)] = ([key_e(x, p), key_e(x, q)], [], self.valence[x], 0, RIM)
                 continue
             edge, diagonal, kinds = [], [], set()
             for t in faces:
@@ -479,6 +537,10 @@ class QuadTriMesh(LocalMesh):
             smooth[("v", x)] = (edge, diagonal, self.valence[x], len(diagonal), kinds)
         for (a, b), faces in edge_faces.items():
             if len(faces) != 2:
+                if (a, b) in self.boundary:
+                    # An open edge's middle stays one (a quarter of each end, half itself); its faces in the whole
+                    # mesh: its quad's two children or its triangle's three
+                    smooth[("e", a, b)] = ([("v", a), ("v", b)], [], 2 if sizes[faces[0]] == 4 else 3, 0, RIM)
                 continue
             edge, diagonal, kinds, quads = [("v", a), ("v", b)], [], set(), 0
             for t in faces:
@@ -502,6 +564,8 @@ class QuadTriMesh(LocalMesh):
                                     [("v", y) for y in loop], 4, 4, {4})
 
         def weights(n, quads, kinds):
+            if kinds is RIM:
+                return 2, 1, 0, 4
             if kinds == {4}:
                 return n * (n - 3), 2, 1, n * n
             if kinds == {3}:
@@ -550,7 +614,7 @@ class QuadTriMesh(LocalMesh):
                     row.append(len(out))
                     out.append(piece)
             children.append(row)
-        return QuadTriMesh(points, valence, out, scale), children, ids
+        return QuadTriMesh(points, valence, out, scale, self._finer_boundary(ids)), children, ids
 
     def subdivide(self):
         finer, children, _ids = self.split()
@@ -1004,8 +1068,8 @@ class Shape:
     of its own (a millisecond of Python each, 12 s of its start), of 126 shapes (2026-11-24). control: its regular
     patch's control points (vertex numbers), or None if it isn't one."""
 
-    def __init__(self, mesh_class, loops, valence):
-        self.mesh_class, self.loops, self.valence = mesh_class, loops, valence
+    def __init__(self, mesh_class, loops, valence, boundary=()):
+        self.mesh_class, self.loops, self.valence, self.boundary = mesh_class, loops, valence, boundary
         self.n = len(valence)
         self._unit = None
         self._children = None
@@ -1017,7 +1081,7 @@ class Shape:
         if self._unit is None:
             n = self.n
             eye = {x: tuple(1.0 if y == x else 0.0 for y in range(n)) for x in range(n)}
-            self._unit = self.mesh_class(eye, dict(enumerate(self.valence)), list(self.loops), 1.0)
+            self._unit = self.mesh_class(eye, dict(enumerate(self.valence)), list(self.loops), 1.0, self.boundary)
         return self._unit
 
     def child(self, c):
@@ -1051,7 +1115,8 @@ _shapes = {}         # (mesh class, canonical()'s key) -> Shape
 def canonical(mesh, t):
     """Mesh's vertices numbered from its face t: t's corners first, in its loop's order, then each face's new corners as
     the faces are reached across edges, a face's loop read from its corner numbered least. (key: the faces as loops of
-    those numbers and the vertices' valences, the same for any mesh alike; the vertices in that order)"""
+    those numbers, the vertices' valences and the open edges (the mesh's boundary), the same for any mesh alike; the
+    vertices in that order)"""
     loops = mesh.loops
     edge_faces = {}
     for g, loop in enumerate(loops):
@@ -1079,7 +1144,8 @@ def canonical(mesh, t):
                     queue.append(h)
     if len(queue) != len(loops):
         raise ExtraordinaryError("a node's faces aren't joined by their edges")
-    return (tuple(out), tuple(mesh.valence[x] for x in order)), order
+    boundary = tuple(sorted((min(number[a], number[b]), max(number[a], number[b])) for a, b in mesh.boundary))
+    return (tuple(out), tuple(mesh.valence[x] for x in order), boundary), order
 
 
 def shape_of(mesh, t):
@@ -1141,8 +1207,21 @@ class SubdivisionChart:
         names = " and ".join(f"{k}" for k in sorted(by_sides))
         if any(int(k) not in by_sides for k in np.unique(top.sides).tolist()):
             raise ExtraordinaryError(f"a {self.name} chart needs faces of {names} sides only")
-        if any(len(sides) != 2 for sides in top.edge_sides):
-            raise ExtraordinaryError(f"a {self.name} chart needs a closed mesh (every edge between two faces)")
+        if any(len(sides) > 2 for sides in top.edge_sides):
+            raise ExtraordinaryError(f"a {self.name} chart needs a manifold mesh (no edge of three faces or more)")
+        # Its open edges (an eye hole's rim, say): there the surface ends in its rim's cubic B-spline. No piece along one
+        # is ever regular, so as by a border between quads and triangles, float points come from the pieces' corners
+        # past a depth and exact ones only where a split puts a vertex (border).
+        self._boundary = frozenset(top.edges[e] for e, sides in enumerate(top.edge_sides) if len(sides) == 1)
+        rim = {}
+        for a, b in self._boundary:
+            rim[a] = rim.get(a, 0) + 1
+            rim[b] = rim.get(b, 0) + 1
+        if any(count != 2 for count in rim.values()):
+            raise ExtraordinaryError(f"a {self.name} chart needs a boundary of simple loops (a vertex on it on two of "
+                                     f"its edges)")
+        if self._boundary:
+            self.border = True
         loops = top._corners
         F = len(loops)
         self.schemes = [by_sides[k] for k in top.sides.tolist()]
@@ -1158,7 +1237,7 @@ class SubdivisionChart:
         def regular_for(scheme):
             # Its kind's valence, among faces of its kind only (on a mixed mesh, a vertex of four faces some of which
             # are triangles isn't a quad's regular corner)
-            return lambda x: (self._valence[x] == scheme.valence
+            return lambda x: (self._valence[x] == scheme.valence and x not in rim
                               and all(len(loops[g]) == scheme.sides for g in self._faces_of[x]))
 
         regular = {scheme: regular_for(scheme) for scheme in used}
@@ -1241,7 +1320,11 @@ class SubdivisionChart:
         small, big_ = np.sqrt(np.maximum(mean - gap, 0.0)), np.sqrt(mean + gap)
         uu, uv, vv = (self.bound(d) for d in ((2, 0), (1, 1), (0, 2)))
         slack = (np.maximum(uu, vv) + uv) * math.sqrt(0.5) / (SIGMA_GRID - 1)
-        self.sigma_lo = np.where(self.regular, np.maximum(small.min(axis=1) - slack, 0.0), 0.5 * small.min(axis=1))
+        # (A regular face's bound is rigorous, unless its bend between the grid's points outweighs its least stretch:
+        # then it's 0, which says nothing, and it takes an irregular face's estimate. On Suzanne a third of the faces,
+        # small and much bent, had 0, and a level's reach in cells came out infinite, 2026-11-24.)
+        rigorous = small.min(axis=1) - slack
+        self.sigma_lo = np.where(self.regular & (rigorous > 0.0), rigorous, 0.5 * small.min(axis=1))
         self.sigma_hi = np.where(self.regular, big_.max(axis=1) + slack, 1.5 * big_.max(axis=1))
         # A regular face's ball from its own points on the grid, and the most a point between them can be from one
         # (a step's way times sigma_hi): its control points' hull spans the faces round it too, three times as wide,
@@ -1300,7 +1383,8 @@ class SubdivisionChart:
         loops = [tuple(self._loops[g]) for g in order]
         used = {x for loop in loops for x in loop}
         points = ({x: self.ints[x] for x in used} if exact else {x: tuple(self._positions[x].tolist()) for x in used})
-        mesh = self.mesh_class(points, {x: self._valence[x] for x in used}, loops, 1 << self.E if exact else 1.0)
+        mesh = self.mesh_class(points, {x: self._valence[x] for x in used}, loops, 1 << self.E if exact else 1.0,
+                               {e for e in self._boundary if e[0] in used and e[1] in used})
         return mesh, order.index(f)
 
     def _node(self, f, path, exact=True):

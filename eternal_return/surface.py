@@ -2250,7 +2250,7 @@ def add_levels(world, camera, q, h, window, levels, settings, shape, phases, pla
         # The window a fair share of a cell (or the point below off its face's cells): every piece near the vertex
         # nearest it, placed in float64, against the camera
         center = top.key(f, *nearest_point(top._sides[f], u, v, M), M)
-        radius = int(min(math.ceil(1.5 + 1.25 * reach + 1.0), 64))
+        radius = int(math.ceil(min(1.5 + 1.25 * reach + 1.0, 64)))
         pieces = MeshPieces(world, level, center, radius, settings, shape)
         local, rounding = pieces.camera(camera)
         rows, _distances, _tolerance = parts.window_rows(shape, pieces, local, rounding, pieces.scale(world.rho), window)
