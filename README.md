@@ -16,6 +16,20 @@ The drone flies on the Eternal Return core, a compiled module bundled with the a
 
 Record (in the Record panel) records a flight's inputs: the sticks, and everything else the physics are given each frame, along with the Drone's own scaling, orbits and moves, keyed on the Drone. Afterwards the timeline goes back to where the flight started, and playing it replays the flight exactly. The keyed sticks (Thrust, Pitch, Roll and Yaw Rate under Drone Recording) can be edited in the Graph Editor, and the replay flies the edited sticks from the next jump of the timeline on. Bake Animation bakes the replay into an editable camera. A flight without Record keeps the last recording in the file but takes it off the Drone; assign it back (as the Drone's action) to replay it again. Record Camera, which keys the camera itself every tick, is still the way to record everything else the add-on does, like loops of an endless map.
 
+### Tile Selected Object
+
+The Maps panel's Tile Selected Object turns any object into an endless map to fly into. The object's surface is covered in tiles, every tile splits into smaller tiles, and those split again, forever. Every level has a floor pattern on its tiles and open 3D frames standing on them: posts, beams and horseshoe arches. Dive at the surface and you keep shrinking into ever finer tiles without reaching it. The map loops, so the dive never ends.
+
+Its options:
+- **Tiles:** Laid Out lays about Tile Count quads over the shape, close to square everywhere (Blender's QuadriFlow, then adjusted). Corners where 3 or 5 tiles meet go where the shape needs them. Own Faces uses the object's own faces as they are.
+- **Smooth:** fly over the tiles' smooth subdivision surface instead of their flat faces.
+- **Floor:** strapwork, the Inferno's stars, or plain.
+- **Frames:** turns the 3D frames on or off.
+- **Split:** how many ways each tile splits along a side at the next level.
+- **Merge Parts:** makes overlapping pieces one surface first.
+
+The map is built from the object as it is drawn, modifiers included, so its shape can be changed before tiling. Tiling a shape takes a few seconds. The object itself is hidden, not changed, and Ctrl+Z undoes it all. The map comes with a scaling config, so clicking it in flight turns on Auto Scale to its surface and loops. It's drawn in its own colors, so the button sets the view's Solid shading to color by Attribute.
+
 ### Scale
 
 This allows you to change the scale of the drone as you fly. This will change the scale of the drone object itself, so all of the physics scale proportionally. In other words, if you scale up the drone to twice the size, it will travel twice as fast and have twice as much momentum before coming to a stop. You can set the rate the drone scales with the "Scale Factor" input. If Scale Factor is set to 2, the scale of the drone will change by a factor of 2 every second (double or divide in half, depending on if being scaled up or down).

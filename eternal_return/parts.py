@@ -1473,7 +1473,8 @@ def exact_job(function, args, world, camera, window, levels, fresh, window_for):
     """A giant levels' window build on the worker thread: lattice.add_levels_job()'s (function, args), function(*args)
     -> (pieces, then: what the main thread does with them first, or None), its world args[0]; with what it was built
     for (land_exact())"""
-    pieces, then = function(*args)
+    # (In a build process if function builds_apart: background.call())
+    pieces, then = background.call(function, *args)
     return world, camera, window, levels, fresh, window_for, pieces, then
 
 
@@ -1723,6 +1724,12 @@ def window_faces(shape, kind, u, half, size, number):
     if not len(starts):
         return []
     near_all = stacked - u_float
+    # The camera's place less its float, so the corners from the camera are as good as floats get relative to their own
+    # size (the face's float corner less the camera's float is exact where they're within twice each other)
+    try:
+        u_rest = np.array([float(c - number(f)) for c, f in zip(u, u_float.tolist())]) if number is not float else None
+    except OverflowError:
+        u_rest = None
     lo = np.minimum.reduceat(near_all, starts, axis=0)
     hi = np.maximum.reduceat(near_all, starts, axis=0)
     reaching = ~(np.any(lo > half_float + slack, axis=1) | np.any(hi < -half_float - slack, axis=1))
@@ -1736,10 +1743,27 @@ def window_faces(shape, kind, u, half, size, number):
         # (On a worker thread, out of the main thread's way between faces: the cut is pure Python, exactly, and without
         # these the tick's own Python ran at half speed beside it, 2026-11-24)
         background.give_way()
-        cut = cut_to_window([[number(float(c)) - u[i] for i, c in enumerate(corner)] for corner in face.tolist()], half)
+        if u_rest is not None and 0.0 < half_float and float(size) < math.inf:
+            # Its corners from the camera in floats (less the camera's rest): within FLOAT_CUT_REACH of the window's
+            # size, cut in floats (rounding moves a cut by under 2^-33 of the window); only a face reaching far past it,
+            # a giant piece's, cut exactly (every face exactly, a laid-out map's giant frames' window took a second a
+            # build, 2026-11-25)
+            near_float = near_all[starts[f]:ends[f]] - u_rest
+            if float(np.abs(near_float).max()) <= FLOAT_CUT_REACH * half_float:
+                cut = cut_to_window(near_float.tolist(), half_float)
+                if len(cut) >= 3:
+                    corners.append((np.array(cut) * float(size), index))
+                continue
+        cut = cut_to_window([[number(float(c)) - u[i] for i, c in enumerate(corner)] for corner in face.tolist()],
+                            half)
         if len(cut) >= 3:
             corners.append((np.array([[float(c * size) for c in corner] for corner in cut]), index))
     return corners
+
+
+# window_faces() cuts a face in floats if its corners are no further from the camera than this many times the window's
+# half side (else exactly)
+FLOAT_CUT_REACH = 2.0 ** 20
 
 
 def face_stack(shape, kind):

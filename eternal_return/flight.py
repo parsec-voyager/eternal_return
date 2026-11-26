@@ -1371,7 +1371,7 @@ class FlightFeatures:
         """At the end of the tick, with the camera where it ended up: the surface maps' floors (surface.settle()), and
         the sphere and surface maps' 3D parts built, placed and sunk (parts.settle())"""
         for obj in self.sphere_maps():
-            surface.settle(obj, camera_matrix.translation)
+            surface.settle(obj, camera_matrix.translation, start=False)
             if parts.is_parts(obj):
                 parts.settle(obj, camera_matrix.translation, view=camera_matrix.to_3x3())
 

@@ -88,6 +88,14 @@ MOST_HOPS = 8
 CORNER_NORMAL = (3, 8)
 # The least step of a lattice whose offsets by a border are worked out in floats (_offsets())
 FLOAT_STEP = Fraction(1, 1 << 24)
+# Deeper than that, a tile of an irregular face is stepped from its float leaf's patch (_leaf_steps()) if it's at most
+# this share of the leaf across, the leaf at least LEAF_LEAST of the face across, and its point in the leaf to within
+# LEAF_SLACK of its size; else exactly. The float tree's pieces toward an extraordinary corner lose digits level by
+# level, a corner of 3 triangles (a tetrahedron's) fastest: its leaves' steps were 1e-9 off at 2^-14 of the face,
+# 1.5e-6 at 2^-20, 8e-5 at 2^-22; a cube's 7.5e-12 at 2^-14 (2026-11-25)
+LEAF_SHARE = 1.0 / 64.0
+LEAF_LEAST = 2.0 ** -14
+LEAF_SLACK = 1e-9
 # How many nodes the trees keep before the float ones are let go of
 NODES_KEPT = 60000
 
@@ -1858,8 +1866,14 @@ class SubdivisionChart:
     def _evaluate_at(self, f, u, v, wanted, depth):
         """_evaluate() of points in their faces (1-D arrays): a list, one for each (du, dv) in wanted"""
         n = self.order
-        outs = [np.einsum("...a,...b,...abk->...k", powers(u, a, n), powers(v, b, n), self.C[f]) for a, b in wanted]
         irregular = ~self.regular[f]
+        outs = []
+        for a, b in wanted:
+            out = np.zeros(np.shape(u) + (3,))
+            if not irregular.all():
+                rows = ~irregular
+                out[rows] = poly_sum(powers(u[rows], a, n), powers(v[rows], b, n), self.C[f[rows]])
+            outs.append(out)
         if irregular.any():
             fl, ul, vl = f[irregular], u[irregular], v[irregular]
             # Each point's leaf (an index into leaves), then all of them at once: a search's points, one a face, one
@@ -1880,8 +1894,7 @@ class SubdivisionChart:
             step = sign / size
             s, t = (ul - u0) * step, (vl - v0) * step
             for (a, b), out in zip(wanted, outs):
-                out[irregular] = (step ** (a + b))[:, None] * np.einsum("na,nb,nabk->nk", powers(s, a, n),
-                                                                        powers(t, b, n), Q)
+                out[irregular] = (step ** (a + b))[:, None] * poly_sum(powers(s, a, n), powers(t, b, n), Q)
         return outs
 
     # ----- past a face's sides -----
@@ -2005,7 +2018,7 @@ class SubdivisionChart:
         f, u, v = np.broadcast_arrays(np.asarray(f), np.asarray(u, dtype=float), np.asarray(v, dtype=float))
         n = self.order
         C = self._search_patches()
-        return [np.einsum("...a,...b,...abk->...k", powers(u, a, n), powers(v, b, n), C[f]) for a, b in orders]
+        return [poly_sum(powers(u, a, n), powers(v, b, n), C[f]) for a, b in orders]
 
     def _search_patches(self):
         """Every face's polynomial for the search for the face below (surface.Below.global_face()): a regular face's
@@ -2027,6 +2040,18 @@ class SubdivisionChart:
         nx, ny, nz = ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx
         length = math.sqrt(nx * nx + ny * ny + nz * nz) or 1e-300
         return nx / length, ny / length, nz / length
+
+    def normals(self, f, u, v):
+        """normal() of many points at once (arrays): their faces' derivatives in one batch (_evaluate()), as normal() has
+        them (a mesh without borders: there every float leaf is the same either way; by a border, a point at a time)"""
+        f, u, v = np.asarray(f), np.asarray(u, dtype=float), np.asarray(v, dtype=float)
+        if self.border:
+            return np.array([self.normal(g, x, y) for g, x, y in zip(f.tolist(), u.tolist(), v.tolist())]).reshape(
+                f.shape + (3,))
+        du, dv = self._evaluate(f, u, v, orders=((1, 0), (0, 1)), depth=NORMAL_DEPTH)
+        n = np.cross(du, dv)
+        length = np.linalg.norm(n, axis=-1, keepdims=True)
+        return n / np.where(length > 0.0, length, 1e-300)
 
     def expansion(self, f, u, v):
         """Regular face f's Taylor coefficients about (u, v) (exact numbers), as floats (n, n, 3): S(u + du, v + dv) = sum
@@ -2077,8 +2102,8 @@ class SubdivisionChart:
         n = self.order
         steps = np.array([[inv_m ** (a + b - 1) if a + b else 0.0 for b in range(n)] for a in range(n)])
         # (In one einsum: term by term, a smooth torus's floor build spent 0.2 s here, 2026-11-24)
-        return np.einsum("...a,...b,abk->...k", powers(np.asarray(gi, dtype=float), 0, n),
-                         powers(np.asarray(gj, dtype=float), 0, n), T * steps[:, :, None])
+        return poly_sum(powers(np.asarray(gi, dtype=float), 0, n), powers(np.asarray(gj, dtype=float), 0, n),
+                        np.asarray(T * steps[:, :, None], dtype=float))
 
     def _steps_expansion(self, f, I, J, N, d):
         """Face f's expansion in level-N steps about its point (I, J), from the patch the point d steps further is in:
@@ -2312,23 +2337,12 @@ class SubdivisionChart:
         out = np.zeros(du.shape + (3,))
         if not len(f):
             return out
-        n = self.order
         extra = (1,) * (du.ndim - 1)
         regular = self.regular[f]
         rows = np.flatnonzero(regular)
         if len(rows):
-            # T[t, a, b] = sum over i >= a, j >= b of C[i, j] binom(i, a) ur^(i - a) binom(j, b) vr^(j - b) (in numpy
-            # alone: a worker thread's Python loops here kept the main thread waiting for Python's lock, 2026-11-24)
-            T = np.einsum("tai,tbj,tijk->tabk", shift_matrices(ur[rows], n), shift_matrices(vr[rows], n),
-                          self.C[f[rows]])
             d_u, d_v = du[rows], dv[rows]
-            total = np.zeros(d_u.shape + (3,))
-            for a in range(n):
-                for b in range(n):
-                    if a + b:
-                        k = (d_u ** a) * (d_v ** b) * small ** (a + b - 1)
-                        total += k[..., None] * T[:, a, b].reshape((len(rows),) + extra + (3,))
-            out[rows] = total
+            out[rows] = total = taylor_steps(self.C[f[rows]], ur[rows], vr[rows], d_u, d_v, small)
             if small >= FLOAT_STEP:
                 # Ends past the face's sides: the surface's there (relocated()), not the patch's carried on
                 faces = np.broadcast_to(f[rows].reshape((len(rows),) + extra), d_u.shape)
@@ -2356,10 +2370,55 @@ class SubdivisionChart:
                 out[rows] = (ends - starts.reshape((len(rows),) + extra + (3,))) / small
             else:
                 h = Fraction(float(small))
-                for t in rows.tolist():
+                for t in self._leaf_steps(f, rows, ur, vr, du, dv, small, out).tolist():
                     U, V = Fraction(float(ur[t])), Fraction(float(vr[t]))
                     out[t] = self._offsets(int(f[t]), U, V, h, du[t], dv[t])
         return out
+
+    def _leaf_steps(self, f, rows, ur, vr, du, dv, small, out):
+        """step() of irregular faces' tiles deeper than floats hold their points (small under FLOAT_STEP), each far
+        smaller than its float leaf (a regular piece of its face, no more than 14 levels toward an extraordinary corner:
+        LEAF_LEAST), from
+        that piece's patch, as a regular face's tiles are from its own, all at once (taylor_steps(), in the leaf's own
+        parameters), into out; returns the rest's rows, for _offsets(). Exactly, a tile at a time, the tiles deep in a
+        face by a corner of 3 or 5 took a millisecond each, a second a level of a laid-out map's floor (a third of its
+        faces are irregular), and a dive there outran its builds (the Tile Selected Object button's Suzanne,
+        2026-11-25). The patch's polynomial carried a tile's size past its piece is the surface's there to within the
+        tile's size squared over the piece's (the pieces meet smoothly: C2)."""
+        left = []
+        tiles = len(rows)
+        reach = small * np.maximum(np.abs(du[rows]).reshape(tiles, -1).max(axis=1),
+                                   np.abs(dv[rows]).reshape(tiles, -1).max(axis=1))
+        groups = {}
+        for face in np.unique(f[rows]).tolist():
+            mine = np.flatnonzero(f[rows] == face)
+            scheme = self.schemes[face]
+            for leaf, sub in self._float_leaves(face, ur[rows[mine]], vr[rows[mine]]):
+                sub = mine[sub]
+                if not isinstance(leaf, Leaf):
+                    left.append(rows[sub])
+                    continue
+                q = leaf.sign / leaf.fsize
+                s_, t_ = q * (ur[rows[sub]] - leaf.fu0), q * (vr[rows[sub]] - leaf.fv0)
+                # In the piece (not a stand-in's, right by the corner) and far bigger than the tile
+                inside = (s_ >= -LEAF_SLACK) & (t_ >= -LEAF_SLACK) & (reach[sub] <= LEAF_SHARE * leaf.fsize)
+                inside &= leaf.fsize >= LEAF_LEAST
+                inside &= ((s_ + t_ <= 1.0 + LEAF_SLACK) if isinstance(scheme, LoopScheme)
+                           else (s_ <= 1.0 + LEAF_SLACK) & (t_ <= 1.0 + LEAF_SLACK))
+                left.append(rows[sub[~inside]])
+                if inside.any():
+                    groups.setdefault(id(leaf), (leaf, []))[1].append((sub[inside], s_[inside], t_[inside]))
+        n = self.order
+        for leaf, parts in groups.values():
+            sub = np.concatenate([p[0] for p in parts])
+            s_, t_ = np.concatenate([p[1] for p in parts]), np.concatenate([p[2] for p in parts])
+            Q = leaf.Qf
+            if len(Q) < n:
+                Q = np.pad(Q, ((0, n - len(Q)), (0, n - len(Q)), (0, 0)))
+            q = leaf.sign / leaf.fsize
+            C = np.broadcast_to(Q, (len(sub),) + Q.shape)
+            out[rows[sub]] = q * taylor_steps(C, s_, t_, du[rows[sub]], dv[rows[sub]], q * small)
+        return np.concatenate(left) if left else np.zeros(0, dtype=np.int64)
 
     def hessians(self, f, u, v):
         """Faces f's second derivatives at (u, v): (d2/du2, d2/du dv, d2/dv2), each (..., 3)"""
@@ -2497,8 +2556,7 @@ def sum_terms(E, gi, gj):
     E = np.array(E, dtype=float)
     E[0, 0] = 0.0
     n = len(E)
-    return np.einsum("na,nb,abk->nk", powers(np.asarray(gi, dtype=float), 0, n),
-                     powers(np.asarray(gj, dtype=float), 0, n), E)
+    return poly_sum(powers(np.asarray(gi, dtype=float), 0, n), powers(np.asarray(gj, dtype=float), 0, n), E)
 
 
 def den_bits(x):
@@ -2531,6 +2589,50 @@ def evaluate(E, d, du=0, dv=0):
 
 
 _shift_tables = {}
+
+
+def poly_sum(pu, pv, C):
+    """sum over a, b of pu[..., a] pv[..., b] C[a, b, k]: polynomials' values at many points, pu and pv the points'
+    powers (..., n), C one patch's coefficients (n, n, 3) or each point's own (..., n, n, 3); (..., 3). As two einsums of
+    two operands (or a matrix product): one einsum of three ran a plain loop over every index, 6 times as long (13 ms for
+    50,000 points; irregular faces' float points were half a laid-out map's level builds, 2026-11-25)"""
+    if C.ndim == 3:
+        n = C.shape[0]
+        by_b = (pu.reshape(-1, n) @ C.reshape(n, -1)).reshape(pu.shape[:-1] + C.shape[1:])
+    else:
+        by_b = np.einsum("...a,...abk->...bk", pu, C)
+    return np.einsum("...b,...bk->...k", pv, by_b)
+
+
+def taylor_steps(C, ur, vr, du, dv, small):
+    """Polynomial patches' points at (ur + small du, vr + small dv) from their points at (ur, vr), over small: C (t, n,
+    n, 3) each patch's coefficients of u^i v^j, ur and vr (t,), du and dv (t, ...); (t, ..., 3). By the patch's Taylor
+    expansion about (ur, vr), T[t, a, b] = sum over i >= a, j >= b of C[i, j] binom(i, a) ur^(i - a) binom(j, b)
+    vr^(j - b) (in numpy alone: a worker thread's Python loops here kept the main thread waiting for Python's lock,
+    2026-11-24), as two matrix products, over i, then over j (as one einsum of three, numpy looped over all six indices
+    one by one, 20 times as long, most of a smooth map's level builds, 2026-11-25); then the sum over a, b of d_u^a
+    d_v^b small^(a + b - 1) T[a, b] (not the constant term), as two matrix products too: the terms with a >= 1,
+    small^(a - 1) d_u^a times small^b d_v^b, and those with a = 0, small^(b - 1) d_v^b (term by term, 16 products of
+    every tile's offsets, it was half a level's build), never over small, which a level deep enough makes subnormal
+    or 0."""
+    m, n = len(C), C.shape[1]
+    by_i = (shift_matrices(ur, n) @ np.reshape(C, (m, n, n * 3))).reshape(m, n, n, 3)
+    T = (shift_matrices(vr, n) @ by_i.transpose(0, 2, 1, 3).reshape(m, n, n * 3)).reshape(m, n, n, 3).transpose(
+        0, 2, 1, 3)
+    flat_u, flat_v = du.reshape(m, -1), dv.reshape(m, -1)
+    pu = np.zeros(flat_u.shape + (n,))
+    pv = np.empty(flat_v.shape + (n,))
+    pv1 = np.zeros(flat_v.shape + (n,))
+    pu[..., 1] = flat_u
+    pv[..., 0] = 1.0
+    pv1[..., 1] = flat_v
+    for j in range(1, n):
+        pv[..., j] = pv[..., j - 1] * flat_v * small
+        if j >= 2:
+            pu[..., j] = pu[..., j - 1] * flat_u * small
+            pv1[..., j] = pv1[..., j - 1] * flat_v * small
+    by_a = (pv @ T.transpose(0, 2, 1, 3).reshape(m, n, n * 3)).reshape(flat_u.shape + (n, 3))
+    return (np.einsum("tqa,tqac->tqc", pu, by_a) + pv1 @ T[:, 0]).reshape(du.shape + (3,))
 
 
 def shift_matrices(x, n):

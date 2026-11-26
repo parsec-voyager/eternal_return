@@ -1,9 +1,10 @@
 """The side panel (the 3D view's N sidebar, Eternal Return tab): Add Drone and the Fly toggle, then the UI and
-Drone subpanels (ui_features.py), Controls, Record and Extras."""
+Drone subpanels (ui_features.py), Maps (Tile Selected Object, tile_object.py), Controls, Record and Extras."""
 import bpy
 
 from . import controls
 from . import flight
+from . import tile_object
 from . import ui_features
 
 # Each control's box in the Controls panel: its icon (the title is the control's label)
@@ -226,6 +227,18 @@ class ER_PT_UI_Extras(SubPanel, bpy.types.Panel):
         layout.prop(flight_options, "volume", text="Sound Volume", slider=True)
 
 
+class ER_PT_UI_Maps(SubPanel, bpy.types.Panel):
+    """Maps Subpanel: the selected object made an endless map (tile_object.py)"""
+    bl_label = "Maps"
+    bl_idname = "ER_PT_UI_Maps"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator(tile_object.ER_OT_TileObject.bl_idname, icon='MOD_REMESH')
+        if not tile_object.tileable(context.active_object):
+            layout.label(text="Select an object to tile")
+
+
 # In registration order, which is also their order on screen
-PANELS = (ER_PT_UI, ui_features.ER_PT_UI_HUD, ui_features.ER_PT_UI_Drone, ER_PT_UI_Controls,
+PANELS = (ER_PT_UI, ui_features.ER_PT_UI_HUD, ui_features.ER_PT_UI_Drone, ER_PT_UI_Maps, ER_PT_UI_Controls,
           ER_PT_UI_Record, ER_PT_UI_Extras)

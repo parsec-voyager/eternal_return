@@ -25,6 +25,8 @@ LAYOUT_FACES = 1000
 # A shape QuadriFlow can't lay out as it is (an edge of three faces or more, or overlapping parts to be one, merge) is
 # first made whole by voxels this share of its size across
 VOXEL_SHARE = 1.0 / 256.0
+# ... and its vertices this share of its size apart or nearer welded first (welded())
+WELD_SHARE = 1e-6
 # squared()'s rounds at most, and when it stops sooner: its corners moving less than this share of the shape's size; each
 # quad's size stays within this range of what it started at (toward a corner of 3 or 5 faces conformal cells shrink or
 # grow without end: unbounded, Suzanne's shrank to nothing in 400 rounds)
@@ -151,6 +153,18 @@ def open_corners(mesh):
     return out
 
 
+def welded(mesh, distance):
+    """mesh with its vertices closer than distance merged: a shape's pieces that only touch (a text's caps and sides,
+    a mesh's unwelded seams) made one surface, not open edges QuadriFlow keeps as boundaries"""
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=distance)
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update()
+
+
 def points_of(mesh):
     co = np.empty(3 * len(mesh.vertices), dtype=np.float32)
     mesh.vertices.foreach_get("co", co)
@@ -171,13 +185,16 @@ def laid_out(obj, faces=LAYOUT_FACES, chart="catmull_clark", merge=False, seed=0
         import surface
     depsgraph = bpy.context.evaluated_depsgraph_get()
     shape = world_mesh(obj, depsgraph)
+    points = points_of(shape)
+    size = float(np.ptp(points, axis=0).max()) if len(points) else 0.0
+    if not size:
+        bpy.data.meshes.remove(shape)
+        raise ValueError(f"layout: {obj.name} has no shape to lay out")
+    welded(shape, WELD_SHARE * size)
+    points = points_of(shape)
     work = bpy.data.objects.new("_er_layout", shape.copy())
     bpy.context.scene.collection.objects.link(work)
     try:
-        points = points_of(shape)
-        size = float(np.ptp(points, axis=0).max()) if len(points) else 0.0
-        if not size:
-            raise ValueError(f"layout: {obj.name} has no shape to lay out")
         voxels = merge or not manifold(shape)
         if voxels:
             remesh = work.modifiers.new("voxels", 'REMESH')

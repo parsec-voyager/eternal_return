@@ -28,8 +28,13 @@ class Rule:
     """A substitution rule (penrose.py, darb_imam.py: a module with the same names), and its tables as arrays, for
     cutting levels in floats: for each kind, each slot's child as the parent's turn and mirror put it (child_pose())"""
 
+    def __reduce__(self):
+        # By name: the module it holds doesn't pickle, and its tables are made again from it (rule_named())
+        return rule_named, (self.module_name,)
+
     def __init__(self, module):
         self.module = m = module
+        self.module_name = module.__name__.rpartition(".")[2]
         self.name, self.ring, self.n = m.NAME, m.RING, m.N
         self.kinds = m.KINDS
         self.loop, self.log_loop = m.LOOP, math.log(m.LOOP)
@@ -173,6 +178,12 @@ class Rules:
 
 
 RULES = Rules()
+
+
+def rule_named(name):
+    """RULES[name]: a pickled Rule made again where it's unpickled (a build process: background.py), from its own
+    module, not a copy of its tables"""
+    return RULES[name]
 
 
 # --- Exact helpers ----------------------------------------------------------------------------------------------------

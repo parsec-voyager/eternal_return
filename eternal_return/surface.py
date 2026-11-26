@@ -340,6 +340,13 @@ class BilinearChart:
         w = self.w[f] + 0.0 * np.asarray(u, dtype=float)[..., None]
         return np.zeros_like(w), w, np.zeros_like(w)
 
+    def normals(self, f, u, v):
+        """normal() of many points at once (arrays): (..., 3)"""
+        u, v = np.asarray(u, dtype=float), np.asarray(v, dtype=float)
+        n = np.cross(self.eu[f] + v[..., None] * self.w[f], self.ev[f] + u[..., None] * self.w[f])
+        length = np.linalg.norm(n, axis=-1, keepdims=True)
+        return n / np.where(length > 0.0, length, 1e-300)
+
     def normal(self, f, u, v):
         """Face f's unit normal at (u, v), as three floats (a point at a time: plain floats are quicker)"""
         (ex, ey, ez), (fx, fy, fz), (wx, wy, wz) = self._eu[f], self._ev[f], self._w[f]
@@ -432,7 +439,23 @@ class Topology:
     corner, and quads and triangles may share an edge: both split it into k alike.
 
     From a Blender mesh, or without one from positions (float64, (vertices, 3)) and faces (vertex index tuples): the
-    icosahedron sphere's 20 faces, whose keys and neighbors its 3D parts use (parts_ico.py), its places not."""
+    icosahedron sphere's 20 faces, whose keys and neighbors its 3D parts use (parts_ico.py), its places not.
+
+    Sent to a build process once and named by key in each build's arguments after that (background.py: shared_by_key,
+    shared_data(), from_shared()): it and its chart's trees are far bigger than any build's own data."""
+
+    shared_by_key = True
+
+    def shared_data(self):
+        """What a build process makes this topology again from (from_shared())"""
+        return self.positions, self.corners, self.chart_name, self.colors
+
+    @classmethod
+    def from_shared(cls, data):
+        positions, corners, chart, colors = data
+        top = cls(None, positions=positions, faces=corners, chart=chart)
+        top.colors = colors
+        return top
 
     def __init__(self, mesh, color=(0.04, 0.03, 0.10, 1.0), positions=None, faces=None, chart="bilinear"):
         if mesh is not None:
@@ -450,6 +473,7 @@ class Topology:
             raise ValueError(f"surface: {getattr(mesh, 'name', 'a mesh')} has {others} faces that aren't triangles "
                              f"or quads (of {len(faces)})")
         self.corners = faces
+        self.chart_name = chart
         F = len(faces)
         self.sides = np.array([len(c) for c in faces], dtype=np.int64)
         self.edges, self.edge_sides = [], []
@@ -667,6 +691,42 @@ class Topology:
             steepest = max(steepest, math.sqrt(max(1.0 - c * c, 0.0)) / max(c, 0.2))
         return steepest
 
+    def key_slopes(self, keys, M):
+        """key_slope() of many keys at once: every face's normal at them in one batch (the chart's normals(), where it
+        has them), each key's mean of its faces' (or its first face's where they cancel), and each face's tilt from it.
+        A key at a time, a laid-out map's giant 3D frames spent a second a build here (a point at a time through
+        irregular faces' trees, every normal twice: the key's and its faces', 2026-11-25)."""
+        out = np.zeros(len(keys))
+        rows, fs, us, vs = [], [], [], []
+        for r, key in enumerate(keys):
+            if key[0] == FACE:
+                continue
+            for f, I, J in self.params(key, M):
+                rows.append(r)
+                fs.append(f)
+                us.append(float(quotient(I, M)))
+                vs.append(float(quotient(J, M)))
+        if not rows:
+            return out
+        normals_of = getattr(self.chart, "normals", None)
+        if normals_of is not None:
+            N = normals_of(np.array(fs), np.array(us), np.array(vs))
+        else:
+            N = np.array([self._normal(f, u, v) for f, u, v in zip(fs, us, vs)])
+        rows = np.array(rows)
+        sums = np.zeros((len(keys), 3))
+        np.add.at(sums, rows, N)
+        counts = np.bincount(rows, minlength=len(keys))
+        first = np.full(len(keys), -1)
+        first[rows[::-1]] = np.arange(len(rows))[::-1]
+        lengths = np.linalg.norm(sums, axis=1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mean = np.where((lengths > NORMALS_CANCEL * counts)[:, None], sums / lengths[:, None],
+                            N[np.maximum(first, 0)])
+        c = (N * mean[rows]).sum(axis=1)
+        np.maximum.at(out, rows, np.sqrt(np.maximum(1.0 - c * c, 0.0)) / np.maximum(c, 0.2))
+        return out
+
     def level_lattice(self, M):
         """A coarse level's whole lattice (LevelLattice), of M cells across, made once"""
         found = self._levels.get(M)
@@ -796,9 +856,7 @@ class LevelLattice:
         """The points' slopes (Topology.key_slope()): 0 inside a face, the others' asked for one at a time, when first
         needed (by the 3D parts on a mesh: a sphere's stand on its chart, which has no folds)"""
         if self._slopes is None:
-            self._slopes = np.zeros(len(self.keys))
-            for row in np.flatnonzero(self._key_rows[:, 0] != FACE).tolist():
-                self._slopes[row] = self._top.key_slope(self.keys[row], self._M)
+            self._slopes = self._top.key_slopes(self.keys, self._M)
         return self._slopes
 
     @property
@@ -1793,6 +1851,10 @@ def floor_job(world, camera, below, window, settings_cells):
             colors)
 
 
+# (background.call(): in a build process of its own)
+floor_job.builds_apart = True
+
+
 def floor_jobs(obj):
     """Whose jobs a map's floor builds are on the worker thread (background.py)"""
     return "floor:" + obj.name
@@ -1862,8 +1924,10 @@ def write_floor(obj, floor_obj, built, corners, sizes, colors):
     tiling.write_mesh(floor_obj, corners, sizes, colors)
 
 
-def settle(obj, camera_world):
-    """At the end of a tick (and when a flight starts): the floor where the camera ended up"""
+def settle(obj, camera_world, start=True):
+    """At the end of a tick (start False) and when a flight starts or a map is made (start): the floor where the camera
+    ended up. A motif's levels with nothing drawn are built here and now at a start (the first picture whole), and on
+    the worker threads in flight (surface_substitution.settle())"""
     if not is_surface(obj):
         return
     world = world_of(obj)
@@ -1878,7 +1942,7 @@ def settle(obj, camera_world):
             from . import surface_substitution
         except ImportError:
             import surface_substitution
-        surface_substitution.settle(obj, camera_world)
+        surface_substitution.settle(obj, camera_world, start)
 
 
 # ----- the lattice for the 3D parts (parts.py) -----
@@ -2016,7 +2080,7 @@ class LocalLattice:
         self.normals = np.concatenate(normals) if normals else np.zeros((0, 3))
         count = len(keys)
         # How steeply the surface falls away from each (Topology.key_slope()): only on a face's sides
-        self._slopes = lambda: np.array([top.key_slope(key, M) if key[0] != FACE else 0.0 for key in keys])
+        self._slopes = lambda: top.key_slopes(keys, M)
         self.center_row = index[center]
         self.inner = np.linalg.norm(self.places, axis=1) <= r_in
         # Neighbors: inside a face from its grid, shifted along its lattice's steps; a shared point's (on an edge or
@@ -2375,6 +2439,11 @@ def built_mesh_pieces(world, level, center, radius, settings, shape):
     """A level's pieces (MeshPieces) built on the worker thread, as parts.write_level() takes them"""
     pieces = MeshPieces(world, level, center, radius, settings, shape)
     return world, pieces, pieces.origin(), radius
+
+
+# (background.call(): in a build process of their own)
+levels_pieces.builds_apart = True
+built_mesh_pieces.builds_apart = True
 
 
 _lattices = {}       # factor -> MeshLattice

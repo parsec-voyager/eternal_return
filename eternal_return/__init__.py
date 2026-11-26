@@ -3,6 +3,7 @@ in flight. Registration: the settings groups, operators and panels (controls.py,
 the scene attributes the settings are kept under, and the add-on's own modules' handlers and draw handlers."""
 import bpy
 
+from . import background
 from . import controls
 from . import flight
 from . import fractal
@@ -17,6 +18,7 @@ from . import physics
 from . import solid_sky
 from . import sphere
 from . import surface
+from . import tile_object
 
 # Every settings group by the scene attribute it's kept under
 SCENE_GROUPS = {**controls.SCENE_GROUPS, **operators.SCENE_GROUPS}
@@ -26,6 +28,7 @@ SCENE_GROUPS = {**controls.SCENE_GROUPS, **operators.SCENE_GROUPS}
 CLASSES = (
     *SCENE_GROUPS.values(),
     *operators.OPERATORS,
+    *tile_object.OPERATORS,
     flight.ER_OT_ResetScale,
     flight.ER_OT_ResetLocations,
     flight.ER_OT_ResetCamera,
@@ -65,6 +68,8 @@ def register():
 def unregister():
     for module in reversed(MODULES):
         module.unregister()
+    # The build processes let go of (they'd end with Blender anyway: their connections close)
+    background.stop_processes()
 
     if fractal.follow_eyes in bpy.app.handlers.frame_change_pre:
         bpy.app.handlers.frame_change_pre.remove(fractal.follow_eyes)

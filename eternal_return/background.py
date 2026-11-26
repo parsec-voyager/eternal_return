@@ -53,7 +53,13 @@ ones (gc.freeze()): the caches the engines keep are long-lived, and a full colle
 import functools
 import gc
 import inspect
+import io
+import itertools
 import math
+import os
+import pickle
+import secrets
+import subprocess
 import sys
 import threading
 import time
@@ -77,7 +83,9 @@ _number = 0
 _threads = []
 # How many worker threads: numpy lets go of Python's lock in its array loops, so two builds run on two cores at once
 # for the most part (2026-11-19: on one, a fast glide's 3D parts, strapwork and cuts kept it busy 9 s of 10, and the
-# strapwork's builds waited up to 2 s)
+# strapwork's builds waited up to 2 s). Each runs its builds in a process of its own (PROCESSES): three were no more
+# of the view drawn in time than two on an M1, and the flight's own frames over 33 ms went from 7 to 51 (2026-11-25:
+# three build processes and Blender's main thread filled its four fast cores)
 WORKERS = 2
 # Python's switch interval once the workers run, seconds (above: at 1 ms the climb still fell to 17 frames a second, at
 # 0.2 to 23 at worst)
@@ -181,7 +189,7 @@ def _work():
         give_way()
         started = time.perf_counter()
         try:
-            result = function(*args)
+            result = call(function, *args)
         except Exception:
             traceback.print_exc()
             result = FAILED
@@ -261,10 +269,209 @@ def finished(owner):
 
 def forget(owner=None):
     """Drop the owner's jobs and results (everyone's with None): a file was loaded, or its map is gone. A job under
-    way runs to its end and is thrown away."""
+    way runs to its end and is thrown away. Everyone's: the build processes start again, the shared objects they had
+    no longer the map's."""
+    global _generation
+    if owner is None:
+        _generation += 1
+        _shared.clear()
+        _shared_key.clear()
     with _lock:
         for table in (_pending, _work_of, _results):
             for key in [key for key in table if owner is None or key[0] == owner]:
                 del table[key]
         for key in [key for key in _ran if owner is None or key[0] == owner]:
             del _ran[key]
+
+
+# ----- builds in processes of their own -----
+#
+# Python runs one thread's Python at a time, so the worker threads took turns with the flight's tick for one core of the
+# machine's (an M1's eight), and a fast flight's builds waited in line: in a dive and a climb back, up to 50 builds
+# waiting, the oldest a second, the floor's finer levels and the 3D frames' missing from 2 to 25% of the view
+# (2026-11-25). A function marked builds_apart (an attribute set on it: its arguments and result pickle, it touches no
+# bpy and no state kept between builds) is worked out by a Python process of the worker thread's own
+# (build_process.py), which it starts the first time: the thread waits on its connection without Python's lock.
+# Objects every build shares and too big to send with each (a surface's Topology: its class has shared_by_key, and
+# shared_data() and from_shared() to send and make it) are sent to a process once and then named by key in what's
+# pickled (dumps(), loads()).
+
+# Off: every build in the worker threads, as before
+PROCESSES = True
+# How long a new build process may take to connect (s), past which builds stay in the threads
+PROCESS_START = 30.0
+_BOOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "build_process.py")
+_shared = {}                 # key -> an object sent to processes once, by key
+_shared_key = {}             # id(object) -> its key
+_shared_numbers = itertools.count(1)
+_here = threading.local()    # a worker thread's process (_Process)
+_generation = 0              # forget() moves it on: processes started before it are let go
+_processes = []              # every process started, to let go of at the end
+
+
+def share(obj, key=None):
+    """obj shared by key (made one if None): sent to a process once, then named by key (dumps())"""
+    if key is None:
+        key = f"{os.getpid()}-{next(_shared_numbers)}"
+    _shared[key] = obj
+    _shared_key[id(obj)] = key
+    return key
+
+
+class _Pickler(pickle.Pickler):
+    """pickle, with every shared object (its class's shared_by_key) named by its key, the keys noted in keys"""
+
+    def __init__(self, file, keys):
+        super().__init__(file, pickle.HIGHEST_PROTOCOL)
+        self.keys = keys
+
+    def persistent_id(self, obj):
+        if not getattr(type(obj), "shared_by_key", False):
+            return None
+        key = _shared_key.get(id(obj))
+        if key is None or _shared.get(key) is not obj:
+            key = share(obj)
+        self.keys.add(key)
+        return key
+
+
+class _Unpickler(pickle.Unpickler):
+    def persistent_load(self, key):
+        return _shared[key]
+
+
+def dumps(value):
+    """value pickled, its shared objects by key: (the bytes, the keys)"""
+    buffer, keys = io.BytesIO(), set()
+    _Pickler(buffer, keys).dump(value)
+    return buffer.getvalue(), keys
+
+
+def loads(data):
+    return _Unpickler(io.BytesIO(data)).load()
+
+
+# A connection's writes at most this many bytes at a time, retried while the system is out of buffers for a moment
+# (sturdy())
+SEND_CHUNK = 1 << 18
+SEND_RETRIES = 2000
+
+
+def sturdy(connection):
+    """connection (multiprocessing's, over a socket) writing in chunks, each retried while the system has no buffer
+    space for it (ENOBUFS, EAGAIN; a write that fails writes nothing, so the stream stays whole): one write of a
+    level's 3 MB answer failed so on macOS, mid-glide, and the build process died with it (2026-11-25). Not on Windows,
+    whose sockets aren't written with os.write (multiprocessing's own send there)."""
+    import errno
+    if sys.platform == "win32":
+        return connection
+    handle = connection.fileno()
+    write = os.write
+
+    def send(buf, write=write):
+        view = memoryview(buf).cast("B")
+        tries = 0
+        while len(view):
+            try:
+                n = write(handle, view[:SEND_CHUNK])
+            except InterruptedError:
+                continue
+            except OSError as error:
+                if error.errno not in (errno.ENOBUFS, errno.EAGAIN) or tries >= SEND_RETRIES:
+                    raise
+                tries += 1
+                time.sleep(0.001)
+                continue
+            tries = 0
+            view = view[n:]
+    connection._send = send
+    return connection
+
+
+class _Process:
+    """A build process (build_process.py), connected: which shared objects it has, and the generation it's of"""
+
+    def __init__(self):
+        from multiprocessing.connection import Listener
+        key = secrets.token_bytes(16)
+        listener = Listener(("127.0.0.1", 0), authkey=key)
+        try:
+            # (Not for ever, if it never comes)
+            socket = getattr(getattr(listener, "_listener", None), "_socket", None)
+            if socket is not None:
+                socket.settimeout(PROCESS_START)
+            host, port = listener.address
+            self.process = subprocess.Popen(
+                [sys.executable, "-I", _BOOT, f"{host}:{port}", key.hex(), os.path.dirname(_BOOT),
+                 __name__.rpartition(".")[0]], stdin=subprocess.DEVNULL)
+            self.connection = sturdy(listener.accept())
+        finally:
+            listener.close()
+        self.sent = set()
+        self.generation = _generation
+
+    def call(self, function, args):
+        data, keys = dumps((function, args))
+        for key in sorted(keys - self.sent):
+            obj = _shared[key]
+            self.connection.send(("define", key, type(obj).__module__, type(obj).__qualname__, obj.shared_data()))
+            self.sent.add(key)
+        self.connection.send(("call", data))
+        kind, payload = self.connection.recv()
+        if kind == "error":
+            raise RuntimeError(f"in a build process:\n{payload}")
+        return loads(payload)
+
+    def close(self):
+        try:
+            self.connection.close()
+        except OSError:
+            pass
+        try:
+            self.process.wait(1.0)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+
+
+def _process_here():
+    """This worker thread's build process, started if it has none (None if processes are off or won't start)"""
+    global PROCESSES
+    if not PROCESSES or threading.get_ident() == _main:
+        return None
+    process = getattr(_here, "process", None)
+    if process is not None and (process.generation != _generation or process.process.poll() is not None):
+        process.close()
+        process = None
+    if process is None:
+        try:
+            process = _Process()
+        except Exception:
+            traceback.print_exc()
+            print("Eternal Return: builds stay in the worker threads (no build process started)")
+            PROCESSES = False
+            return None
+        _here.process = process
+        _processes.append(process)
+    return process
+
+
+def call(function, *args):
+    """function(*args): in this worker thread's build process if function builds_apart, else here"""
+    if getattr(function, "builds_apart", False):
+        process = _process_here()
+        if process is not None:
+            try:
+                return process.call(function, args)
+            except (EOFError, OSError):
+                # The process went (killed, crashed): this build here, a new process for the next
+                _here.process = None
+    return function(*args)
+
+
+def stop_processes():
+    """Let every build process go (they end when their connection closes)"""
+    global _generation
+    _generation += 1
+    for process in _processes:
+        process.close()
+    _processes.clear()
