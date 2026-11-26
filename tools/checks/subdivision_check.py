@@ -18,7 +18,8 @@ What's checked on each:
 - split: the mesh split three times exactly (its own scheme's subdivide()), every vertex's limit point against the
   chart's exact point there, and its float point
 - edges: two faces' exact points along the side they share, the same
-- step: step() (offsets from a point, the motif drawer's) against exact differences, coarse (2^-2) and deep (2^-12)
+- step: step() (offsets from a point, the motif drawer's) against exact differences, coarse (2^-2), deep (2^-12),
+  and deeper than floats hold a face's points (2^-30, 2^-40: irregular faces' tiles from their leaves, or exactly)
 - across: just past a face's side and just inside it, the same surface (relocated()): position and first derivatives
   (by a border, where float derivatives come from rough pieces, to a hundredth)
 - opensubdiv (quads only): the chart's points against Blender's own subdivision surface's limit (OpenSubdiv), level 5
@@ -165,11 +166,19 @@ def check_step(name, top):
     rng = random.Random(5)
     q = lambda x, bits: round(x * (1 << bits)) / (1 << bits)
     worst = {}
-    for k in (2, 12):
-        for _ in range(60):
-            f = rng.randrange(len(ch.regular))
+    irregular = np.flatnonzero(~np.asarray(ch.regular)).tolist()
+    for k in (2, 12, 30, 40):
+        for sample in range(60):
+            # Deeper than floats hold a face's points (FLOAT_STEP), irregular faces' tiles (_leaf_steps(), or exactly
+            # right by an extraordinary corner): a third of them near its corner 0, 2^-(k - 8) away (from a leaf
+            # 2^-8 times as big) or 2^-(k - 2) (exactly, the leaf about its size)
+            deep = k > 24 and irregular
+            f = rng.choice(irregular) if deep else rng.randrange(len(ch.regular))
             tri = top.sides[f] == 3
             ur, vr = q(rng.uniform(0.05, 0.45), k + 2), q(rng.uniform(0.05, 0.45), k + 2)
+            if deep and sample % 3 == 0:
+                near = 2.0 ** -(k - (8 if sample % 2 else 2))
+                ur, vr = q(rng.uniform(1.0, 2.0) * near, k + 2), q(rng.uniform(1.0, 2.0) * near, k + 2)
             du = np.array([[q(rng.uniform(0, 1), 10) for _ in range(4)]])
             dv = np.array([[q(rng.uniform(0, 1), 10) for _ in range(4)]])
             if tri:

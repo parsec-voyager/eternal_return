@@ -329,8 +329,11 @@ def make_operator(m, events, clock, snap, click_select=None, moved=None, out=Non
         if hasattr(m, "surface") and hasattr(m, "sphere"):
             bpy.context.view_layer.update()
             camera = m.drone_camera.matrix_world
+            # (Mid-flight, as the tick's own: nothing drawn is built on the worker threads, not here)
+            import inspect
+            mid = {"start": False} if "start" in inspect.signature(m.surface.settle).parameters else {}
             for obj in m.sphere.sphere_objects(bpy.context.scene) + m.surface.surface_objects(bpy.context.scene):
-                m.surface.settle(obj, camera.translation)
+                m.surface.settle(obj, camera.translation, **mid)
                 if m.parts.is_parts(obj):
                     m.parts.settle(obj, camera.translation, view=camera.to_3x3())
             bpy.context.view_layer.update()
@@ -466,6 +469,14 @@ def start_flight(m, op, clock, keep_state=False):
     if m.physics.is_flying() and not keep_state:
         m.physics.reset(m.drone_obj)
     context.view_layer.update()
+    # As the flight's start does (after start_physics()): the surface maps' first picture built whole, here and now
+    # (since 2026-11-25 their ticks never build on the main thread, so without this the harness's flights started with
+    # nothing drawn, unlike a real one)
+    if hasattr(m, "surface") and hasattr(m, "parts"):
+        for obj in context.scene.objects:
+            m.surface.settle(obj, m.drone_camera.matrix_world.translation)
+            if m.parts.is_parts(obj):
+                m.parts.settle(obj, m.drone_camera.matrix_world.translation)
     op._controller = object()
     op._gamepad = None
     op._sound = types.SimpleNamespace(update=lambda *a: None, stop=lambda: None)
