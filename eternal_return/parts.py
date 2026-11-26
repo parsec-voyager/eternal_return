@@ -892,9 +892,9 @@ def _has(settings, kind):
     return any(p.get("on", "vertex") == kind for p in settings["pieces"])
 
 
-def wanted_levels(lattice, world, settings, h, high):
+def wanted_levels(lattice, world, settings, h, high, below=None):
     """The levels with cells from 1 / fade[1] (or with no fade, 1 / fine) of the drone's height h (map units) to high,
-    at the anchor, one more
+    where the drone is (below: the point below it, lattice.cell_sizes()), one more
     either way, no coarser than first_level. Their cells are measured (cell_sizes()): only where the chart is about
     linear over a level's cells are they 2^level of the anchor's units, and near a cube corner, which the chart pinches,
     a level's cells are up to N^(1/3) times bigger than that, the coarse ones and the fine ones at the corner alike."""
@@ -902,7 +902,7 @@ def wanted_levels(lattice, world, settings, h, high):
     first = int(setting(settings, "first_level"))
     low = h / float(fade[1] if fade else setting(settings, "fine"))
     unit = lattice.unit_level(world)
-    sizes = lattice.cell_sizes(world, [unit])
+    sizes = lattice.cell_sizes(world, [unit], below)
     # From the coarsest the anchor's units would want, finer, until a level's cells are below low: never coarser than
     # the levels wanted, since the chart only ever makes cells bigger than that. A level's cells are lattice.ratio
     # times smaller than the next coarser's (2, or a Penrose map's phi).
@@ -911,7 +911,7 @@ def wanted_levels(lattice, world, settings, h, high):
     level = max(first, unit - math.floor(steps))
     while True:
         batch = [k for k in range(level, level + LEVEL_BATCH) if k not in sizes]
-        sizes.update(lattice.cell_sizes(world, batch))
+        sizes.update(lattice.cell_sizes(world, batch, below))
         level += LEVEL_BATCH
         if sizes[level - 1] < low:
             break
@@ -1025,8 +1025,10 @@ def settle(obj, camera_world, budget=BUILD_BUDGET, view=None):
     # giant levels is hidden below in this same tick (sinking)
     exact_landed = land_exact(lattice, obj, state)
     exact_from = exact_ratio(settings, shape, window / h)
-    wanted = wanted_levels(lattice, world, settings, h, 2.0 * exact_from * h)
-    sizes = lattice.cell_sizes(world, wanted)
+    # Each level's cells measured where the drone is, as its floor's are
+    below = lattice.below(obj, world, q)
+    wanted = wanted_levels(lattice, world, settings, h, 2.0 * exact_from * h, below)
+    sizes = lattice.cell_sizes(world, wanted, below)
     first = int(setting(settings, "first_level"))
     # The boundary between giant levels and instanced ones: a level becomes giant once its cells are 2 exact_from
     # drone heights, and instanced again under exact_from, once its instances are built (rising: every such level at
@@ -1062,13 +1064,13 @@ def settle(obj, camera_world, budget=BUILD_BUDGET, view=None):
         ratio = float(fades[1] if fades else setting(settings, "fine"))
         step = level_step(lattice)
         soon_h = h * math.exp(rate * EARLY_TIME)
-        for k in wanted_levels(lattice, world, settings, soon_h, 2.0 * exact_from * soon_h):
+        for k in wanted_levels(lattice, world, settings, soon_h, 2.0 * exact_from * soon_h, below):
             if k > wanted[-1] and drawn(lattice, k, first) and len(early) < EARLY_MOST:
-                cell = lattice.cell_sizes(world, [k - step])[k - step]
+                cell = lattice.cell_sizes(world, [k - step], below)[k - step]
                 early[k] = max(0.0, math.log(ratio * cell / h) / rate) if cell > 0.0 else EARLY_TIME
     state.early = early
     if early:
-        sizes = {**sizes, **lattice.cell_sizes(world, sorted(early))}
+        sizes = {**sizes, **lattice.cell_sizes(world, sorted(early), below)}
     keep = set(instanced) | set(early)
     owner = jobs_owner(obj)
     by_level = {}
@@ -1215,7 +1217,6 @@ def settle(obj, camera_world, budget=BUILD_BUDGET, view=None):
             stake = max(share(level, radius) - share(level, max(radius - moved, 0.0)), schedule.REFRESH * share(
                 level, radius))
             due.append((stake, cells_away(level, radius - step - moved), level, level_obj, radius, led, None))
-    below = None
     plain = None
     # What each is worth (schedule.value(), by the same rule as the floor's), the best asked for first (a tick asks for
     # budget s at most). Until 2026-11-20 by rank: rising levels first, then the coarser (2026-11-19: with the finest
@@ -1247,8 +1248,6 @@ def settle(obj, camera_world, budget=BUILD_BUDGET, view=None):
         if ahead.any():
             center = lattice.center(world, lattice.below(obj, world, q + ahead), level)
         else:
-            if below is None:
-                below = lattice.below(obj, world, q)
             center = lattice.center(world, below, level)
         job = None
         if worker and level not in state.failed:

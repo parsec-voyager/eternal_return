@@ -844,9 +844,10 @@ class SubstitutionLattice(surface.MeshLattice):
         stretched more than the anchor's (kept_levels() keeps half as much again, and two tiles)"""
         return (radius + 4.0) * self.cell_sizes(world, [level])[level] * 1.2
 
-    def cell_sizes(self, world, levels):
-        """Each level's tile edge at the anchor's face (map units): rho 2^n LAMBDA^-d times its edge"""
-        edge = self.edge(world)
+    def cell_sizes(self, world, levels, below=None):
+        """Each level's tile edge on the face below the drone (below; else the anchor's face), map units: rho 2^n
+        LAMBDA^-d times its edge (see surface.cell_sizes())"""
+        edge = self.edge(world) if below is None else float(world.topology.chart.edge_sizes()[below.face])
         return {d: world.rho * edge * self.rule.shrink_float(d, world.n) for d in levels}
 
     def add_levels(self, world, camera, q, h, window, levels, settings, shape, phases, placer):

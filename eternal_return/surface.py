@@ -1565,10 +1565,7 @@ _transforms = {}     # (text, then's text, rho, topology, factor) -> transform()
 
 def floor_level(world, below, window, cells):
     """The level whose cells, where the drone is, are about window / cells across (map units), no coarser than 0"""
-    top = world.topology
-    f = below.face
-    a, b, _w = top.frame(f, *below.base, world.N)
-    cell = world.rho * math.sqrt(float(np.linalg.norm(a)) * float(np.linalg.norm(b)))     # a level-n cell, map units
+    cell = level_cell(world, below)
     wanted = window / cells
     if cell <= 0.0 or not math.isfinite(cell):
         return world.n
@@ -2159,12 +2156,25 @@ class MeshPieces:
         return d_float(d_sub(point, self.center_point()), self.M), 0.0
 
 
-def cell_sizes(world, levels):
-    """Each level's cells at the anchor (map units): its face's Jacobian there, the geometric mean of its columns, a
-    level's cells k^(n - level) units"""
+def level_cell(world, below=None):
+    """A level-n cell's size (map units) where the drone is (below: the point below it; else at the anchor): its
+    face's Jacobian there, the geometric mean of its columns (right at an extraordinary corner, a step of the level
+    out). Zero or not finite where a face folds flat."""
     top = world.topology
-    a, b, _w = top.frame(world.face, world.U, world.V, world.N)
-    unit = world.rho * math.sqrt(float(np.linalg.norm(a)) * float(np.linalg.norm(b)))
+    f, I, J = (world.face, world.U, world.V) if below is None else (below.face, *below.base)
+    a, b, _w = top.frame(f, I, J, world.N)
+    return world.rho * math.sqrt(float(np.linalg.norm(a)) * float(np.linalg.norm(b)))
+
+
+def cell_sizes(world, levels, below=None):
+    """Each level's cells (map units), a level's cells k^(n - level) units, measured where the drone is (below), as
+    the floor measures them (floor_level()). Not at the anchor: a mesh's faces differ in size, and next to an
+    extraordinary corner a level's cells shrink by the corner's own ratio, not k. On a Suzanne map the anchor's
+    level-n cells were 5 times the size of those under the drone, and a recenter or a loop, moving the anchor, changed
+    the 3D parts' finest levels by up to three, seams of 2-5% (2026-11-26)."""
+    unit = level_cell(world, below)
+    if below is not None and not (unit > 0.0 and math.isfinite(unit)):
+        unit = level_cell(world)
     return {level: unit * power(world.k, world.n - level) for level in levels}
 
 
@@ -2414,8 +2424,8 @@ class MeshLattice:
         own = World.from_text(world.text(), world.rho, world.topology, world.k)
         return built_mesh_pieces, own, level, center, radius, settings, shape
 
-    def cell_sizes(self, world, levels):
-        return cell_sizes(world, levels)
+    def cell_sizes(self, world, levels, below=None):
+        return cell_sizes(world, levels, below)
 
     def transform(self, world, text, built):
         return transform(world, text, built)

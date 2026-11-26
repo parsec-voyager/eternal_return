@@ -550,7 +550,7 @@ class IcoChart:
         return parts_sphere._distortion(n - level, to_corner, level)
 
     @staticmethod
-    def cell_sizes(world, levels):
+    def cell_sizes(world, levels, below=None):
         return cell_sizes(world, levels)
 
 

@@ -484,7 +484,9 @@ class SphereLattice:
         levels are a few ms, mostly kept, see Pieces)"""
         return None
 
-    def cell_sizes(self, world, levels):
+    def cell_sizes(self, world, levels, below=None):
+        """At the anchor, whatever the point below: the sphere's chart changes the cells' size smoothly and little
+        between the anchor and the drone (the anchor follows it)"""
         return self.chart.cell_sizes(world, levels)
 
     def transform(self, world, text, built):
