@@ -178,10 +178,69 @@ class Near:
     each once)"""
 
 
+def core_lattice(top, faces):
+    """The core's handle on the map's mesh as a level's corners and edges need it (Rust: a rhomb mesh's sides and its
+    halves' corners, or a girih mesh's groups, gluings and tiles), made once and kept on faces; None where the core
+    can't take it (no core with it, a smooth chart)"""
+    found = faces.__dict__.get("_core_lattice", False)
+    if found is False:
+        found = None
+        make = getattr(SS._native, "Lattice", None)
+        if make is not None and faces.core(top) is not None:
+            row = lambda a: np.ascontiguousarray(a, dtype=np.int64)
+            try:
+                if faces.clip:
+                    atlas, tiles = atlas_of(top, faces), prototiles_of(faces.rule)
+                    found = make.girih(tiles.corners.shape[3], row(tiles.corners).reshape(-1), row(tiles.directions).reshape(-1),
+                                       row(tiles.count), row(atlas.group), row(faces.turn),
+                                       [label[0] for label in faces.labels],
+                                       [(f, s, g, k, c) for (f, s), (g, k, c) in atlas.crossing.items()],
+                                       np.ascontiguousarray(atlas.glued, dtype=bool).view(np.uint8), row(top.sides))
+                else:
+                    side_edge, side_forward, edges, edge_home, vertex_home = topology_arrays(top)
+                    found = make.rhombs(row(CORNERS).reshape(-1), row(LEGS).reshape(-1), row(side_edge).reshape(-1),
+                                        np.ascontiguousarray(side_forward, dtype=bool).view(np.uint8).reshape(-1),
+                                        row(edges).reshape(-1), row(edge_home), row(vertex_home),
+                                        np.array([E2[int(kind)] for kind in faces.kind], dtype=np.int64))
+            except (TypeError, ValueError):
+                found = None
+        faces._core_lattice = found
+    return found
+
+
+def core_near(world, faces, level, center, reach):
+    """lattice_near() by the core (Rust: the same corners, edges and neighbors, without Python's lock, which a level's
+    build held for some 25 ms on its worker thread), or None where it can't (core_lattice(), roots that aren't whole
+    numbers)"""
+    if getattr(SS._native, "level_lattice_near", None) is None or level.coef.dtype != np.int64:
+        return None
+    lattice = core_lattice(world.topology, faces)
+    if lattice is None or not all(type(c) is int for root in level.roots.values() for c in root[0]):
+        return None
+    row = np.ascontiguousarray
+    arrays, width, placed = SS._native.level_lattice_near(
+        faces.core(world.topology), lattice, level.d, level.scale, row(level.face, dtype=np.int64),
+        row(level.kind, dtype=np.int8), row(level.rot, dtype=np.int8), row(level.mirror, dtype=bool).view(np.uint8),
+        row(level.coef), row(level.rel, dtype=np.float64), level.core_roots(), world.n, world.rho, world.anchor_point(),
+        tuple(float(c) for c in center), float(reach))
+    level.take_placed(world, placed)
+    floats, wholes = (lambda a: np.frombuffer(a, dtype=np.float64)), (lambda a: np.frombuffer(a, dtype=np.int64))
+    out = Near()
+    out.places, out.normals, out.slopes = floats(arrays[0]).reshape(-1, 3), floats(arrays[1]).reshape(-1, 3), floats(arrays[2])
+    out.copy_face, out.copy_rel, out.home = wholes(arrays[3]), wholes(arrays[4]).reshape(-1, 4), wholes(arrays[5])
+    out.edges, out.neighbors = wholes(arrays[6]).reshape(-1, 2), wholes(arrays[7]).reshape(-1, width)
+    out.keys = None
+    out.level, out.world_text = level, level.world_text
+    return out
+
+
 def lattice_near(world, faces, level, center, reach):
     """Level's corners and edges whose tiles come within reach of center (map units), as a Near: reach in the level's
     ideal units (its tiles' edges), as far in map units as the face nearest center stretches them at most, and a tenth
     more. A rhomb mesh's tiles are its faces' halves; a girih mesh's are cut to its faces (pieces_near())."""
+    found = core_near(world, faces, level, center, reach)
+    if found is not None:
+        return found
     rule = level.rule
     turn = rule.orient[level.rot, level.mirror.astype(np.int64)]
     cents = level.rel + np.einsum("tij,tj->ti", turn, rule.middles[level.kind])
@@ -575,7 +634,10 @@ def pieces_near(world, faces, level, rows):
     # Places from each corner's best copy over all its copies; homes: the lowest face holding it
     held = vertex_of >= 0
     holds = held & (outside <= ON_SIDE)
-    order = np.lexsort((outside, vertex_of))
+    # (how far outside in whole ON_SIDEs: a corner on a side two faces share is on it from both, to within float64's
+    # rounding of 0, and which copy it was placed from was that rounding's to pick; now the first of them)
+    with np.errstate(invalid="ignore"):
+        order = np.lexsort((np.round(outside / ON_SIDE), vertex_of))
     order = order[held[order]]
     starts = np.r_[0, np.flatnonzero(np.diff(vertex_of[order])) + 1] if len(order) else np.zeros(0, np.int64)
     first_copy = order[starts]
@@ -627,6 +689,9 @@ class SubstitutionPieces(parts.LaidOut):
 
     def __init__(self, world, faces, level, center, radius, settings, shape):
         self.world, self.faces, self.level, self.d = world, faces, level, level.d
+        # (The core's handle on the surface made here, where the topology is at hand: the level's own steps that
+        # aren't given it, its faces' sides, use it if it's there)
+        faces.core(world.topology)
         # Each face's tiles from a root among them (a kept level's can be 2^40 of its tiles from it, and float64 then
         # places a corner a ten-thousandth of a tile off, a different way for each root: a level built again turned
         # pieces by that), so every corner is a few tiles from its root, placed to ~1e-14 of a tile
@@ -673,10 +738,17 @@ class SubstitutionPieces(parts.LaidOut):
     def camera(self, camera, placer=None):
         """A camera (map units, float64) in the pieces' units from the middle corner, from both exact points: (that,
         0.0)"""
+        cam = camera_exact(self.world, camera)
+        core = self.faces.core(self.world.topology) if getattr(SS._native, "level_from_point", None) is not None else None
+        f = int(self.near.copy_face[self.middle_row])
+        root = self.level.roots[f][0]
+        if core is not None and all(type(c) is int for c in root):
+            # (Rust: the same exact difference, rounded once, without Python's lock or its Fractions)
+            z = RING.add(root, tuple(int(c) for c in self.near.copy_rel[self.middle_row]))
+            return np.array(SS._native.level_from_point(core, self.d, f, z, cam)), 0.0
         if self._point is None:
             self._point = self.point(self.middle_row)
         grow = self.level.rule.q_grow(self.d)
-        cam = camera_exact(self.world, camera)
         return np.array([q_float(q_mul(q_sub((c, Fraction(0)), p), grow)) for c, p in zip(cam, self._point)]), 0.0
 
 

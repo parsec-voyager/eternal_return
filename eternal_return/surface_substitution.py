@@ -193,8 +193,8 @@ class Faces:
         return background.shared_reduce(self)
 
     def shared_data(self):
-        # (not the core's handle, core(): it's made again where it's wanted)
-        return {name: value for name, value in self.__dict__.items() if name != "_core"}
+        # (not the core's handles, core() and parts_substitution's: they're made again where they're wanted)
+        return {name: value for name, value in self.__dict__.items() if name not in ("_core", "_core_lattice")}
 
     @classmethod
     def from_shared(cls, data):
@@ -202,10 +202,13 @@ class Faces:
         faces.__dict__.update(data)
         return faces
 
-    def core(self, top):
+    def core(self, top=None):
         """The core's handle on this surface (Rust: its chart, the rule, each face's frame), made once from these
-        arrays; None where the core can't take it (a smooth chart, a core without it, a face without a frame)"""
+        arrays and top's (the Topology these faces are of; without it, the handle if it's been made); None where the
+        core can't take it (a smooth chart, a core without it, a face without a frame)"""
         found = self.__dict__.get("_core", False)
+        if found is False and top is None:
+            return None
         if found is False:
             found = None
             make = getattr(_native, "Surface", None)
@@ -518,6 +521,12 @@ class Level:
         fs, index = np.unique(self.face[rows], return_inverse=True)
         offsets = np.empty((len(fs), 4))
         grow = None
+        new = [(f, self.roots[f][0]) for f in fs.tolist() if (f, self.roots[f][0]) not in kept]
+        core = self.core(faces, None, new, "level_side_offsets")
+        if core is not None:
+            # (Rust: deep down each face's is exact work in Q(sqrt 5))
+            found = np.frombuffer(_native.level_side_offsets(core, self.d, new), dtype=np.float64).reshape(-1, 4)
+            kept.update(zip(new, found))
         for i, f in enumerate(fs.tolist()):
             root = self.roots[f][0]
             found = kept.get((f, root))
@@ -548,6 +557,46 @@ class Level:
         fresh.source = (self, self.window)
         return fresh
 
+    def core(self, faces, top, roots, call):
+        """The core's handle on the surface (Faces.core()) if roots ((face, root tau) pairs, some) can go to its call:
+        whole-number roots, a surface and a call it has; else None"""
+        if not roots or getattr(_native, call, None) is None:
+            return None
+        if not all(type(c) is int for _f, root in roots for c in root):
+            return None
+        # (a square or triangle map's faces, surface_cells.CellFaces, have no handle: the core has no rule of theirs)
+        handle = getattr(faces, "core", None)
+        return None if handle is None else handle(top)
+
+    def core_roots(self):
+        """The roots as the core's calls take them: (face, root tau, None or (x, y, z, u_r, v_r))"""
+        return [(f, r[0], None if r[1] is None else (float(r[1][0]), float(r[1][1]), float(r[1][2]), float(r[2]),
+                                                     float(r[3]))) for f, r in self.roots.items()]
+
+    def take_placed(self, world, placed):
+        """The roots a core's call placed on its way ((face, x, y, z, u_r, v_r)), kept as place_root() keeps them"""
+        for f, x, y, z, ur, vr in placed:
+            root = self.roots[f]
+            # (a shallow root's (u, v) are numpy's floats, as place_root() leaves them)
+            root[1], root[2], root[3] = (np.array([x, y, z]), *((np.float64(ur), np.float64(vr))
+                                                                if world.n < FLOAT_N else (ur, vr)))
+
+    def place_roots(self, world, faces, fs):
+        """The roots of faces fs that aren't placed yet, placed by the core where it can (Rust: place_root()'s places,
+        all at once and without Python's lock. Deep down each is some 2 ms of Fractions here, and a giant level's
+        frames place every face's root they're on: most of a Darb map's window)"""
+        new = [(f, self.roots[f][0]) for f in fs if self.roots[f][1] is None]
+        core = self.core(faces, world.topology, new, "level_place_roots")
+        if core is None:
+            return
+        found = np.frombuffer(_native.level_place_roots(core, self.d, new, world.n, world.rho, world.anchor_point()),
+                              dtype=np.float64).reshape(-1, 5)
+        shallow = world.n < FLOAT_N
+        for (f, _root), row in zip(new, found):
+            root = self.roots[f]
+            # (a shallow root's (u, v) are numpy's floats, as place_root() leaves them)
+            root[1], root[2], root[3] = row[:3].copy(), *((row[3], row[4]) if shallow else (float(row[3]), float(row[4])))
+
     def place_root(self, world, faces, f):
         """Face f's root's map place and (u, v): exactly from the anchor deep down, in float64 from the mesh's own
         coordinates shallow (FLOAT_N: then float64 places the mesh's points to far under a level-n unit)"""
@@ -576,6 +625,7 @@ class Level:
         it)."""
         if self.params is None:
             fs, index = np.unique(self.face, return_inverse=True)
+            self.place_roots(world, faces, fs.tolist())
             params = [self.place_root(world, faces, int(f)) for f in fs]
             place = np.array([p[1] for p in params]).reshape(-1, 3)
             ur = np.array([p[2] for p in params])
@@ -656,8 +706,7 @@ class Level:
             # By the core (Rust: the same tiles kept, the same roots placed, without Python's lock, which this
             # holds on a worker thread for a tenth of a second a level in a deep dive)
             row = np.ascontiguousarray
-            roots = [(f, r[0], None if r[1] is None else (float(r[1][0]), float(r[1][1]), float(r[1][2]), r[2], r[3]))
-                     for f, r in self.roots.items()]
+            roots = self.core_roots()
             seen = ([(f, ideal[0], ideal[1], centers.extra[f]) for f, ideal in centers.ideal.items()]
                     if centers is not None and world.n >= FLOAT_N else [])
             rows, covered, placed, none = _native.level_keep_near(
@@ -665,11 +714,7 @@ class Level:
                 row(self.rot, dtype=np.int8), row(self.mirror, dtype=bool).view(np.uint8), row(self.coef),
                 row(self.rel, dtype=np.float64), roots, world.n, world.rho, world.anchor_point(), seen, float(window),
                 tuple(float(c) for c in center))
-            for f, x, y, z, ur, vr in placed:
-                root = self.roots[f]
-                # (a shallow root's (u, v) are numpy's floats, as place_root() leaves them)
-                root[1], root[2], root[3] = (np.array([x, y, z]), *((np.float64(ur), np.float64(vr))
-                                                                    if world.n < FLOAT_N else (ur, vr)))
+            self.take_placed(world, placed)
             rows = np.frombuffer(rows, dtype=np.int64)
             if none:
                 if len(self.face):
