@@ -855,21 +855,20 @@ class SubstitutionLattice(surface.MeshLattice):
         level's pieces round the corner nearest the point below, in float64 against the camera, and those in reach
         worked out for the window (exact_piece()): in float64 where its rounding is well under the drone's height,
         exactly past that (add_levels_job(), worked out here)"""
-        function, args = self.levels_job(world, camera, q, h, window, levels, settings, shape, phases, placer)
+        function, args = self.add_levels_job(world, camera, q, h, window, levels, settings, shape, phases, placer)
         found, then = function(*args)
         if then is not None:
             then()
         return found
 
-    # The giant levels' window built here (parts.settle_exact()): on the worker thread (levels_job()), a dive at the
-    # Penrose plane lost its frames' fourth finest level in 87% of its frames, against 11%, the levels' own builds
-    # (some 100 ms each) waiting behind it (2026-11-24)
-    add_levels_job = None
-
-    def levels_job(self, world, camera, q, h, window, levels, settings, shape, phases, placer):
-        """add_levels() as (function, args), for the worker thread: what reads and keeps the map's levels (its
-        state's kept levels and giant tiles, the levels known to have nothing round the camera) done here, the pieces
-        there, on a world of its own; (function, args)"""
+    def add_levels_job(self, world, camera, q, h, window, levels, settings, shape, phases, placer):
+        """add_levels() as (function, args), for the worker thread (parts.settle_exact()): what reads and keeps the
+        map's levels (its state's kept levels and giant tiles, the levels known to have nothing round the camera) done
+        here, the pieces there (in a build process: levels_pieces()), on a world of its own. Built here instead (until
+        2026-11-26), a smooth Penrose map's giant window took 2 to 4 s of a climb's ticks at a time, frozen; it was
+        kept here on 2026-11-24, when on the worker thread a dive at the Penrose plane lost its frames' fourth finest
+        level in 87% of its frames, against 11%: before the build processes, its 0.1 to 0.4 s builds held Python's
+        lock against the levels' own."""
         faces, st = world.substitution
         text = world.text()
         own = surface.World.from_text(text, world.rho, world.topology, world.k)
@@ -878,20 +877,35 @@ class SubstitutionLattice(surface.MeshLattice):
         levels = [d for d in levels if not (d in st.no_pieces and st.no_pieces[d][0] is shape
                                             and SS.covers(world, text, st.no_pieces[d][1], camera, window))]
         if not levels:
-            return levels_pieces, (own, faces, st, [], None, camera, None, window, settings, shape, phases, h)
+            return noted_pieces, (own, st, faces, [], None, camera, None, window, settings, shape, phases, h)
         below = surface.Below(world, np.asarray(q, dtype=float))
         foot = world.rho * below.foot
         camera_point = camera_exact(world, camera)
         SS.kept_levels(world, faces, below, st, max(levels), foot, lambda d: window)
         level_tiles = [(d, self.giant_tiles(world, faces, st, d, below, foot, window), self.cell_sizes(world, [d])[d])
                        for d in reversed(levels)]
-        return levels_pieces, (own, faces, st, level_tiles, foot, camera, camera_point, window, settings, shape,
-                               phases, h)
+        return noted_pieces, (own, st, faces, level_tiles, foot, camera, camera_point, window, settings, shape,
+                              phases, h)
 
 
-def levels_pieces(world, faces, st, level_tiles, foot, camera, camera_point, window, settings, shape, phases, h):
+def noted_pieces(world, st, *args):
+    """SubstitutionLattice.add_levels_job()'s build (its world first, as parts.exact_job() wants it):
+    levels_pieces(world, *args) (in a build process if there's one), and then, on the main thread, the levels with
+    nothing round the camera noted in the map's state, st"""
+    found, nothing = background.call(levels_pieces, world, *args)
+
+    def then():
+        for d, noted in nothing.items():
+            if noted is None:
+                st.no_pieces.pop(d, None)
+            else:
+                st.no_pieces[d] = noted
+    return found, then
+
+
+def levels_pieces(world, faces, level_tiles, foot, camera, camera_point, window, settings, shape, phases, h):
     """SubstitutionLattice.add_levels_job()'s pieces, level by level ((level, its tiles, its cells' size)): (the
-    pieces, then: the levels with nothing round the camera noted in the map's state, st, on the main thread)"""
+    pieces, each level's (shape, Drawn) with nothing round the camera or None)"""
     found, nothing = [], {}
     text = world.text()
     reach_cells = max(shape.plan[0], shape.plan[1], shape.past, float(shape.reach.max()))
@@ -918,14 +932,11 @@ def levels_pieces(world, faces, st, level_tiles, foot, camera, camera_point, win
                                 local if floats else None)
             if piece is not None:
                 found.append(piece)
+    return found, nothing
 
-    def then():
-        for d, noted in nothing.items():
-            if noted is None:
-                st.no_pieces.pop(d, None)
-            else:
-                st.no_pieces[d] = noted
-    return found, then
+
+# (background.call(): in a build process of its own)
+levels_pieces.builds_apart = True
 
 
 _lattices = {}

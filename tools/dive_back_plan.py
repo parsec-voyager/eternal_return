@@ -8,16 +8,19 @@ user flies fast and low over the surface, turning, more than straight down):
 
 - dive: at 50 degrees, tracked (a perfect pilot holding the line at the target)
 - glide: at 12 degrees, tracked: low over the surface, the view along it, far more of it in sight
-- turns: at 12 degrees, untracked, turning left and right in turn (TURN_PERIOD seconds a sweep): the view swings
-  across the surface, so what's built ahead for the view (frames' view reach, floor windows) is outrun sideways. With
-  the camera tilted 90 degrees (the user's: looking along the thrust), that's the roll stick; yaw only spins the view
-  about its own axis
+- turns: at 12 degrees, turning left and right in turn (TURN_PERIOD seconds a sweep): the view swings across the
+  surface, so what's built ahead for the view (frames' view reach, floor windows) is outrun sideways. With the camera
+  tilted 90 degrees (the user's: looking along the thrust), that's the roll stick; yaw only spins the view about its
+  own axis. Tracked like the others: after each tick's roll the pilot slides the drone back onto its line from the
+  target along its view, so it sweeps sideways across the surface as it dives in (untracked, on round and tube maps
+  it flew off the surface: 0 to 6 loops in 30 s, against a tracked dive's 20 to 70, 2026-11-26)
 
     Blender -b <map.blend> --factory-startup --python tools/dive_back_plan.py -- <out.json> [DIVE] [BACK] [dive|glide|turns]
 """
 
 import importlib
 import json
+import math
 import os
 import sys
 import types
@@ -28,7 +31,12 @@ from mathutils.kdtree import KDTree
 
 ANGLES = {"dive": 50.0, "glide": 12.0, "turns": 12.0}
 TURN_PERIOD = 2.0
-TURN_ROLL = 0.5
+# How far each sweep turns the drone (degrees): the roll stick's peak is worked out from the file's roll rate at the
+# stick's center (scene.stick_rates, Actual rates, nearly linear there; the add-on's default 145 degrees a second if
+# the file has none). At a fixed 0.5 it turned 73 degrees a sweep, and even tracked the view swung off the target and
+# the drone with it (0 to 2 loops in 30 s, 2026-11-26)
+TURN_SWEEP = 30.0
+CENTER_RATE = 145.0
 GRID = 9
 
 args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
@@ -126,14 +134,18 @@ if start is None:
 sticks = [{"t": 0.0, "throttle": 0.0, "click": 0}, {"t": 0.02, "click": 1}, {"t": 0.5, "throttle": 0.0},
           {"t": 1.5, "throttle": 0.5}, {"t": dive, "throttle": 0.5}, {"t": dive + 0.5, "throttle": -1.0}]
 if mode == "turns":
+    rates = bpy.context.scene.get("stick_rates")
+    center = math.degrees(rates.get("roll_center_sensitivity", math.radians(CENTER_RATE))) if rates else CENTER_RATE
+    # (A ramp up to roll and back down over TURN_PERIOD turns center x roll x TURN_PERIOD / 2)
+    roll = min(1.0, 2.0 * TURN_SWEEP / (center * TURN_PERIOD))
     t, side = 1.5, 1.0
     while t < dive + back:
-        sticks.append({"t": round(t + TURN_PERIOD / 2, 3), "roll": side * TURN_ROLL})
+        sticks.append({"t": round(t + TURN_PERIOD / 2, 3), "roll": side * roll})
         sticks.append({"t": round(t + TURN_PERIOD, 3), "roll": 0.0})
         t, side = t + TURN_PERIOD, -side
     sticks.sort(key=lambda s: s["t"])
 plan = {"start": {"location": [round(float(x), 4) for x in start], "look_at": [round(float(x), 4) for x in target],
-                  "click_select": obj.name, "track": mode != "turns"},
+                  "click_select": obj.name, "track": True},
         "duration": dive + back, "sticks": sticks}
 with open(path, "w") as f:
     json.dump(plan, f)
