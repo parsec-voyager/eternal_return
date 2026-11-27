@@ -193,13 +193,34 @@ class Faces:
         return background.shared_reduce(self)
 
     def shared_data(self):
-        return dict(self.__dict__)
+        # (not the core's handle, core(): it's made again where it's wanted)
+        return {name: value for name, value in self.__dict__.items() if name != "_core"}
 
     @classmethod
     def from_shared(cls, data):
         faces = cls.__new__(cls)
         faces.__dict__.update(data)
         return faces
+
+    def core(self, top):
+        """The core's handle on this surface (Rust: its chart, the rule, each face's frame), made once from these
+        arrays; None where the core can't take it (a smooth chart, a core without it, a face without a frame)"""
+        found = self.__dict__.get("_core", False)
+        if found is False:
+            found = None
+            make = getattr(_native, "Surface", None)
+            if make is not None and top.chart_name == "bilinear" and len(self.q_ev_x) == len(top.corners):
+                row = lambda a: np.ascontiguousarray(a, dtype=np.float64)
+                flat = np.array([v for c in top.corners for v in c], dtype=np.int64)
+                clipped = (self.polygon, row(self.side_normals), row(self.side_lengths)) if self.clip else ()
+                try:
+                    found = make(self.rule.name, row(top.positions), np.ascontiguousarray(top.sides, dtype=np.int64),
+                                 flat, row(self.ev_x), row(self.ev_y), row(self.sigma), row(self.sigma_hi), self.q_ev_x,
+                                 self.q_ev_y, *clipped)
+                except (TypeError, ValueError):
+                    found = None
+            self._core = found
+        return found
 
     def __init__(self, top, mesh, rule):
         self.rule = rule
@@ -629,6 +650,40 @@ class Level:
         units, from the point below as that face sees it (exactly, once a face: Centers), which never overflows however
         big the level's tiles are in map units, then by their map places too where those are good enough"""
         rule = self.rule
+        core = faces.core(world.topology) if getattr(_native, "level_keep_near", None) is not None else None
+        if (core is not None and self.coef.dtype == np.int64 and (centers is not None or world.n < FLOAT_N)
+                and all(type(c) is int for root in self.roots.values() for c in root[0])):
+            # By the core (Rust: the same tiles kept, the same roots placed, without Python's lock, which this
+            # holds on a worker thread for a tenth of a second a level in a deep dive)
+            row = np.ascontiguousarray
+            roots = [(f, r[0], None if r[1] is None else (float(r[1][0]), float(r[1][1]), float(r[1][2]), r[2], r[3]))
+                     for f, r in self.roots.items()]
+            seen = ([(f, ideal[0], ideal[1], centers.extra[f]) for f, ideal in centers.ideal.items()]
+                    if centers is not None and world.n >= FLOAT_N else [])
+            rows, covered, placed, none = _native.level_keep_near(
+                core, self.d, self.scale, row(self.face, dtype=np.int64), row(self.kind, dtype=np.int8),
+                row(self.rot, dtype=np.int8), row(self.mirror, dtype=bool).view(np.uint8), row(self.coef),
+                row(self.rel, dtype=np.float64), roots, world.n, world.rho, world.anchor_point(), seen, float(window),
+                tuple(float(c) for c in center))
+            for f, x, y, z, ur, vr in placed:
+                root = self.roots[f]
+                # (a shallow root's (u, v) are numpy's floats, as place_root() leaves them)
+                root[1], root[2], root[3] = (np.array([x, y, z]), *((np.float64(ur), np.float64(vr))
+                                                                    if world.n < FLOAT_N else (ur, vr)))
+            rows = np.frombuffer(rows, dtype=np.int64)
+            if none:
+                if len(self.face):
+                    self.take(rows)
+                self.window = 0.0
+                return
+            self.take(rows)
+            self.center = np.asarray(center, dtype=float)
+            self.__dict__.pop("_at", None)       # covers()'s
+            kept = set(self.face.tolist())
+            self.roots = {f: r for f, r in self.roots.items() if f in kept}
+            self.window = covered if len(rows) else 0.0
+            self.reroot()
+            return
         if faces.clip and len(self.face):
             # Tiles cut to their faces: only those whose descendants can reach the face (a rule's straddle past a tile
             # by its PAD at most) are its

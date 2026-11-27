@@ -2,8 +2,8 @@
 meant to be a function of what it's sent and nothing else, and one written anew (in Rust) is checked against the same
 recordings. Also what each costs with nothing else running (the seconds a build process took in the flight, and here).
 
-    <Blender's python> -I tools/checks/replay_builds.py [--core <folder>] [--tolerance <t>] <folder of recordings>
-                                                        [name's start ...]
+    <Blender's python> -I tools/checks/replay_builds.py [--core <folder>] [--tolerance <t>] [--ignore <attribute>]
+                                                        <folder of recordings> [name's start ...]
 
 --core: where an eternal_return_core wheel is unpacked, for the builds to use its Rust (without it, a bare Python has
 no core and every build is the add-on's own Python).
@@ -13,6 +13,8 @@ runs matrix products (a smooth chart's patches), its sums round in another order
 isn't a float (how many pieces, which rows, whole numbers) must match either way. The biggest difference let through
 is printed. Two more things pass under a tolerance, and are counted: an array of rows that holds the same rows in
 another order, and numbers that are rounding noise by nature (NOISE).
+--ignore: an attribute left out of the comparison, given once for each: what an object keeps only to save working
+something out again (a level's `_face_sides`), which a version written anew may not keep.
 
 Run outside Blender, as a build process is (build_process.py): the add-on's modules under their package's name,
 without its __init__. Numbers must match exactly; arrays that don't are printed with how far apart they are.
@@ -38,12 +40,16 @@ REORDERED = [0]              # how many arrays held the same rows in another ord
 # Numbers that are rounding noise where they aren't 0, held to a difference of their own (under a tolerance): a
 # lattice's slopes are sqrt(1 - c^2) of two normals' c, 1e-8 for two that are the same to the last bit but one
 NOISE = {"_slopes": 1e-6}
+# Attributes left out of the comparison: what an object keeps only to save working it out again (--ignore)
+IGNORED = set()
 
 
 def different(a, b, where, found, most=6, seen=None):
     """Where a and b differ, added to found (strings), down through tuples, lists, dicts, arrays and objects' own
     values. A pair of objects is gone into once (seen): they may hold each other."""
-    if len(found) >= most:
+    if len(found) >= most or a is b:
+        # (The very same object on both sides, a rule's tables or a module, is the same: gone into, a module's own
+        # NaT constants differ from themselves)
         return
     seen = set() if seen is None else seen
     if not isinstance(a, (int, float, str, bytes, bool, Fraction, complex, type(None), np.generic)):
@@ -102,9 +108,9 @@ def different(a, b, where, found, most=6, seen=None):
         if a != b:
             found.append(f"{where}: sets differ")
     else:
-        state = lambda obj: {**{name: getattr(obj, name) for cls in type(obj).__mro__
-                                for name in getattr(cls, "__slots__", ()) if hasattr(obj, name)},
-                             **getattr(obj, "__dict__", {})}
+        state = lambda obj: {name: value for name, value in {
+            **{name: getattr(obj, name) for cls in type(obj).__mro__ for name in getattr(cls, "__slots__", ())
+               if hasattr(obj, name)}, **getattr(obj, "__dict__", {})}.items() if name not in IGNORED}
         mine, theirs = state(a), state(b)
         if not mine and not theirs:
             if a is not b and a != b and getattr(type(a), "shared_by_key", None) is None:
@@ -123,9 +129,11 @@ def reordered(a, b, size):
 def main():
     global TOLERANCE
     arguments = sys.argv[1:]
-    while arguments[:1] and arguments[0] in ("--core", "--tolerance"):
+    while arguments[:1] and arguments[0] in ("--core", "--tolerance", "--ignore"):
         if arguments[0] == "--core":
             sys.path.insert(0, arguments[1])
+        elif arguments[0] == "--ignore":
+            IGNORED.add(arguments[1])
         else:
             TOLERANCE = float(arguments[1])
         arguments = arguments[2:]
