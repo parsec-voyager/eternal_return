@@ -7,6 +7,13 @@ arrays (write_mesh()).
 
 import numpy as np
 
+# The engine in Rust (the eternal_return_core wheel's), for what's been moved there. A core that doesn't have a
+# function yet (an older wheel, or none) leaves the Python here to do it: the same arrays either way.
+try:
+    from eternal_return_core import _native
+except ImportError:
+    _native = None
+
 
 def clip_half_planes(points, counts, normals, offsets):
     """Convex polygons (n, corners, d: points of any dimension) each cut to normal . p <= offset (its own normal and
@@ -51,6 +58,19 @@ SPLIT_RATIO = 4.0
 
 
 def split_near(points, counts, middle, tile, ratio=SPLIT_RATIO):
+    """split_near_here() by the core (Rust: some twenty times faster, and without Python's lock), when it has it and
+    the arrays are what it takes"""
+    cut = getattr(_native, "split_near", None)
+    if cut is None or points.dtype != np.float64 or counts.dtype != np.int64 or points.ndim != 3 or points.shape[2] < 3:
+        return split_near_here(points, counts, middle, tile, ratio)
+    width, d = points.shape[1:]
+    pieces, width, piece_counts, rows = cut(np.ascontiguousarray(points), np.ascontiguousarray(counts), width, d,
+                                            tuple(float(m) for m in middle), float(tile), float(ratio))
+    return (np.frombuffer(pieces, dtype=np.float64).reshape(-1, width, d),
+            np.frombuffer(piece_counts, dtype=np.int64), np.frombuffer(rows, dtype=np.int64))
+
+
+def split_near_here(points, counts, middle, tile, ratio=SPLIT_RATIO):
     """Convex polygons (n, corners, d: their first three coordinates a place, any after carried along) that are more
     than ratio times bigger than their distance from middle (or tile, near it), cut on the planes at middle +- tile *
     2^k along each axis: tiles() in three dimensions, for surfaces that fold (a mesh's levels and floor). A polygon's

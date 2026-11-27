@@ -3,7 +3,7 @@ thread hands it, so builds run on cores of their own instead of taking turns wit
 
 Started by background.py's worker threads, one each, as
 
-    python -I build_process.py <host:port> <key> <the add-on's folder> <its package's name>
+    python -I build_process.py <host:port> <key> <the add-on's folder> <its package's name> [<the core's folder>]
 
 it connects back, makes the add-on's modules importable by the same names as in Blender (its package without its
 __init__, which registers with Blender: no bpy here, and no build needs it), and then serves messages until the
@@ -43,6 +43,9 @@ def leave_with(parent):
 def main():
     address, key, folder, package = sys.argv[1:5]
     leave_with(os.getppid())
+    # The eternal_return_core wheel, from where Blender has it (builds call the engine's Rust through it)
+    if len(sys.argv) > 5 and sys.argv[5]:
+        sys.path.append(sys.argv[5])
     # Below Blender's own threads: where the cores are short, the flight's frame goes first, and the builds take what's
     # left (the efficiency cores too)
     try:
@@ -79,7 +82,10 @@ def main():
                 answer = ("ok", background.dumps(function(*args))[0])
             except Exception:
                 answer = ("error", traceback.format_exc())
-            connection.send(answer)
+            try:
+                connection.send(answer)
+            except (EOFError, OSError):
+                return             # Blender went while this was being built
 
 
 if __name__ == "__main__":

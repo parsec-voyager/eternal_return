@@ -388,6 +388,18 @@ def sturdy(connection):
     return connection
 
 
+def _core_folder():
+    """Where this Blender imports the eternal_return_core wheel from ("" if it has none): a build process is told,
+    since Blender's own Python started bare knows nothing of an extension's wheels"""
+    import importlib.util
+    try:
+        spec = importlib.util.find_spec("eternal_return_core")
+    except (ImportError, ValueError):
+        spec = None
+    places = list(spec.submodule_search_locations or ()) if spec is not None else []
+    return os.path.dirname(places[0]) if places else ""
+
+
 class _Process:
     """A build process (build_process.py), connected: which shared objects it has, and the generation it's of"""
 
@@ -403,7 +415,7 @@ class _Process:
             host, port = listener.address
             self.process = subprocess.Popen(
                 [sys.executable, "-I", _BOOT, f"{host}:{port}", key.hex(), os.path.dirname(_BOOT),
-                 __name__.rpartition(".")[0]], stdin=subprocess.DEVNULL)
+                 __name__.rpartition(".")[0], _core_folder()], stdin=subprocess.DEVNULL)
             self.connection = sturdy(listener.accept())
         finally:
             listener.close()

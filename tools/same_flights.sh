@@ -6,7 +6,7 @@
 #     git worktree add <scratch>/head HEAD
 #     tools/same_flights.sh <scratch>/head <out>/before
 #     tools/same_flights.sh . <out>/after [map names ...]
-#     tools/same_flights.sh --compare <out>/before <out>/after
+#     tools/same_flights.sh --compare <out>/before <out>/after [tolerance]
 #
 # --compare (tools/checks/same_flights.py, needs ffmpeg): each flight's camera path and events must match exactly; its
 # frames are compared as decoded pixels. Not as files: a PNG holds the time it was written. And not every frame
@@ -16,7 +16,7 @@ set -u
 BLENDER=/Applications/Blender.app/Contents/MacOS/Blender
 if [[ $1 == --compare ]]; then
     python=(/Applications/Blender.app/Contents/Resources/*/python/bin/python3.*([1]))
-    exec $python ${0:A:h}/checks/same_flights.py $2 $3
+    exec $python ${0:A:h}/checks/same_flights.py $2 $3 ${4:-}
 fi
 repo=${1:A}; out=${2:A}; shift 2
 mkdir -p $out
