@@ -182,6 +182,9 @@ class Faces:
     # Sent to a build process once, then named by key (background.py): every level's build has it
     shared_by_key = True
 
+    def __reduce__(self):
+        return background.shared_reduce(self)
+
     def shared_data(self):
         return dict(self.__dict__)
 

@@ -451,6 +451,9 @@ class Topology:
 
     shared_by_key = True
 
+    def __reduce__(self):
+        return background.shared_reduce(self)
+
     def shared_data(self):
         """What a build process makes this topology again from (from_shared())"""
         return self.positions, self.corners, self.chart_name, self.colors

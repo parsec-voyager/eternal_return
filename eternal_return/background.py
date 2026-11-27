@@ -293,8 +293,8 @@ def forget(owner=None):
 # state kept between builds) is worked out by a Python process of the worker thread's own
 # (build_process.py), which it starts the first time: the thread waits on its connection without Python's lock.
 # Objects every build shares and too big to send with each (a surface's Topology: its class has shared_by_key, and
-# shared_data() and from_shared() to send and make it) are sent to a process once and then named by key in what's
-# pickled (dumps(), loads()).
+# shared_data() and from_shared() to send and make it, and pickles by shared_reduce()) are sent to a process once and
+# then named by key in what's pickled (dumps(), loads()).
 
 # Off: every build in the worker threads, as before
 PROCESSES = True
@@ -318,33 +318,43 @@ def share(obj, key=None):
     return key
 
 
-class _Pickler(pickle.Pickler):
-    """pickle, with every shared object (its class's shared_by_key) named by its key, the keys noted in keys"""
+_noting = threading.local()  # a thread's dumps() under way: the keys of the shared objects it has met (keys)
 
-    def __init__(self, file, keys):
-        super().__init__(file, pickle.HIGHEST_PROTOCOL)
-        self.keys = keys
 
-    def persistent_id(self, obj):
-        if not getattr(type(obj), "shared_by_key", False):
-            return None
-        key = _shared_key.get(id(obj))
-        if key is None or _shared.get(key) is not obj:
-            key = share(obj)
-        self.keys.add(key)
-        return key
+def shared_reduce(obj):
+    """How a shared object pickles (its class's __reduce__): as its key, noted for the dumps() under way. (Asked of
+    every object by a pickler's persistent_id() instead, in Python, pickling was a fifth of what the worker threads
+    did on a Darb-i Imam torus: a level's roots and tiles are thousands of small objects, and only one or two of a
+    build's are shared.)"""
+    key = _shared_key.get(id(obj))
+    if key is None or _shared.get(key) is not obj:
+        key = share(obj)
+    keys = getattr(_noting, "keys", None)
+    if keys is not None:
+        keys.add(key)
+    return shared_by, (key,)
+
+
+def shared_by(key):
+    """The shared object of a key (what shared_reduce() pickles one as)"""
+    return _shared[key]
 
 
 class _Unpickler(pickle.Unpickler):
+    """(Builds recorded before shared objects pickled by shared_reduce() name them by persistent ids)"""
+
     def persistent_load(self, key):
         return _shared[key]
 
 
 def dumps(value):
     """value pickled, its shared objects by key: (the bytes, the keys)"""
-    buffer, keys = io.BytesIO(), set()
-    _Pickler(buffer, keys).dump(value)
-    return buffer.getvalue(), keys
+    _noting.keys = keys = set()
+    try:
+        data = pickle.dumps(value, pickle.HIGHEST_PROTOCOL)
+    finally:
+        _noting.keys = None
+    return data, keys
 
 
 def loads(data):
