@@ -2,8 +2,8 @@
 called on as it was left, and what it returned. Like replay_builds.py (the same comparison, tolerance and all), for
 the functions and methods a flight runs outside its build processes.
 
-    <Blender's python> -I tools/checks/replay_calls.py [--core <folder>] [--tolerance <t>] [--ignore <attribute>]
-                                                       <folder> [name's start ...]
+    <Blender's python> -I tools/checks/replay_calls.py [--core <folder>] [--tolerance <t>] [--floor <f>]
+                                                       [--ignore <attribute>] <folder> [name's start ...]
 
 --ignore: an attribute left out of the comparison, given once for each (what an object keeps only to save working
 something out again: a version written anew may not keep it).
@@ -26,11 +26,13 @@ import replay_builds as R  # noqa: E402
 
 def main():
     arguments = sys.argv[1:]
-    while arguments[:1] and arguments[0] in ("--core", "--tolerance", "--ignore"):
+    while arguments[:1] and arguments[0] in ("--core", "--tolerance", "--ignore", "--floor"):
         if arguments[0] == "--core":
             sys.path.insert(1, arguments[1])
         elif arguments[0] == "--ignore":
             R.IGNORED.add(arguments[1])
+        elif arguments[0] == "--floor":
+            R.FLOOR = float(arguments[1])
         else:
             R.TOLERANCE = float(arguments[1])
         arguments = arguments[2:]

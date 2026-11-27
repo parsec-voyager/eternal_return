@@ -2,8 +2,8 @@
 meant to be a function of what it's sent and nothing else, and one written anew (in Rust) is checked against the same
 recordings. Also what each costs with nothing else running (the seconds a build process took in the flight, and here).
 
-    <Blender's python> -I tools/checks/replay_builds.py [--core <folder>] [--tolerance <t>] [--ignore <attribute>]
-                                                        <folder of recordings> [name's start ...]
+    <Blender's python> -I tools/checks/replay_builds.py [--core <folder>] [--tolerance <t>] [--floor <f>]
+                                                        [--ignore <attribute>] <folder of recordings> [name's start ...]
 
 --core: where an eternal_return_core wheel is unpacked, for the builds to use its Rust (without it, a bare Python has
 no core and every build is the add-on's own Python).
@@ -13,6 +13,7 @@ runs matrix products (a smooth chart's patches), its sums round in another order
 isn't a float (how many pieces, which rows, whole numbers) must match either way. The biggest difference let through
 is printed. Two more things pass under a tolerance, and are counted: an array of rows that holds the same rows in
 another order, and numbers that are rounding noise by nature (NOISE).
+--floor: with a tolerance, floats no further apart than this pass whatever their size (map units: 1e-12, say).
 --ignore: an attribute left out of the comparison, given once for each: what an object keeps only to save working
 something out again (a level's `_face_sides`), which a version written anew may not keep.
 
@@ -35,6 +36,9 @@ import numpy as np
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PACKAGE = "eternal_return"
 TOLERANCE = 0.0
+# With a tolerance: floats no further apart than this pass whatever their size (--floor: a place worked out as 1e-15
+# that is 0 another way is all difference by its share, and none in map units)
+FLOOR = 0.0
 LET_THROUGH = [0.0]          # the biggest difference a tolerance has let through
 REORDERED = [0]              # how many arrays held the same rows in another order
 # Numbers that are rounding noise where they aren't 0, held to a difference of their own (under a tolerance): a
@@ -76,7 +80,7 @@ def different(a, b, where, found, most=6, seen=None):
                            and np.array_equal(a[~finite], b[~finite], equal_nan=True))
             if TOLERANCE and same_places and share <= TOLERANCE:
                 LET_THROUGH[0] = max(LET_THROUGH[0], share)
-            elif TOLERANCE and same_places and noise is not None and float(off[finite].max(initial=0.0)) <= noise:
+            elif TOLERANCE and same_places and float(off[finite].max(initial=0.0)) <= max(noise or 0.0, FLOOR):
                 pass
             elif TOLERANCE and same_places and a.ndim == 2 and reordered(a, b, size):
                 # (Pieces sorted by a number that two of them all but share come out either way round)
@@ -89,7 +93,7 @@ def different(a, b, where, found, most=6, seen=None):
             share = abs(a - b) / max(abs(a), abs(b)) if a - b == a - b and max(abs(a), abs(b)) > 0 else float("inf")
             if TOLERANCE and share <= TOLERANCE:
                 LET_THROUGH[0] = max(LET_THROUGH[0], share)
-            else:
+            elif not (TOLERANCE and abs(a - b) <= FLOOR):
                 found.append(f"{where}: {a!r} against {b!r}")
     elif isinstance(a, (int, str, bytes, bool, Fraction, complex, type(None), np.generic)):
         if a != b:
@@ -127,13 +131,15 @@ def reordered(a, b, size):
 
 
 def main():
-    global TOLERANCE
+    global TOLERANCE, FLOOR
     arguments = sys.argv[1:]
-    while arguments[:1] and arguments[0] in ("--core", "--tolerance", "--ignore"):
+    while arguments[:1] and arguments[0] in ("--core", "--tolerance", "--ignore", "--floor"):
         if arguments[0] == "--core":
             sys.path.insert(0, arguments[1])
         elif arguments[0] == "--ignore":
             IGNORED.add(arguments[1])
+        elif arguments[0] == "--floor":
+            FLOOR = float(arguments[1])
         else:
             TOLERANCE = float(arguments[1])
         arguments = arguments[2:]

@@ -10,6 +10,10 @@ were when it was called, "after": the pickled (self or None, result), "seconds"}
 objects by key: shared_<key>.pickle beside them, as record_builds.py writes them). A level's `source` and `origin`
 (the kept levels it's a copy of) are left out, as they are of what a build is sent.
 
+An object that is a shared object's own part (a Topology's chart: its trees and caches don't pickle, and it's made
+again from its Topology anyway) is saved as that part of it, so a chart's methods can be recorded too:
+RECORD_CALLS="subdivision.SubdivisionChart._evaluate".
+
 Of each function RECORD_MOST (24) calls are kept, spread over the flight (thinned as it goes). A call whose state
 won't pickle (something another thread is changing) is skipped, and counted.
 """
@@ -33,8 +37,30 @@ LOCK = threading.Lock()
 LEFT_OUT = ("source", "origin")
 
 
+# A shared object's attributes whose objects are saved as that attribute of it
+PARTS = ("chart",)
+SHARED_OBJECTS = {}      # background._shared, once the add-on is there
+
+
+class Part:
+    """An attribute of a shared object, standing in for the object there: pickled as getattr(the shared one, name)"""
+
+    def __init__(self, owner, name):
+        self.owner, self.name = owner, name
+
+    def __reduce__(self):
+        return getattr, (self.owner, self.name)
+
+
 def plain(obj):
-    """obj as it's saved: a level without the kept levels it's a copy of"""
+    """obj as it's saved: a level without the kept levels it's a copy of, a shared object's part as that part of it"""
+    for name in PARTS:
+        for owner in list(SHARED_OBJECTS.values()):
+            if getattr(owner, name, None) is obj:
+                return Part(owner, name)
+    if type(obj).__name__.endswith("Chart"):
+        # (A chart whose Topology no build has shared yet: the call is skipped)
+        raise ValueError("a chart whose topology isn't shared yet")
     if any(name in getattr(obj, "__dict__", ()) for name in LEFT_OUT):
         obj = copy.copy(obj)
         for name in LEFT_OUT:
@@ -46,6 +72,8 @@ def setup(m):
     package = m.__name__.rpartition(".")[0]
     background = sys.modules[package + ".background"]
     os.makedirs(OUT, exist_ok=True)
+    global SHARED_OBJECTS
+    SHARED_OBJECTS = background._shared
 
     def packed(value):
         data, keys = background.dumps(value)

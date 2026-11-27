@@ -47,6 +47,7 @@ default).
 
 import math
 import operator
+import threading
 from fractions import Fraction
 
 import numpy as np
@@ -1851,6 +1852,10 @@ class SubdivisionChart:
         wanted = orders or ((du, dv),)
         shape = f.shape
         f, u, v = f.ravel(), u.ravel(), v.ravel()
+        core = self.core()
+        if core is not None:
+            outs = [out.reshape(shape + (3,)) for out in self._core_evaluate(core, f, u, v, wanted, depth)]
+            return outs if orders else outs[0]
         if not self._past_sides(f, u, v).any():
             outs = [out.reshape(shape + (3,)) for out in self._evaluate_at(f, u, v, wanted, depth)]
             return outs if orders else outs[0]
@@ -1875,6 +1880,77 @@ class SubdivisionChart:
                 out = sum(L[:, x, i, None] * L[:, y, j, None] * second[(x, y)] for x in (0, 1) for y in (0, 1))
             outs.append(out.reshape(shape + (3,)))
         return outs if orders else outs[0]
+
+    # ----- by the core -----
+
+    def core(self):
+        """The core's chart for float points (Rust: every face's patch, the sides' table, and the irregular faces'
+        trees as they're asked for), made once from these arrays; None without a core that has it"""
+        found = self.__dict__.get("_core", False)
+        if found is False:
+            found = None
+            make = getattr(_native, "SmoothChart", None)
+            if make is not None:
+                schemes = {scheme.sides: self._patch_floats[scheme] for scheme in set(self.schemes)}
+                patch_of = lambda sides: None if sides not in schemes else (_floats(schemes[sides][0]), float(schemes[sides][1]))
+                whole = lambda a: np.ascontiguousarray(a, dtype=np.int64)
+                try:
+                    found = make(self.order, bool(self.border), whole(self.sides), np.ascontiguousarray(self.regular, dtype=bool).view(np.uint8),
+                                 _floats(self.C), _floats(self._side_normal), _floats(self._side_point), whole(self._beyond),
+                                 _floats(self._beyond_map), patch_of(4), patch_of(3))
+                except (TypeError, ValueError):
+                    found = None
+            # The trees' shapes as the core numbers them (kept here, so they stay), and one giver at a time
+            self._core_shapes, self._core_shape_of, self._core_lock = [], {}, threading.Lock()
+            self._core = found
+        return found
+
+    def _core_evaluate(self, core, f, u, v, wanted, depth):
+        """_evaluate() of points (1-D arrays) by the core: a list, one (t, 3) for each (du, dv) in wanted. What the
+        core's trees lack it asks for by name, a root, a shape's child or its limit masks (the splits of meshes that
+        make them stay here: Shape), and is asked again: a few dozen shapes a mesh, and from then on every point is
+        its own, without Python's lock. A build's float points were half of what a smooth map's builds did."""
+        faces, u, v = np.ascontiguousarray(f, dtype=np.int64), _floats(u), _floats(v)
+        wanted = [(int(a), int(b)) for a, b in wanted]
+        depth = None if depth is None else int(depth)
+        if not len(faces):
+            return [np.zeros((0, 3)) for _ in wanted]
+        try:
+            while True:
+                found = core.evaluate(faces, u, v, wanted, depth)
+                if type(found) is not tuple:
+                    return [np.frombuffer(out, dtype=np.float64).reshape(-1, 3) for out in found]
+                self._core_give(core, found)
+        except ValueError as error:
+            raise ExtraordinaryError(str(error)) from None
+
+    def _core_shape(self, core, shape):
+        """A Shape's number in the core (given to it the first time)"""
+        number = self._core_shape_of.get(id(shape))
+        if number is None:
+            number = core.add_shape(shape.n, None if shape.control is None else [int(x) for x in shape.control])
+            assert number == len(self._core_shapes)
+            self._core_shapes.append(shape)
+            self._core_shape_of[id(shape)] = number
+        return number
+
+    def _core_give(self, core, need):
+        """What the core's trees asked for: ("root", face), ("child", shape, child) or ("limits", shape)"""
+        with self._core_lock:
+            if need[0] == "root":
+                f = need[1]
+                shape, P = self._float_node(f, ())
+                unit = shape.unit()
+                regular = [bool(unit.kind_regular(corner, self.sides[f])) for corner in range(int(self.sides[f]))]
+                core.set_root(f, self._core_shape(core, shape), _floats(P), regular)
+            elif need[0] == "child":
+                child, W = self._core_shapes[need[1]].child(need[2])
+                if child is None:
+                    core.set_child(need[1], need[2])
+                else:
+                    core.set_child(need[1], need[2], self._core_shape(core, child), _floats(W))
+            else:
+                core.set_limits(need[1], _floats(self._core_shapes[need[1]].limits()))
 
     def _evaluate_at(self, f, u, v, wanted, depth):
         """_evaluate() of points in their faces (1-D arrays): a list, one for each (du, dv) in wanted"""
