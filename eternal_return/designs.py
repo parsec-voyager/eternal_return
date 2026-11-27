@@ -176,20 +176,134 @@ def strapwork_pieces(inset=0.07, frame=0.012, frame_core=0.008, diamond=0.011, d
     return pieces
 
 
+# The shear that makes the cell [0, 1] x [0, 1] a rhomb of two equilateral triangles of side 1, (0, 0), (1, 0),
+# (0, 1) and (1, 0), (1, 1), (0, 1): a triangle face's cells are halves of its square cells
+EQUILATERAL = ((2.0 / math.sqrt(3.0), 1.0 / math.sqrt(3.0)), (0.0, 1.0))
+
+
+def triangle_pieces(shear=EQUILATERAL, inset=0.07, frame=0.012, frame_core=0.008, medial=0.011,
+                    medial_core=0.007, cut=0.008):
+    """The strapwork motif on triangles (the triangle maps' floor, and Strapwork on a triangle mesh's cells) as flat
+    pieces in the cell [0, 1] x [0, 1], which shear makes a rhomb of two equilateral triangles, up (0, 0),
+    (1, 0), (0, 1) and down (1, 0), (1, 1), (0, 1): drawn in the world's shape and taken back through shear's inverse,
+    so its bands are as wide every way. Each triangle has a gold frame inset in from its sides (half width frame, its
+    core frame_core), and inside it its medial triangle (through its sides' middles, half width medial, core
+    medial_core), cut short of the frame by cut: the medial triangles' sides are the next level's cells' sides, so they
+    run on straight from triangle to triangle, through the gutters between frames, where two cross at each side's
+    middle, interlaced (the line parallel to the triangle's next side, counterclockwise, on top). Paints: "frame",
+    "up" and "down" (each medial triangle's, by its triangle; in a gutter the line on top the up one's), each with
+    a "_border" either side."""
+    gap = cut
+    inner = inset + frame + gap         # where the medial sides start, in from the triangle's sides
+    reach = inset - frame - gap         # how far the crossings reach either side of a side, in the gutter
+    under = medial + gap                # where the line below starts, from the middle of the one on top
+    # Two bands crossing at 60 degrees overlap within medial / sin(60) of the crossing across the gutter (and the line
+    # below starts under / sin(60) along itself from it): the gutter must be wider than that
+    assert reach > under / math.sin(math.pi / 3) + medial and inner < 1.0 / 6.0
+    shear = np.array(shear, dtype=float)[:2, :2]
+    to_cell = np.linalg.inv(shear)
+    corners = shear @ np.array([[0.0, 1.0, 1.0, 0.0], [0.0, 0.0, 1.0, 1.0]])     # the cell's corners in the world
+    p00, p10, p11, p01 = corners.T
+    triangles = {"up": (p00, p10, p01), "down": (p10, p11, p01)}
+
+    def band(strip, paint, half, core):
+        """A band as its core and a border to each side: strip(offset, half_width) draws one strip, offset across"""
+        border = (half - core) / 2
+        return [(strip(0.0, core), paint), (strip(-(core + border), border), paint + "_border"),
+                (strip(core + border, border), paint + "_border")]
+
+    def inward(a, b, c):
+        """The unit normal of side a-b pointing into the triangle (toward c)"""
+        along = (b - a) / np.linalg.norm(b - a)
+        n = np.array([-along[1], along[0]])
+        return n if n @ (c - a) > 0 else -n
+
+    pieces = []
+    for name, (a, b, c) in triangles.items():
+        middle = (a + b + c) / 3.0
+        # The frame: the triangle shrunk about its middle until its sides are inset in from the triangle's (its
+        # inradius is a third of its height, 1)
+        shrink = (1.0 / 3.0 - inset) / (1.0 / 3.0)
+
+        def frame_strip(offset, half, a=a, b=b, c=c, middle=middle, shrink=shrink):
+            k = shrink + offset / (1.0 / 3.0)
+            return outline(np.array([middle + k * (p - middle) for p in (a, b, c)]), 2 * half)
+        pieces += [(quad, "frame" + paint[len("frame"):]) for strips, paint in band(frame_strip, "frame", frame,
+                                                                                    frame_core)
+                   for quad in strips]
+        # The medial triangle's sides: from each side's middle to the next side's, cut at the frame
+        sides = [(a, b, c), (b, c, a), (c, a, b)]
+        for k in range(3):
+            (p, q, r), (p2, q2, r2) = sides[k], sides[(k + 1) % 3]
+            start, end = (p + q) / 2.0, (p2 + q2) / 2.0
+            pieces += band(lambda offset, half, start=start, end=end, p=p, q=q, r=r, p2=p2, q2=q2, r2=r2:
+                           strap(start, end, offset, half, inward(p, q, r), inward(p2, q2, r2), inner,
+                                              inner), name, medial, medial_core)
+    # The crossings in the gutters at the up triangle's sides' middles: each side's two lines, parallel to the
+    # triangle's other two sides, out to reach either side of it
+    a, b, c = triangles["up"]
+    for p, q, r in ((a, b, c), (b, c, a), (c, a, b)):
+        m = (p + q) / 2.0
+        n = inward(p, q, r)
+        over, below = (r - q) / np.linalg.norm(r - q), (r - p) / np.linalg.norm(r - p)
+
+        def gutter_strap(start, end, start_edge, end_edge, start_cut, paint):
+            return band(lambda offset, half: strap(start, end, offset, half, start_edge, end_edge,
+                                                                start_cut, 0.0), paint, medial, medial_core)
+        t = reach / abs(over @ n)
+        s0, s1 = m - t * over, m + t * over
+        toward = n if n @ (s1 - s0) > 0 else -n
+        pieces += gutter_strap(s0, s1, toward, -toward, 0.0, "up")
+        # The line below in two, from the one on top (its normal toward each end) out to the gutter's sides
+        across = np.array([-over[1], over[0]])
+        t = reach / abs(below @ n)
+        for sign in (1.0, -1.0):
+            end = m + sign * t * below
+            away = across if across @ (end - m) > 0 else -across
+            out = n if n @ (end - m) > 0 else -n
+            pieces += gutter_strap(m, end, away, -out, under, "down")
+    return [(counterclockwise((to_cell @ np.asarray(polygon, dtype=float).T).T[None])[0], paint)
+              for polygon, paint in pieces]
+
+
+# The substitution rules' floors (a map's "rule"), and what their open frames change: Penrose levels are phi times
+# finer, not 2: some 29 levels between cells a 32nd of the drone and the giant ones' threshold, against the square
+# maps' 19, so more level objects, and with phi times as many levels each built out to 10 of its cells, not 14 (the
+# next coarser goes on to 16 of them): 41 draws a second on the sphere against 29, the look the same (2026-11-16)
+RULES = {"penrose": {"count": 36, "build": 10.0}}
+
 # The floor motifs a map can have (floor_settings()), for the Tile Selected Object button's choice
 FLOORS = (("strapwork", "Strapwork", "Gold square frames and interlaced diamonds, outlined, on every level's cells"),
           ("inferno", "Inferno", "The Inferno's eight-point stars and gold lines on every level's cells"),
+          ("penrose", "Penrose", "Penrose rhombs' strapwork, never repeating at any level: the shape's tiles cut in "
+           "rhombs, one at each tile's corner"),
           ("plain", "Plain", "The mesh's own faces' tones alone, no motif"))
 
 
-def floor_settings(name):
+def floor_settings(name, triangles=False):
     """The floor motif's settings (an object's "surface_substitution": surface_substitution.py draws them on a square
-    lattice's cells, surface_cells.py), or None for a plain floor"""
+    lattice's cells, surface_cells.py), or None for a plain floor. On a mesh of triangles (triangles) Strapwork is
+    the triangle maps' (triangle_pieces()), drawn on the triangles' cells"""
     from . import surface_substitution as SS
     settings = dict(SS.DEFAULTS)
     if name == "plain":
         return None
-    if name == "strapwork":
+    if name in RULES:
+        # A substitution rule's own strapwork (Hankin lines at 54 degrees), its defaults
+        return {k: v for k, v in settings.items() if v is not None}
+    if name == "strapwork" and triangles:
+        pieces = triangle_pieces()
+        hues = [0.55 + 0.25 * p for p in range(4)]
+        settings.update({"paints": {"frame": [hsv(0.13, 0.8, 1.0)], "frame_border": [hsv(0.08, 0.9, 0.3)],
+                                    "up": [hsv(h, 0.85, 1.0) for h in hues],
+                                    "up_border": [hsv(h, 0.9, 0.3) for h in hues],
+                                    "down": [hsv(h + 0.125, 0.85, 1.0) for h in hues],
+                                    "down_border": [hsv(h + 0.125, 0.9, 0.3) for h in hues]},
+                         # Its bands' borders are their outline strips (the outline color, left out far off): a
+                         # border is (half width - core) / 2 of a band's 2 x half width each side
+                         "half_width": 0.011, "outline": (0.011 - 0.007) / 2.0 / 0.022,
+                         "strips": ["frame_border", "up_border", "down_border"]})
+    elif name == "strapwork":
         pieces = strapwork_pieces()
         hues = [0.55 + 0.25 * p for p in range(4)]
         diamond = [hsv(h, 0.85, 1.0) for h in hues]
@@ -231,11 +345,12 @@ def horseshoe_ring(top, band, low, segments=12):
     return outer + inner[::-1]
 
 
-def frames_settings(arch_top=0.35, low=-0.025, first_level=0):
+def frames_settings(arch_top=0.35, low=-0.025, first_level=0, rule="square"):
     """The open frames' settings (an object's "parts", parts.py): beams arch_top of a cell high (the posts stand 0.03
-    higher), reaching low below the floor, from first_level. A post's base is flat, on the plane between the faces
-    that meet at its vertex, and they fall away under it (up to 33 degrees round a torus's tube: tan(16.3 degrees) of
-    its radius), so it reaches low under the floor."""
+    higher), reaching low below the floor, from first_level, on a map of the rule's (a square lattice's, or a
+    substitution rule's, RULES). A post's base is flat, on the plane between the faces that meet at its vertex, and
+    they fall away under it (up to 33 degrees round a torus's tube: tan(16.3 degrees) of its radius), so it reaches
+    low under the floor."""
     post_radius = 0.05
     octagon = [[post_radius * math.cos(math.radians(22.5 + 45 * k)),
                 post_radius * math.sin(math.radians(22.5 + 45 * k))] for k in range(8)]
@@ -255,7 +370,7 @@ def frames_settings(arch_top=0.35, low=-0.025, first_level=0):
              "colors": arch_colors},
         ],
         "first_level": first_level, "build": 14.0, "margin": 3.0, "fade": 0, "fine": 32.0, "exact_from": 8192.0,
-        "window": 1.25, "count": 28,
+        "window": 1.25, "count": 28, **RULES.get(rule, {}),
     }
 
 

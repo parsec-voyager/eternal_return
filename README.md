@@ -21,11 +21,15 @@ Record (in the Record panel) records a flight's inputs: the sticks, and everythi
 The Maps panel's Tile Selected Object turns any object into an endless map to fly into. The object's surface is covered in tiles, every tile splits into smaller tiles, and those split again, forever. Every level has a floor pattern on its tiles and open 3D frames standing on them: posts, beams and horseshoe arches. Dive at the surface and you keep shrinking into ever finer tiles without reaching it. The map loops, so the dive never ends.
 
 Its options:
-- **Tiles:** Laid Out lays about Tile Count quads over the shape, close to square everywhere (Blender's QuadriFlow, then adjusted). Corners where 3 or 5 tiles meet go where the shape needs them. Own Faces uses the object's own faces as they are.
+- **Tiles:**
+  - Laid Out Quads lays about Tile Count quads over the shape, close to square everywhere (Blender's QuadriFlow, then adjusted). Corners where 3 or 5 tiles meet go where the shape needs them.
+  - Laid Out Triangles lays about Tile Count triangles over it instead, close to equilateral, with mostly 6 meeting at each corner.
+  - Own Faces uses the object's own faces as they are.
+  - A shape with one hole (a torus, a knotted tube, a mug) is laid out conformally instead: a perfectly regular grid of squares or triangles, every corner the same, with tiles shrinking smoothly toward the inside of the ring.
 - **Smooth:** fly over the tiles' smooth subdivision surface instead of their flat faces.
-- **Floor:** strapwork, the Inferno's stars, or plain.
+- **Floor:** strapwork, the Inferno's stars, Penrose, or plain. On triangles, strapwork is the triangle version: gold frames and interlaced inner triangles. Penrose cuts every tile into rhombs, one at each corner, and they split by Penrose's rule, so the pattern never repeats at any level. Where the rhombs' corners don't add up to a full turn, the pattern has a small star of 4 or 6 rhombs.
 - **Frames:** turns the 3D frames on or off.
-- **Split:** how many ways each tile splits along a side at the next level.
+- **Split:** how many ways each tile splits along a side at the next level (not for Penrose, which splits by its own ratio).
 - **Merge Parts:** makes overlapping pieces one surface first.
 
 The map is built from the object as it is drawn, modifiers included, so its shape can be changed before tiling. Tiling a shape takes a few seconds. The object itself is hidden, not changed, and Ctrl+Z undoes it all. The map comes with a scaling config, so clicking it in flight turns on Auto Scale to its surface and loops. It's drawn in its own colors, so the button sets the view's Solid shading to color by Attribute.
