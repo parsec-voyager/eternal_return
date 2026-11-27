@@ -979,7 +979,7 @@ class MapState:
         self.queued = {}             # level -> (world text, the point its build was asked round), map units
         self.on_worker = False       # whether its lattice's builds go to the worker thread (lattice.pieces_job())
         self.early = {}              # level -> how long until it's wanted (s), for those built early (settle())
-        self.exact_failed = False    # whether the giant levels' last build on the worker thread failed (settle_exact())
+        self.exact_failures = 0      # how many of the giant levels' builds on the worker thread failed in a row
 
 
 def jobs_owner(obj):
@@ -1472,10 +1472,16 @@ class Exact(schedule.Window):
 EXACT_PRIORITY = -1e29
 
 
+# The giant levels' window is built in the tick once this many of its builds on the worker thread have failed in a row
+# (exact_async()). After the first, one build that failed (its tiles pickled while the tick was changing them) left
+# the map building its windows in the tick for the rest of the flight, 0.6 s frozen at a time in a climb.
+EXACT_FAILURES = 3
+
+
 def exact_async(lattice, state):
     """Whether the map's giant levels' window is built on the worker thread (settle_exact()): once there is one, if its
-    lattice can (lattice.add_levels_job()) and the last one there didn't fail"""
-    return (background.enabled and state.exact is not None and not state.exact_failed
+    lattice can (lattice.add_levels_job()) and its builds there haven't kept failing (EXACT_FAILURES)"""
+    return (background.enabled and state.exact is not None and state.exact_failures < EXACT_FAILURES
             and getattr(lattice, "add_levels_job", None) is not None)
 
 
@@ -1494,8 +1500,9 @@ def land_exact(lattice, obj, state):
     landed = False
     for _key, result in background.finished(exact_jobs_owner(obj)):
         if result is background.FAILED:
-            state.exact_failed = True
+            state.exact_failures += 1
             continue
+        state.exact_failures = 0
         world, camera, window, levels, fresh, window_for, pieces, then = result
         if then is not None:
             then()

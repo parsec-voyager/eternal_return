@@ -640,7 +640,9 @@ class SubstitutionPieces(parts.LaidOut):
                              f"faces {sorted(set(level.face.tolist()))[:8]}, kept for {level.window:.4g} round a point "
                              f"{float(np.linalg.norm(np.asarray(center) - level.center)):.4g} from this one, radius "
                              f"{radius:g} cells of {level.scale:.4g}, n {world.n}, world {world.text() == level.world_text})")
-        middle = int(np.argmin(np.linalg.norm(near.places - center, axis=1)))
+        # (A giant level's far tiles are further than a float's square holds: infinitely far, for finding the nearest)
+        with np.errstate(over="ignore"):
+            middle = int(np.argmin(np.linalg.norm(near.places - center, axis=1)))
         self.middle_place = near.places[middle]
         points = (near.places - self.middle_place) / level.scale
         # Within radius of the mean step from the middle corner to its neighbors
@@ -879,8 +881,8 @@ class SubstitutionLattice(surface.MeshLattice):
         foot = world.rho * below.foot
         camera_point = camera_exact(world, camera)
         SS.kept_levels(world, faces, below, st, max(levels), foot, lambda d: window)
-        level_tiles = [(d, self.giant_tiles(world, faces, st, d, below, foot, window), self.cell_sizes(world, [d])[d])
-                       for d in reversed(levels)]
+        level_tiles = [(d, SS.for_build(self.giant_tiles(world, faces, st, d, below, foot, window)),
+                        self.cell_sizes(world, [d])[d]) for d in reversed(levels)]
         return noted_pieces, (own, st, faces, level_tiles, foot, camera, camera_point, window, settings, shape,
                               phases, h)
 

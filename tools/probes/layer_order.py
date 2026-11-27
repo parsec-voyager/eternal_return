@@ -60,7 +60,11 @@ def frame(t, number, m, scene):
         middle = sum(box, Vector()) / 8.0
         if (middle - origin).length - max((c - middle).length for c in box) > reach:
             continue
-        trees.append((k, BVHTree.FromObject(o, depsgraph), matrix, matrix.inverted()))
+        # (A level shrunk to nothing in a fast climb has no inverse: nothing of it to hit)
+        inverse = matrix.inverted(None)
+        if inverse is None:
+            continue
+        trees.append((k, BVHTree.FromObject(o, depsgraph), matrix, inverse))
     columns, rows = GRID, max(2, GRID * scene.render.resolution_y // scene.render.resolution_x)
     hit_rays = 0
     faults = np.zeros(len(layers), dtype=np.int64)

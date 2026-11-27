@@ -1077,6 +1077,19 @@ def rebased(world, faces, level):
     return fresh
 
 
+def for_build(level):
+    """level as a build on another thread or in a process of its own is handed it: a copy of its own (Level.copy(): a
+    build trims and re-roots what it's given), without the kept levels it's a copy of (source, origin). Those are
+    the map's own, which the tick goes on changing, and they went along with it: a giant level's 27 tiles took the
+    35,000 they were cut from with them, 8 MB pickled for every window build of an endless plane's frames where
+    0.1 MB was wanted, and now and then while the tick was adding to one (pickle: "dictionary changed size during
+    iteration", the build failed)."""
+    own = level.copy()
+    own.__dict__.pop("source", None)
+    own.__dict__.pop("origin", None)
+    return own
+
+
 def origin_of(level):
     """The level a kept one's tiles were cut as: itself, or what it was rebased or copied from (the same tiles)"""
     return level.__dict__.get("origin") or level
