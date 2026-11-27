@@ -294,6 +294,7 @@ class BilinearChart:
         self.radius = np.max(np.stack([np.linalg.norm(corner - self.middle, axis=1)
                                        for corner in (first, second, third, last)]), axis=0)
         self._eu, self._ev, self._w = self.eu.tolist(), self.ev.tolist(), self.w.tolist()
+        self._edge_sizes = None      # edge_sizes(), once asked for
         # Exactly: every coordinate is an int over 2^E
         ratios = [v.as_integer_ratio() for v in positions.ravel().tolist()]
         self.E = max(den.bit_length() - 1 for _, den in ratios)
@@ -398,8 +399,14 @@ class BilinearChart:
         return np.where(quad, corners, triangle)
 
     def edge_sizes(self):
-        """Each face's size: the geometric mean of its sides' lengths at its corner 0"""
-        return np.sqrt(np.linalg.norm(self.eu, axis=1) * np.linalg.norm(self.ev, axis=1))
+        """Each face's size: the geometric mean of its sides' lengths at its corner 0. Worked out once (not to be
+        written to): asked for the one face under the drone several times a tick, every face's was worked out anew
+        each time, 2 ms of every frame on a Darb-i Imam torus, a third of the engine's tick there."""
+        if self._edge_sizes is None:
+            sizes = np.sqrt(np.linalg.norm(self.eu, axis=1) * np.linalg.norm(self.ev, axis=1))
+            sizes.flags.writeable = False
+            self._edge_sizes = sizes
+        return self._edge_sizes
 
     def twist_norms(self):
         """How much each face's patch bends at most (its mixed second derivative's length)"""

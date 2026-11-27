@@ -1274,6 +1274,7 @@ class SubdivisionChart:
         self._nodes, self._leaves = {}, {}
         self._float_nodes, self._float_roots = {}, {}
         self._corner_points = None
+        self._edge_sizes = None      # edge_sizes(), once asked for
         self._float_leaf_of = {}
         self._corners = {}
         self._splits = {}
@@ -2459,10 +2460,15 @@ class SubdivisionChart:
         return np.array(rows, dtype=np.int64), np.array(columns, dtype=np.int64), np.array(weights)
 
     def edge_sizes(self):
-        """Each face's size: the geometric mean of its sides' lengths at its corner 0 (as chords)"""
-        corners = self.corners()
-        return np.sqrt(np.linalg.norm(corners[:, 1] - corners[:, 0], axis=1)
-                       * np.linalg.norm(corners[:, 3] - corners[:, 0], axis=1))
+        """Each face's size: the geometric mean of its sides' lengths at its corner 0 (as chords). Worked out once
+        (not to be written to), like the flat chart's (surface.BilinearChart.edge_sizes())."""
+        if self._edge_sizes is None:
+            corners = self.corners()
+            sizes = np.sqrt(np.linalg.norm(corners[:, 1] - corners[:, 0], axis=1)
+                            * np.linalg.norm(corners[:, 3] - corners[:, 0], axis=1))
+            sizes.flags.writeable = False
+            self._edge_sizes = sizes
+        return self._edge_sizes
 
     def twist_norms(self):
         return self._twist
