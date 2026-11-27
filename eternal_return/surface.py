@@ -917,6 +917,15 @@ class World:
         self.face, self.U, self.V = topology.params(self.A, self.N)[0]
         self._point = None
 
+    def __getstate__(self):
+        # Sent to a build process (background.py) without what a substitution map's frames hang on it, the map's
+        # level tables (parts_substitution.SubstitutionLattice.world()): this process's, held by a lock. With them,
+        # every floor build of a Penrose map with frames failed to pickle, and was asked for again, tick after tick
+        # (2026-11-26)
+        state = dict(self.__dict__)
+        state.pop("substitution", None)
+        return state
+
     def across(self, level):
         """A level's cells across a face of the mesh, k^level"""
         return self.k ** level

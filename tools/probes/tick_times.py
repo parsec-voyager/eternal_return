@@ -3,6 +3,7 @@ in ms per frame from 2 s on (the start's left out), with their calls, printed at
 thread is timed: the worker threads run the same functions for their builds. Fly with --realtime --timing for a real
 flight's numbers."""
 
+import functools
 import sys
 import threading
 import time
@@ -24,6 +25,8 @@ def wrap(owner, name, label):
     function = getattr(owner, name)
     static = isinstance(owner, type) and isinstance(owner.__dict__.get(name), staticmethod)
 
+    # (functools.wraps: the harness reads its parameters, inspect.signature(surface.settle): see hitches.py)
+    @functools.wraps(function)
     def timed(*args, **kwargs):
         if threading.current_thread() is not MAIN:
             return function(*args, **kwargs)
