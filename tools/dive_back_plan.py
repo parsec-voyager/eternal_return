@@ -1,9 +1,9 @@
 """Flight harness plans (tools/flight_sim.py) for the keeping-up test (tools/probes/missing_view.py): the surface map in
 this .blend flown in, then flown backward away from its floor at full throttle. A point of its surface (its own:
 the chart's) near the file's drone camera, inside a face away from its corners, is the target, with a line in at the
-mode's angle (or steeper) that keeps off the surface; the drone starts 15% of the map's size out along it and flies in
-(throttle 0.5) until
-DIVE seconds, then goes full throttle backward until DIVE + BACK. How it flies in (the pilot's ways, 2026-11-25: the
+mode's angle (or steeper) that keeps off the surface; the drone starts 15% of the map's size out along it (on an
+endless plane, as far as the file's camera is) and flies in (throttle 0.5) until DIVE seconds, then goes full throttle
+backward until DIVE + BACK. How it flies in (the pilot's ways, 2026-11-25: the
 user flies fast and low over the surface, turning, more than straight down):
 
 - dive: at 50 degrees, tracked (a perfect pilot holding the line at the target)
@@ -76,6 +76,12 @@ for poly in mesh.polygons:
 faces, us, vs = np.concatenate(faces), np.concatenate(us), np.concatenate(vs)
 samples = world(chart.points(faces, us, vs))
 size = float(np.ptp(samples, axis=0).max())
+# How far out the drone starts: 15% of the map's size. On an endless plane (one face, wrapped) the face says nothing of
+# that: 15% of it started the drone 0.2 units out at full scale, which auto scale took as a plunge (482 loops in 30 s,
+# 77% of the view missing, against 25 loops on the plane's own plan, 2026-11-26). There, as far as the file's camera is.
+START_SHARE = 0.15
+reach = (START_SHARE * size if len(mesh.polygons) > 1
+         else float(np.linalg.norm(camera - samples[np.argmin(np.linalg.norm(samples - camera, axis=1))])))
 tree = KDTree(len(samples))
 for n, p in enumerate(samples.tolist()):
     tree.insert(p, n)
@@ -121,7 +127,7 @@ for n in order[:24].tolist():
         angle = np.radians(degrees)
         for h in range(16):
             heading = np.cos(2 * np.pi * h / 16) * along + np.sin(2 * np.pi * h / 16) * side
-            place = target + 0.15 * size * (np.cos(angle) * heading + np.sin(angle) * normal)
+            place = target + reach * (np.cos(angle) * heading + np.sin(angle) * normal)
             if clear(place, target, normal):
                 start = place
                 break

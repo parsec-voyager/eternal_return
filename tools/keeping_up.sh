@@ -5,13 +5,29 @@
 # against settled), and the dive flown once more frame-stepped for its loops' and recenters' seams. One summary line a
 # flight; the worst live|settled pictures are kept in the output folder, to be looked at.
 #
-#     tools/keeping_up.sh <out dir> <map.blend> [<map.blend> ...]
+#     tools/keeping_up.sh <out dir> [<map.blend> ...]          (no maps: DEFAULT_MAPS, every kind)
 #     MODES="dive glide" DIVE=18 BACK=12 MEMORY=7000 tools/keeping_up.sh ...
 #
 # A 0.0% run counts only once its loops are checked (the drone may have flown off the map): every line has its loops.
 
 set -u
 cd "${0:A:h}/.."
+# The maps flown when none are given: one of every kind of map the add-on draws, so a change that breaks one kind
+# shows. On 2026-11-26 none was a Penrose map with frames, and a pickling bug that broke every Penrose and Darb map
+# with frames went out with the build processes (9487c64), retrying a failed build for 2.5 hours on the first one
+# flown. A new kind of map gets a map here. (Sphere maps of sphere.py, cube and icosahedron, aren't surface maps:
+# dive_back_plan.py can't plan them.)
+DEFAULT_MAPS=(
+    ~/blender_tests/tile_object/tile_monkey.blend               # laid-out quads, corners of 3 and 5, open edges
+    ~/blender_tests/tile_object/tile_monkey_triangles.blend     # laid-out triangles (Loop), corners of 4 to 8
+    ~/blender_tests/tile_object/tile_torus_quads.blend          # one hole, conformal: every corner regular
+    ~/blender_tests/tile_object/tile_text.blend                 # thin letters, many odd corners
+    ~/blender_tests/surface/smooth/knot_smooth.blend            # a knotted tube (Catmull-Clark)
+    ~/blender_tests/tile_object/tile_monkey_penrose.blend       # Penrose rhombs on a laid-out shape, with frames
+    ~/blender_tests/penrose_surface/parts/sphere_penrose_frames.blend   # Penrose sphere with frames
+    ~/blender_tests/darb_surface/parts/darb_torus_frames.blend  # Darb-i Imam with frames
+    ~/blender_tests/substitution_plane/plane_penrose_frames.blend       # the endless Penrose plane with frames
+)
 BLENDER=/Applications/Blender.app/Contents/MacOS/Blender
 out=${1:A}
 shift
@@ -20,6 +36,10 @@ modes=(${=MODES:-dive glide turns})
 dive=${DIVE:-18}
 back=${BACK:-12}
 memory=${MEMORY:-7000}
+(( $# )) || set -- $DEFAULT_MAPS
+for map in "$@"; do
+    [[ -f $map ]] || { echo "== no map $map"; exit 1; }
+done
 
 for map in "$@"; do
     name=${map:t:r}
