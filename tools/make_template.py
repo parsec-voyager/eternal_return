@@ -25,7 +25,7 @@ It won't replace an existing file without --overwrite (Blender keeps the old one
   emission-only materials don't use (the sun's shadows then don't render either), and 4 viewport samples.
 - --fog earth (the default) is Earth's air, clear up close and blue only at mountain distances, 23 km visibility at
   scale 1. --fog stylized is the thicker blue fog, 60 m. Either way the drone camera's clip is the add-on's: a 0.5 m
-  clip start (Default Clip Start, the user's since 2026-10-29) and 100,000 times that, 50 km, past where Earth's air has
+  clip start (Default Clip Start) and 100,000 times that, 50 km, past where Earth's air has
   hidden everything, so the fog ends the view rather than a hard edge. The fog shows in the Rendered viewport
   (Z > Rendered).
 """

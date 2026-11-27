@@ -1,7 +1,7 @@
 """The 3D parts' lattice on a round sphere map (sphere.py): one for both of its layouts, the cube's and the
-icosahedron's (2026-11-21, phase 1 of the unified engines: a sphere is a mesh plus a chart). parts.py asks a lattice
-what it needs (SphereLattice; a surface map's is surface.MeshLattice); here that's worked out the same way for either
-layout, from a chart that says what's the layout's own:
+icosahedron's (phase 1 of the unified engines: a sphere is a mesh plus a chart). parts.py asks a lattice what it needs
+(SphereLattice; a surface map's is surface.MeshLattice); here that's worked out the same way for either layout, from a
+chart that says what's the layout's own:
 
 - which points are near which: the layout's polyhedron (the cube [-1, 1]^3's 6 squares, the icosahedron's 20
   triangles) as a surface.Topology, whose keys name a lattice point the same from every face it's on, and whose
@@ -20,9 +20,8 @@ cell(world, level) units: 2N / 2^level on the cube (its faces are 2N across), N 
 
 Every level's pieces around a lattice point are laid out once, in the level's own world (n = level - shift + REDUCED,
 anchored at the point, its cells 2^REDUCED units, rho 1), so their places are a few bits from the point, exact as
-floats at any depth (LocalPieces, kept for every point looked at: the chart's local_placed()); the point itself is placed in the map from the
-anchor (Pieces.origin()). Until 2026-11-21 the cube had its own lattice of cube coordinates (parts.Lattice, its
-levels' points out to a square of cells round the point) and the icosahedron a copy of this module's classes.
+floats at any depth (LocalPieces, kept for every point looked at: the chart's local_placed()); the point itself is
+placed in the map from the anchor (Pieces.origin()).
 """
 
 import math
@@ -202,7 +201,7 @@ class CubeChart:
         """Each level's cells at the anchor (map units), measured, as {level: size} (kept for the world, with every
         level measured for it before): from the level's lattice point nearest the anchor on the cube to the next one
         along the surface, placed exactly"""
-        sizes = _kept_sizes(self._sizes, world)
+        sizes = sphere_exact.kept(self._sizes, world.text(), 64, dict)
         levels = [k for k in levels if k not in sizes]
         if levels:
             N = world.N
@@ -234,16 +233,6 @@ def _distortion(exponent_base, to_corner, level):
         exponent = exponent_base - math.log2(3.0 * to_corner)
         pinch = math.inf if exponent > 60 else 2.0 ** exponent
     return 2.0 * (pinch + 6.0 * 2.0 ** -level) + 1e-9
-
-
-def _kept_sizes(kept, world):
-    text = world.text()
-    sizes = kept.get(text)
-    if sizes is None:
-        if len(kept) > 64:
-            kept.clear()
-        sizes = kept[text] = {}
-    return sizes
 
 
 # ----- a level's pieces round a lattice point -----

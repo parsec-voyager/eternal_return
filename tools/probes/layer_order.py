@@ -3,7 +3,7 @@ Every ORDER_EVERY frames, a grid of rays from the drone camera (ORDER_GRID acros
 levels and its floor, as Blender shows them, pushes included, ordered by their push (the finest on top, the floor under
 all). A ray whose nearest hit is a layer coarser than one it also hits just behind, on the same sheet of the surface
 (their gap across the surface under SHEET of the distance), shows that coarser layer over the finer one: a layer order
-fault, what the pilot sees as a coarse bar standing up through the finer levels (the knot's slabs, 2026-11-25).
+fault, what the pilot sees as a coarse bar standing up through the finer levels (the knot's slabs).
 
 ORDER lines: the faults' share of the rays that hit anything, by the layer shown over; WHO lines name a layer behind
 more than 1% of them (its level, the world it was built for and now, coarse, its rebuild's state); the end: the worst.

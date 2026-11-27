@@ -3,12 +3,12 @@
 (velocity.py).
 
 The horizon and velocity marker say where something is in the drone camera's view: the way down, the way the drone
-flies. As geometry nodes objects (until 2026-11-17), each read its own evaluated transform to be exact for the frame
-drawn, which made the depsgraph build them again at every evaluation that moved the camera, twice a frame: about 2.5 ms
-a frame together, nearly all of it the node graphs' overhead, on every map (2026-11-17, measured on the Earth over
-Tokyo: 49 -> 54 fps with them hidden). A draw handler has the view matrix Blender draws that frame with, so it's exact
-for every draw, and costs no evaluation at all: just a few hundred points worked out and drawn. The rest of the HUD
-followed in 2026-11-20, from an object whose letters were made again every frame.
+flies. As geometry nodes objects, each read its own evaluated transform to be exact for the frame drawn, which made the
+depsgraph build them again at every evaluation that moved the camera, twice a frame: about 2.5 ms a frame together,
+nearly all of it the node graphs' overhead, on every map (measured on the Earth over Tokyo: 49 -> 54 fps with them
+hidden). A draw handler has the view matrix Blender draws that frame with, so it's exact for every draw, and costs no
+evaluation at all: just a few hundred points worked out and drawn. The rest of the HUD is drawn the same way: as an
+object, its letters were made again every frame.
 
 Everything is drawn in the camera's own space (the view matrix left out), so however far the camera is from the world's
 origin, float32 never shakes it. The HUD's plane is a fixed depth ahead, in HUD units (hud.CLIP_START_DEPTH of them

@@ -1,10 +1,9 @@
 """What the endless engines build ahead of the drone, and in what order: one policy for the floor's strapwork
 (surface_substitution.py) and the 3D parts (parts.py), which share the worker threads (background.py).
 
-2026-11-19 (the user, about the floor's strips and the arches: should they share their logic?): each engine had worked
-out for itself where the drone would be, how long its builds took and how urgent each was, and on a Penrose map with
-frames each cut the same levels' tiles for itself: the floor in the tick (2.5 s of the main thread in a 10 s fast dive),
-the parts again in each of their builds on a worker thread (some 40% of their time there). Shared here:
+With each engine working out for itself where the drone would be, how long its builds took and how urgent each was, a
+Penrose map with frames cut the same levels' tiles twice: the floor in the tick (2.5 s of the main thread in a 10 s fast
+dive), the parts again in each of their builds on a worker thread (some 40% of their time there). Shared here:
 - the drone's motion over the surface (Motion): its velocity, smoothed in drone heights a second, one for a map, so
   both build round the same point ahead; and how long each one's builds take to be taken (its latency), which says
   how far ahead that is
@@ -28,9 +27,9 @@ except ImportError:          # tests import it by itself
 
 # A built window is built again once it's this many times wider than a build now would make it (Window.overbuilt():
 # the drone has shrunk under it). Kept, a Penrose level built when it was small on screen kept all its bars out to far
-# past the view as the drone dived on, every level ever drawn (2026-11-13: 580k faces 36 loops down, and every line gone
-# further down, its objects scaled by every loop since past what float32 and the push drivers can place); and a floor's
-# or a giant parts window's corners are float32 from its middle, so they'd be a growing share of the drone's height off.
+# past the view as the drone dived on, every level ever drawn (580k faces 36 loops down, and every line gone further
+# down, its objects scaled by every loop since past what float32 and the push drivers can place); and a floor's or a
+# giant parts window's corners are float32 from its middle, so they'd be a growing share of the drone's height off.
 OVERBUILT = 4.0
 
 
@@ -56,21 +55,20 @@ class Window:
         return not scale * self.window <= OVERBUILT * wanted
 
 
-# What a build is worth (2026-11-20), for both engines, as the worker threads' priority (background.submit(): lower
-# first, so its value's negative): value = stake * urgency / cost
+# What a build is worth, for both engines, as the worker threads' priority (background.submit(): lower first, so its
+# value's negative): value = stake * urgency / cost
 # - stake: the share of the view it puts right (view_share() of what it adds, times how visible that is when it lands: a floor
 #   level still fading in counts for what it shows), REFRESH of it for a build that leaves nothing missing (cut finer for a
 #   nearer camera, outlines moved, trimmed)
 # - urgency: wanted needed_in s from now, 1 if that's no later than it can land (the engine's wait()), falling off by
 #   URGENCY_TIME s past that
 # - cost: what it'll take of the workers' time, learned from what its kind took (Costs)
-# Until then each engine had a table of fixed priorities (the floor's "now", "soon", "ahead", "recoarse", coarse levels
-# first; the 3D parts' "urgent" and "later", by rank), one line for both, and in a fast dive the floor always had a level
+# With a table of fixed priorities for each engine and one line for both, in a fast dive the floor always had a level
 # short of the drone to build first: the parts' new levels waited a third of a second behind them and more, built as
 # the drone flew past them, the finest three or four levels of arches missing in nine ticks of ten.
-# REFRESH was 0.1 until 2026-11-20 (the user, hovering on the Penrose torus: "the floor is a solid color"): some twenty
-# coarse floor levels came due at once (cut finer, trimmed), each worth a tenth of the whole view, and the finer levels
-# not drawn at all, their discs a few percent of it, waited behind them in nine ticks of ten. Nothing left missing
+# REFRESH is this small because at 0.1, hovering on the Penrose torus, some twenty coarse floor levels came due at once
+# (cut finer, trimmed), each worth a tenth of the whole view, and the finer levels not drawn at all, their discs a few
+# percent of it, waited behind them in nine ticks of ten. Nothing left missing
 # comes after anything that is.
 URGENCY_TIME = 0.25
 REFRESH = 0.001
@@ -154,7 +152,7 @@ class Motion:
         speed in map units with it (by a third a tick), then a loop makes it 8 times as much, while in heights it
         holds; smoothed in map units, the speed lagged its fall and each loop multiplied what was left, some 35 times
         the true speed, and every floor level near the finest was cut round a point 4 to 12 of its windows off, in the
-        tick, every tick (2026-11-19: 2.6 s of a fast dive's 10, 5 to 9 frames a second)."""
+        tick, every tick (2.6 s of a fast dive's 10, 5 to 9 frames a second)."""
         point = np.asarray(point, dtype=float)
         last = self.last
         if (last is not None and last[0].world_text == text and now - last[1] < SAME_TICK

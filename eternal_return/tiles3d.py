@@ -98,7 +98,6 @@ DEEPEST_UNIT = 0.002
 
 GOOGLE = "google"
 GOOGLE_ROOT = "https://tile.googleapis.com/v1/3dtiles/root.json"
-GOOGLE_HOST = "tile.googleapis.com"
 # Where the Google Maps Platform key is read from: this environment variable, else this file (a line, the key alone)
 KEY_ENV = "GOOGLE_MAPS_API_KEY"
 KEY_FILE = "~/.config/eternal_return/google_maps_key"
@@ -1419,12 +1418,12 @@ void main()
 # The far end's height is only as true as the tiles drawn there, and with haze thinning every kilometer or so, a
 # wrong height is a patch of wrong fog: Google's coarse tiles, drawn far away, are rough shapes whose vertices are up
 # to 200 km under sea level and 40 km over it, and flat triangles hundreds of kilometers across whose middles sag tens
-# of kilometers under their corners (tile-shaped patches over the globe, the user's screenshots, 2026-11-16). So a
-# tile's height is its vertices' (heightAt() in the vertex shader, interpolated, not the flat triangle's), trusted as
-# far as its detail goes: tiles are picked for their error on screen, so their geometric error grows with distance,
-# about uAir.z (the tiles' error in pixels over the view's pixels per unit of tangent) times it. In each layer the
-# height counts by 1 / (1 + (error / H)^2): fully nearby, among mountains, and not at all from space, where the ground
-# is taken as sea level, smoothly. Heights below sea level count as sea level.
+# of kilometers under their corners (tile-shaped patches over the globe, the user's screenshots). So a tile's height is
+# its vertices' (heightAt() in the vertex shader, interpolated, not the flat triangle's), trusted as far as its detail
+# goes: tiles are picked for their error on screen, so their geometric error grows with distance, about uAir.z (the
+# tiles' error in pixels over the view's pixels per unit of tangent) times it. In each layer the height counts by 1 / (1
+# + (error / H)^2): fully nearby, among mountains, and not at all from space, where the ground is taken as sea level,
+# smoothly. Heights below sea level count as sea level.
 FOG_SOURCE = """
 float heightAt(vec3 v)
 {
@@ -2521,7 +2520,7 @@ class Tileset:
         through every loaded tile. lazy: None, not known yet, where a tile whose triangles' boxes aren't made
         (Tile.triangle_boxes()) would be searched, its boxes made on the worker thread (background.py) for a later
         look: follow_base() looks down beside the drone, where nothing else has looked, and a tile's first search
-        makes its boxes, a millisecond a city tile (41 of a round's 49 ms over Tokyo, 2026-11-17)."""
+        makes its boxes, a millisecond a city tile (41 of a round's 49 ms over Tokyo)."""
         if not self.tiles:
             return None
         if among is None:

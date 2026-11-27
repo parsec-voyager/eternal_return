@@ -123,9 +123,10 @@ def series_slope(Z, terms=len(A_RANCIC)):
     return dw
 
 
-def series_divided(Z0, Z1, terms=len(A_RANCIC)):
+def series_divided(Z0, Z1, terms=len(A_RANCIC), series=A_RANCIC):
     """(W(Z1) - W(Z0)) / (Z1 - Z0) for absolute Z0, Z1 (the same for the scaled series), with no cancellation however
-    close they are: sum A_k times the divided difference of Z^k, sum over j of Z1^j Z0^(k-1-j)"""
+    close they are: sum A_k times the divided difference of Z^k, sum over j of Z1^j Z0^(k-1-j). series: the power
+    series' coefficients, the cube's or the icosahedron's (ico_series_divided())"""
     total = np.zeros(np.broadcast(Z0, Z1).shape, dtype=complex)
     divided = np.ones_like(total)          # Z^k's divided difference, k = 1
     power0 = np.ones_like(total)           # Z0^(k-1)
@@ -133,7 +134,7 @@ def series_divided(Z0, Z1, terms=len(A_RANCIC)):
         if k > 1:
             power0 = power0 * Z0
             divided = divided * Z1 + power0
-        total = total + A_RANCIC[k] * divided
+        total = total + series[k] * divided
     return total
 
 
@@ -428,15 +429,7 @@ def ico_series_slope(T, terms=len(G_ICO)):
 
 def ico_series_divided(T0, T1, terms=len(G_ICO)):
     """(G(T1) - G(T0)) / (T1 - T0), with no cancellation however close they are"""
-    total = np.zeros(np.broadcast(T0, T1).shape, dtype=complex)
-    divided = np.ones_like(total)
-    power0 = np.ones_like(total)
-    for k in range(1, terms):
-        if k > 1:
-            power0 = power0 * T0
-            divided = divided * T1 + power0
-        total = total + G_ICO[k] * divided
-    return total
+    return series_divided(T0, T1, terms, G_ICO)
 
 
 def power_divided(x0, x1, p):

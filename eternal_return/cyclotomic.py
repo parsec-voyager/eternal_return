@@ -135,28 +135,6 @@ class Ring:
         qy = a[0] * self.yq[0] + a[1] * self.yq[1] + a[2] * self.yq[2] + a[3] * self.yq[3]
         return float_sqrt_int(px, qx, self.d, den), float_sqrt_int(py, qy, self.d, den) * self.stretch
 
-    def xy_fixed(self, a, bits):
-        """a's coordinates times 2^bits as whole numbers, to within a unit or two, whatever its coefficients: for
-        differences of places that cancel far past a float's 53 bits (substitution.py's giant levels, whose tiles are
-        1e12 and more of the drone across, drawn exactly round it)"""
-        den = 4
-        if not (type(a[0]) is int and type(a[1]) is int and type(a[2]) is int and type(a[3]) is int):
-            common = math.lcm(*(Fraction(c).denominator for c in a))
-            a = tuple(int(c * common) for c in a)
-            den *= common
-        px = a[0] * self.xp[0] + a[1] * self.xp[1] + a[2] * self.xp[2] + a[3] * self.xp[3]
-        qx = a[0] * self.xq[0] + a[1] * self.xq[1] + a[2] * self.xq[2] + a[3] * self.xq[3]
-        py = a[0] * self.yp[0] + a[1] * self.yp[1] + a[2] * self.yp[2] + a[3] * self.yp[3]
-        qy = a[0] * self.yq[0] + a[1] * self.yq[1] + a[2] * self.yq[2] + a[3] * self.yq[3]
-        y = fixed_sqrt_int(py, qy, self.d, den, bits)
-        return fixed_sqrt_int(px, qx, self.d, den, bits), (y * self.stretch_fixed(bits)) >> bits
-
-    def stretch_fixed(self, bits):
-        """STRETCH times 2^bits, rounded down: 1, or sin 36 degrees = sqrt((5 - sqrt 5) / 8)"""
-        if self.n == 8:
-            return 1 << bits
-        return math.isqrt((((5 << bits) - math.isqrt(5 << (2 * bits))) << bits) >> 3)
-
     def xy_small(self, a):
         """a's coordinates as plain floats, for coefficients under about 2^50"""
         (xa, xb), (ya, yb) = self.exact_xy(a)
@@ -179,12 +157,6 @@ def float_sqrt_int(p, q, d, den, bits=64):
     return _sqrt_quotient(p, q, d, den, bits)
 
 
-def fixed_sqrt_int(p, q, d, den, bits):
-    """(p + q sqrt d) / den, whole numbers, times 2^bits, rounded down (to within a unit or two)"""
-    root = math.isqrt(d * q * q << (2 * bits))
-    return ((p << bits) + (root if q >= 0 else -root)) // den
-
-
 def float_sqrt(a, b, d, bits=64):
     """a + b sqrt d (ints or Fractions) as the nearest float, to within 2^-bits of its own size, however big a and b
     are: |a + b sqrt d| is at least about 1 / (2 sqrt d max(|a|, |b|)) when not 0, so that many more bits do it.
@@ -201,7 +173,7 @@ def _sqrt_quotient(p, q, d, den, bits):
     rounded down (off by under 1), so the sum is good to within 2^-bits of itself once it's over 2^(bits + 2). The
     shift that always does it (2 max(|p|, |q|) bits more: p + q sqrt d is at least about 1 / (2 sqrt d max(|p|, |q|))
     when not 0) is only needed when they all but cancel; a small one is tried first. Always the big one, deep
-    endless planes' exact places (thousands of bits) were half their first settle in isqrt() (2026-11-23)."""
+    endless planes' exact places (thousands of bits) were half their first settle in isqrt()."""
     worst = bits + 2 * max(p.bit_length(), q.bit_length()) + 6
     shift = min(bits + 8, worst)
     while True:
@@ -274,8 +246,8 @@ def q_phi(d):
 def phi_power_float(d, shift=0):
     """2^shift phi^-d as a float, accurate to the last bit however big d (of either sign) and shift are (each alone
     overflows past 1000 or so): phi^|d| = (L + F sqrt 5) / 2, Lucas and Fibonacci numbers, in whole numbers. Kept: a
-    settle asks for the same few dozen some 200 times (1 ms of every tick deep down, 2026-11-14). Past a float's range,
-    inf (an endless plane's level 0 is 2^3082 map units a tile) or 0."""
+    settle asks for the same few dozen some 200 times (1 ms of every tick deep down). Past a float's range, inf (an
+    endless plane's level 0 is 2^3082 map units a tile) or 0."""
     a, b = 2, 0                          # 2 phi^k = a + b sqrt 5
     x, y, k = 1, 1, abs(d)               # 2 phi = 1 + sqrt 5, squared as we go (a negative k never shifted down to 0)
     while k:

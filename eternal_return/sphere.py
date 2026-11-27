@@ -1003,7 +1003,7 @@ float spanCover(float low, float high, float F)
 // cellOffset() and lineAt() take hi - (k + f), exact, through OPAQUE_ONE (a uniform 1) before adding the pixel's
 // offset d: Metal compiles with fast math, free to make (hi - (k + f)) + d into (hi + d) - (k + f), which rounds d to
 // hi's precision (2^-24 of a cell). On a coarse level whose line crosses a view a few millionths of a cell wide, that
-// smeared the line over a hundred pixels, and an anchor move shifted it (seen 2026-11-10 on the gasket).
+// smeared the line over a hundred pixels, and an anchor move shifted it (seen on the gasket).
 
 // The pixel's cell from the reference's (an integer), exactly near the cells' edges
 float cellOffset(vec3 w, float d)
@@ -1821,9 +1821,8 @@ def meters_log2(obj):
     return math.log2(tiles3d.RADIUS / world.rho) - world.n - math.log2(world_per_map_unit)
 
 
-# The Earth's air, two layers thinning as e^(-h / H) (the user, 2026-11-16, asked whether flying the Alps was still
-# true with one layer thin enough to see the globe clearly through: it wasn't, peaks 50 km off were 5% fogged where
-# real air fogs them 45 to 85%):
+# The Earth's air, two layers thinning as e^(-h / H) (one layer thin enough to see the globe clearly through wasn't true
+# over the Alps: peaks 50 km off were 5% fogged where real air fogs them 45 to 85%):
 # - the clear air itself (Rayleigh scattering, what makes the sky blue): its extinction at sea level, per meter, red to
 #   blue, and its scale height. Over the haze it's what blues and fades far mountains.
 # - haze (aerosols: dust, water): the rest of the scene's fog at sea level (fog_distance meters, the fog's EXTINCTION
@@ -2160,8 +2159,8 @@ def valley_ground(tiles, point, reach, samples, lazy=True):
 _bases = {}
 # follow_base(): the rings looked down from (shares of the reach), the rays on each and how many a tick, how long the
 # level takes to ease most of the way (seconds, the time constant), and a gap after which a flight starts over. One a
-# tick, a round of them is 0.4 s, well within the easing; each is a third of a millisecond over the Alps (2026-11-17:
-# three a tick were a quarter of the tick)
+# tick, a round of them is 0.4 s, well within the easing; each is a third of a millisecond over the Alps (three a tick
+# were a quarter of the tick)
 VALLEY_RINGS = (0.25, 0.5, 1.0)
 VALLEY_RAYS = 8
 VALLEY_PER_TICK = 1
@@ -2553,7 +2552,6 @@ class Floor:
     camera's place or scale, changed)"""
 
     def __init__(self):
-        import gpu
         from gpu_extras.batch import batch_for_shader
         self.shaders = {}          # (layout, motif) -> its main, composite, lower resolution and tile shaders
         cube = self.shaders_for(motif_of("cube", DEFAULTS["motif"]))

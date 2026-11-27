@@ -20,7 +20,7 @@ the view by the Drone's evaluated rotation and the view's own, as Blender draws 
 drawn. Python's tick only says whether it's shown. Read in the tick, it would be a frame stale whenever Blender draws a
 frame before a tick has run since its frame step (see horizon.py).
 
-Until 2026-11-17 it was a geometry nodes object under the camera, made again at every depsgraph evaluation that
+As a geometry nodes object under the camera, it was made again at every depsgraph evaluation that
 moved the camera (see horizon.py).
 """
 import math

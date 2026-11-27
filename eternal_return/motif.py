@@ -1,7 +1,6 @@
-"""Motifs: what a floor draws on each of its tiles, the same on every tile of a kind, at every level (2026-11-23,
-phase 4 of the unified engines: one motif language). A motif is flat pieces per tile kind, polygons in the kind's
-prototile frame (the tile's own units), each a bar's core or one of its outline strips, and painted one of the motif's
-paints:
+"""Motifs: what a floor draws on each of its tiles, the same on every tile of a kind, at every level: one motif language
+for every engine. A motif is flat pieces per tile kind, polygons in the kind's prototile frame (the tile's own units),
+each a bar's core or one of its outline strips, and painted one of the motif's paints:
 - Hankin: girih strapwork, Hankin's method (bars along lines meeting the tiles' edges at a contact angle, 54 degrees
   by default), on a substitution rule's prototiles (substitution.py, surface_substitution.py); and the "edges" style,
   each prototile's edges as bars
@@ -42,7 +41,7 @@ class Motif:
             reverse[i, :len(polygon)] = polygon[::-1]
         self.bars[kind] = (array, counts)
         self.bars_reversed[kind] = (reverse, counts)
-        # Each polygon's bounding box (lo (n, 2), hi (n, 2)), for giant_bars() to pass over those far from the view
+        # Each polygon's bounding box (lo (n, 2), hi (n, 2)), to pass over those far from the view
         valid = (np.arange(width) < counts[:, None])[..., None]
         self.boxes[kind] = (np.where(valid, array, np.inf).min(axis=1), np.where(valid, array, -np.inf).max(axis=1))
 
@@ -55,7 +54,7 @@ class Strapwork(Motif):
 
     With an outline (a share of the bar's width, 0 to 0.5), each bar is a core in its level's color with a strip of the
     outline color along each side (outlined(): every level's drawing has dark in it, so diving into a bar never leaves
-    the dark behind, 2026-11-13), and edges[kind] says which polygons are outline strips."""
+    the dark behind), and edges[kind] says which polygons are outline strips."""
 
     def __init__(self, rule, segments, half_width=0.007, outline=0.0):
         super().__init__()

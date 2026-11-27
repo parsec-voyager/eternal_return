@@ -1,12 +1,11 @@
 """A shape with one hole (a torus, a twisted torus, a knotted tube, a mug) laid out as a perfectly regular lattice of
-squares or equilateral triangles, conformally (phase 7, 2026-11-26). Such a surface is conformally a flat torus: the
-plane modulo a lattice of two periods. Mapped there (its holomorphic 1-form, integrated), any lattice of the plane
+squares or equilateral triangles, conformally (phase 7). Such a surface is conformally a flat torus: the plane modulo a
+lattice of two periods. Mapped there (its holomorphic 1-form, integrated), any lattice of the plane
 that holds the periods comes back to it as a mesh with every corner regular (4 quads, 6 triangles), its tiles square
 or equilateral wherever they are, only their size changing (smaller round a torus's inside, as the conformal factor
 goes). QuadriFlow keeps its tiles one size, so round a torus it fits fewer of them on the inside, and every such step
 is a corner of 3 or 5 quads (18 on a torus of r/R 0.3); cut into triangles, its square grid's shear can't close round
-the tube, and the flips that ease it scatter corners of 5 and 7 (the user, 2026-11-26: "the torus topology seems a bit
-off here, is there not a cleaner way").
+the tube, and the flips that ease it scatter corners of 5 and 7.
 
 The steps, on a triangle mesh of the shape (closed, one piece, one hole):
 - tree-cotree (Eppstein): a spanning tree of the edges, one of the faces across the rest, and the two edges left over,
@@ -289,7 +288,6 @@ class _Lattice:
         p0, p1 = _reduced(*periods)
         tau = p1 / p0
         w = self.omega
-        best = None
         # A over the ideal lattice's points out to where count of them fill the torus; B the nearest to tau A
         reach = int(math.ceil(2.0 * math.sqrt(count * COUNT_RANGE[1] / max(abs(tau.imag), 1e-3)))) + 2
         x, y = np.meshgrid(np.arange(-reach, reach + 1), np.arange(-reach, reach + 1), indexing="ij")

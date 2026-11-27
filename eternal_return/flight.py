@@ -11,7 +11,6 @@ from . import fractal
 from . import gravity
 from . import horizon
 from . import hud
-from . import hud_render
 from . import mandelbrot
 from . import odometer
 from . import parts
@@ -24,12 +23,10 @@ from . import gamepad
 import mathutils
 from mathutils import Matrix
 from mathutils.bvhtree import BVHTree
-import bmesh
 import contextlib
 import time
 import math
 import json
-import traceback
 import numpy as np
 
 # Longest tick, in seconds, the modal applies. The timer runs every 0.01 s.
@@ -135,9 +132,9 @@ def loops_go_deeper(obj, scene):
     """Whether a loop about obj goes deeper into the same world, which only a self-similar one does: an endless map
     (fractals too), a sphere or surface map (substitution floors too), or the scene's Mandelbrot floor, which loops
     with the drone whatever is selected. Their loops relabel the world's meters (see odometer.py), so the HUD's Scale
-    keeps going down as the drone dives. A loop about any other object (a plain mesh, vr_drone_simple's, 2026-11-23)
-    only makes the drone the loop factor bigger next to the same mesh: there the drone's true scale is its Blender
-    scale, and flying back out it reads its normal size again, not the loops' 64^-n."""
+    keeps going down as the drone dives. A loop about any other object (a plain mesh, vr_drone_simple's) only makes the
+    drone the loop factor bigger next to the same mesh: there the drone's true scale is its Blender scale, and flying
+    back out it reads its normal size again, not the loops' 64^-n."""
     if mandelbrot.floor_object(scene) is not None:
         return True
     if not isinstance(obj, bpy.types.Object):
@@ -1239,7 +1236,7 @@ class FlightFeatures:
                     # Nor dives with its surface past the clip end, out of sight at every level: a dive relabels the
                     # world 2^k times deeper about the map's origin, so the drone's numbers grow by that, and scaled
                     # down by hand while flying away from a sphere, it dived every two seconds, 5e18 units out in 40
-                    # s, and the drone's scale came out 0 (2026-11-24). There it's held at min_scale instead.
+                    # s, and the drone's scale came out 0. There it's held at min_scale instead.
                     if factor > 1.0 and self.surface_out_of_sight():
                         factor = 1.0
                 if factor != 1.0:
@@ -1268,7 +1265,7 @@ class FlightFeatures:
         """What auto scale still owes after a scaling the limits held back by held (scale()'s return), at most the
         drone's widest ratio of scales (max_scale / min_scale) either way: owing more is only a longer wait for
         nothing. Held at a limit no loop gets past (a sphere's globe from far out, scaling down by hand while flying
-        away), it was multiplied in every tick, and a minute later it was 0, divided by (2026-11-24)."""
+        away), it was multiplied in every tick, and a minute later it was 0, divided by."""
         most = self._max_scale / min_scale
         return min(max(held, 1.0 / most), most)
 
@@ -1726,8 +1723,8 @@ class FlightFeatures:
         # The selection as a tick leaves it, for the first tick: fit_scale_range() runs before the tick reads the
         # selection, and on the first tick it loops whenever the drone's scale is outside the scaling range and an
         # object is selected, about that object. get_drone_objects() had just reset selected_obj to None, but
-        # selected_obj_bool kept the last flight's True (the user, 2026-11-16: an AttributeError in
-        # get_selected_object_diff_vector() as the flight started)
+        # selected_obj_bool kept the last flight's True (an AttributeError in get_selected_object_diff_vector() as the
+        # flight started)
         global selected_obj
         global selected_obj_bool
         if drone_camera:
@@ -1852,8 +1849,8 @@ class FlightFeatures:
             sdl2.SDL_GameControllerClose(self._gamepad)
             self._gamepad = None
 
-# The Reset operators that move the drone are FlightFeatures too, for the flight's own ways of scaling it (since
-# 2026-11-16 the drone is scaled through drone_matrix_about(), which they didn't have)
+# The Reset operators that move the drone are FlightFeatures too, for the flight's own ways of scaling it (the drone is
+# scaled through drone_matrix_about())
 class ER_OT_ResetScale(FlightFeatures, bpy.types.Operator):
     """Restore the scale of the Drone object to 1."""
     bl_idname = "er.reset_scale"

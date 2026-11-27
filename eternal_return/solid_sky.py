@@ -8,14 +8,14 @@ fly in is in Material Preview or Rendered, and back on in Solid or Wireframe. Bl
 changes (the message bus), and files are checked as they load, since subscriptions don't outlive a file.
 
 Workbench has no fog either (only grey volume smoke, tools/fog_look.py), so the fog is drawn here, over the meshes, in
-every perspective 3D view in Solid mode (the user, 2026-11-16: "where fog grows and shrinks with the drones scale. i
-want this for both solid and render mode if possible"). Add-on drawing goes to Blender's overlay layer, which is laid
-over the meshes by its alpha, one for all three channels, and is depth-tested against them. So the fog is see-through
-layers of fog at growing distances from the eye, each drawn only where the meshes are farther: a pixel is covered by
-every layer nearer than its mesh, and they add up to the fog that far. The layers are spaced so each covers an equal
-share of what's still seen, and each pixel's layer is moved a share of the way to the next by a fixed noise pattern
-(dithering), so their steps don't show as rings. Distances are the scene's fog_distance times the drone camera's scale,
-as Rendered's are (fog_look.py), so the fog grows and shrinks with the drone and loops look the same.
+every perspective 3D view in Solid mode, growing and shrinking with the drone's scale as the Rendered viewport's fog
+does. Add-on drawing goes to Blender's overlay layer, which is laid over the meshes by its alpha, one for all three
+channels, and is depth-tested against them. So the fog is see-through layers of fog at growing distances from the eye,
+each drawn only where the meshes are farther: a pixel is covered by every layer nearer than its mesh, and they add up to
+the fog that far. The layers are spaced so each covers an equal share of what's still seen, and each pixel's layer is
+moved a share of the way to the next by a fixed noise pattern (dithering), so their steps don't show as rings. Distances
+are the scene's fog_distance times the drone camera's scale, as Rendered's are (fog_look.py), so the fog grows and
+shrinks with the drone and loops look the same.
 
 Rendered's fog fades each of a surface's channels at its own distance while the sky's light builds up at another, so
 far things go dark blue before they're gone; with one alpha, Solid can't fade a channel alone. So the layers fade the
@@ -28,7 +28,7 @@ the same everywhere else),
 from the scene's sun lamp and fog_color. Maps with a plain sky (no Solid_sky) end in the fog color, which their background is. The Earth's maps
 are left alone: their fog is the Earth's air in meters (sphere.py), drawn with the sphere.
 
-Measured (2026-11-16, M1 Air, 2560 x 1506 view): 16 layers add about 1 ms of GPU time to a draw; 24 added 4.7.
+Measured (M1 Air, 2560 x 1506 view): 16 layers add about 1 ms of GPU time to a draw; 24 added 4.7.
 """
 import functools
 import math
@@ -109,7 +109,7 @@ def mean(values):
 @functools.lru_cache(maxsize=8)
 def layer_ends(look):
     """Each layer's end (see fog_layers()) in fog distances: they're the same share of any fog distance, so they're
-    found once a look, not every draw (40 bisection steps a layer were half a millisecond of every frame, 2026-11-17)"""
+    found once a look, not every draw (40 bisection steps a layer were half a millisecond of every frame)"""
     extinction, airlight = look
     fade, build = mean(extinction), mean(airlight)
 

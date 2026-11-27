@@ -1,6 +1,6 @@
 """Smooth charts for surface maps: a mesh's subdivision surface, the limit its faces tend to when split again and
 again, as the shape the lattice stands on instead of the faces' flat (bilinear) patches (phase 6 of the unified
-engines plan, 2026-11-23).
+engines plan).
 
 Two schemes, one machinery (SubdivisionChart), exactly:
 - CatmullClarkChart: a closed all-quad mesh's Catmull-Clark limit surface. A regular face (all four corners where four
@@ -30,8 +30,8 @@ Near an extraordinary vertex a split shrinks the surface by its subdominant eige
 shrink by, so the lattice's cells there don't keep their size: diving exactly at such a corner, its cells drift
 (Catmull-Clark: ~18% smaller a loop at 3 faces, ~10% bigger at 5). Anywhere else the corner's neighborhood shrinks
 out of the view and the distortion fades. The user chose that over remapping the parameters there (irrational
-exponents, no exact points) or flat corners (2026-11-23). The bounds (sigma_lo, sigma_hi) are sampled away from the
-corners, so they don't hold right at them.
+exponents, no exact points) or flat corners. The bounds (sigma_lo, sigma_hi) are sampled away from the corners, so they
+don't hold right at them.
 
 The chart answers what surface.BilinearChart answers (see there): points and Jacobians in floats, in bulk; exact
 points (point(), point_q5()); points as offsets from one placed exactly (grid_offsets(), nearest(), step()), from the
@@ -76,7 +76,7 @@ BORDER_DEPTH = 24
 COARSE_DEPTH = 10
 NORMAL_DEPTH = 14
 # By a border, a step's float points come from pieces this many levels finer than its tiles (BORDER_DEPTH at most):
-# within some 4e-6 of a tile by the UV sphere's poles, 2026-11-24 (4 levels: 0.5% for a tile half a face across)
+# within some 4e-6 of a tile by the UV sphere's poles (4 levels: 0.5% for a tile half a face across)
 STEP_EXTRA = 6
 # A point is past a face's side by more than this (in its parameters, times the side's length), and goes across at most
 # this many sides to the face it's on (relocated())
@@ -92,7 +92,7 @@ FLOAT_STEP = Fraction(1, 1 << 24)
 # this share of the leaf across, the leaf at least LEAF_LEAST of the face across, and its point in the leaf to within
 # LEAF_SLACK of its size; else exactly. The float tree's pieces toward an extraordinary corner lose digits level by
 # level, a corner of 3 triangles (a tetrahedron's) fastest: its leaves' steps were 1e-9 off at 2^-14 of the face,
-# 1.5e-6 at 2^-20, 8e-5 at 2^-22; a cube's 7.5e-12 at 2^-14 (2026-11-25)
+# 1.5e-6 at 2^-20, 8e-5 at 2^-22; a cube's 7.5e-12 at 2^-14
 LEAF_SHARE = 1.0 / 64.0
 LEAF_LEAST = 2.0 ** -14
 LEAF_SLACK = 1e-9
@@ -151,7 +151,7 @@ class LocalMesh:
     """A few quads of a mesh: their corners' points (id -> numbers over scale: whole numbers over a whole scale,
     exactly, or floats over 1.0; any number of coordinates: a Shape's are unit vectors), each vertex's valence in the whole mesh (how many faces it has there), and the quads
     (loops of ids). A vertex has its whole ring here when as many of its faces are. (In Fractions, every sum reduced
-    by a gcd: quadico's first floor split its faces' trees for 3 s, 2026-11-24.)"""
+    by a gcd: quadico's first floor split its faces' trees for 3 s.)"""
 
     def __init__(self, points, valence, loops, scale, boundary=frozenset()):
         self.points, self.valence, self.loops, self.scale = points, valence, loops, scale
@@ -224,7 +224,7 @@ class LocalMesh:
         P = self.points
         # Each face's next corner after x (each edge once round a whole ring) and its far corner, as lists: where two
         # quads meet on two edges (Suzanne's chin, a corner of two faces), the corner beside one is two quads' far
-        # corner, and sets counted it once (a limit point 0.2 off, 2026-11-24)
+        # corner, and sets counted it once (a limit point 0.2 off)
         edge, diagonal = [], []
         for t in self.faces_of[x]:
             loop = self.loops[t]
@@ -503,7 +503,7 @@ class QuadTriMesh(LocalMesh):
         across its quads their middles; an edge's middle's: its ends, and in each of its faces a quad's middle, or a
         triangle's other edges' middles, across a quad the middles of its sides beside it; a quad's middle's: its
         sides' middles, across them its corners): building the linear split as a mesh and looking them up took most
-        of the time of a mixed mesh's trees (2026-11-24)."""
+        of the time of a mixed mesh's trees."""
         P = self.points
         dims = len(next(iter(P.values())))
         loops = self.loops
@@ -1014,7 +1014,7 @@ class Leaf:
             # The derivatives' terms in floats, about a point inside the piece (s, t in it: nothing cancels, and each
             # is a few steps' worth); only the value there exactly, its difference from S0 being a few steps of h, as
             # small as 2^-1000 of the face (all of it exactly, the 4100 shifts a floor build of quadico asked for took
-            # 0.7 s, 2026-11-24)
+            # 0.7 s)
             T = shifted(self.Ql, float(s), float(t))
             n = len(T)
             step = self.sign / self.fsize
@@ -1073,8 +1073,8 @@ class Shape:
     for it times the node's (child()), and its corners' limit points likewise (limits()), each worked out once from a
     split of unit vectors (the shape as a mesh whose vertex k is the k-th unit vector). By a border between quads and
     triangles every node is a split: the UV sphere's float trees made 38,000 nodes in a start and a flight, each a split
-    of its own (a millisecond of Python each, 12 s of its start), of 126 shapes (2026-11-24). control: its regular
-    patch's control points (vertex numbers), or None if it isn't one."""
+    of its own (a millisecond of Python each, 12 s of its start), of 126 shapes. control: its regular patch's control
+    points (vertex numbers), or None if it isn't one."""
 
     def __init__(self, mesh_class, loops, valence, boundary=()):
         self.mesh_class, self.loops, self.valence, self.boundary = mesh_class, loops, valence, boundary
@@ -1330,13 +1330,13 @@ class SubdivisionChart:
         slack = (np.maximum(uu, vv) + uv) * math.sqrt(0.5) / (SIGMA_GRID - 1)
         # (A regular face's bound is rigorous, unless its bend between the grid's points outweighs its least stretch:
         # then it's 0, which says nothing, and it takes an irregular face's estimate. On Suzanne a third of the faces,
-        # small and much bent, had 0, and a level's reach in cells came out infinite, 2026-11-24.)
+        # small and much bent, had 0, and a level's reach in cells came out infinite.)
         rigorous = small.min(axis=1) - slack
         self.sigma_lo = np.where(self.regular & (rigorous > 0.0), rigorous, 0.5 * small.min(axis=1))
         self.sigma_hi = np.where(self.regular, big_.max(axis=1) + slack, 1.5 * big_.max(axis=1))
         # A regular face's ball from its own points on the grid, and the most a point between them can be from one
         # (a step's way times sigma_hi): its control points' hull spans the faces round it too, three times as wide,
-        # and the search for the face below Newton-stepped over 54 faces where the flat torus had 14 (2026-11-24)
+        # and the search for the face below Newton-stepped over 54 faces where the flat torus had 14
         for scheme in used:
             rows = [f for f in range(F) if self.regular[f] and self.schemes[f] is scheme]
             if rows:
@@ -1407,7 +1407,7 @@ class SubdivisionChart:
             else:
                 mesh, t = self._node(f, path[:-1], exact)
                 # The parent's split, kept for its other children (each split it again: quadico's first floor did
-                # every subdivision four times, 2026-11-24)
+                # every subdivision four times)
                 split = self._splits.get((exact, f, path[:-1]))
                 if split is None:
                     split = self._splits[(exact, f, path[:-1])] = mesh.subdivide()
@@ -1423,7 +1423,7 @@ class SubdivisionChart:
         """The node of irregular face f's float tree down path: (its Shape, its points (n, 3) in the shape's order), a
         child's its parent's points times the shape's matrix for it. The roots are kept apart, never let go of (the
         smooth Penrose torus's 1990 faces' trees filled the cache, and every clearing rebuilt their roots: 12,500 roots
-        in its start, 2026-11-24)."""
+        in its start)."""
         if not path:
             found = self._float_roots.get(f)
             if found is None:
@@ -1454,7 +1454,7 @@ class SubdivisionChart:
     def _place(self, f, path, exact=True):
         """Where the node down face f's path is in its parameters: (u0, v0, size, sign), Fractions, or floats (exactly:
         halves, quarters, ... to 53 levels; in Fractions, a float tree's leaves' places were most of what was left of
-        the UV sphere's start, 2026-11-24)"""
+        the UV sphere's start)"""
         u0 = v0 = Fraction(0) if exact else 0.0
         size, sign = Fraction(1) if exact else 1.0, 1
         for c in path:
@@ -1508,7 +1508,7 @@ class SubdivisionChart:
         s, t = u, v
         if not scheme.holds(s, t, less, add, number):
             # Off the face, the walk toward an extraordinary corner beside it never ends (a triangle's point past its
-            # long side split on with ever bigger numbers, 14 GB, 2026-11-24)
+            # long side split on with ever bigger numbers, 14 GB)
             raise ExtraordinaryError(f"face {f}: ({float(u) if not isinstance(u, tuple) else u}, "
                                      f"{float(v) if not isinstance(v, tuple) else v}) is off it")
         deepest = EXACT_DEPTH
@@ -1596,8 +1596,7 @@ class SubdivisionChart:
             if corner is not None and self.border and (s, t) in scheme.corners:
                 # Right at a corner of this piece (a lattice point of level 2^k is one k levels down): its rough piece
                 # corner levels further toward it, its value there the corner's limit point (a point of a lattice by a
-                # border walked BORDER_DEPTH levels of its own: 30 s a level's 3D parts by the UV sphere's pole,
-                # 2026-11-24)
+                # border walked BORDER_DEPTH levels of its own: 30 s a level's 3D parts by the UV sphere's pole)
                 k = scheme.corners.index((s, t))
                 extra, least = corner if isinstance(corner, tuple) else (corner, 0)
                 for _ in range(max(extra, least - len(path))):
@@ -1622,8 +1621,8 @@ class SubdivisionChart:
         """How deep a float walk goes before its fallback (_fallback()): FLOAT_DEPTH, or by a border (where pieces are
         never regular, and every level is a split) as deep as asked: BORDER_DEPTH by default (a point of its own),
         COARSE_DEPTH for points in bulk (the coarse levels' lattices, the bounds' samples: within some 1e-6 of the face;
-        every point walked 24 levels each, seconds a start on the UV sphere, 2026-11-24), NORMAL_DEPTH for normals, and
-        for the drone's height as deep as its level's steps need"""
+        every point walked 24 levels each, seconds a start on the UV sphere), NORMAL_DEPTH for normals, and for the
+        drone's height as deep as its level's steps need"""
         if not self.border:
             return FLOAT_DEPTH
         return BORDER_DEPTH if depth is None else depth
@@ -1665,10 +1664,9 @@ class SubdivisionChart:
 
     def _corner_leaf(self, f, corner):
         """For a float point right at irregular face f's corner (its index in the loop), if it's an extraordinary
-        vertex: the leaf beside it CORNER_DEPTH levels toward it, moved to meet the vertex's limit point there (its value
-        there exact to a float, its derivatives a stand-in: the surface has none there in u and v); else None. A
-        lattice's corner points walked FLOAT_DEPTH levels down each (quadico's first floor: 6250 nodes, 5 s,
-        2026-11-24)."""
+        vertex: the leaf beside it CORNER_DEPTH levels toward it, moved to meet the vertex's limit point there (its
+        value there exact to a float, its derivatives a stand-in: the surface has none there in u and v); else None. A
+        lattice's corner points walked FLOAT_DEPTH levels down each (quadico's first floor: 6250 nodes, 5 s)."""
         found = self._corner_leaves.get((f, corner))
         if found is None:
             shape, P = self._float_node(f, ())
@@ -1727,8 +1725,8 @@ class SubdivisionChart:
         corner than 2^-FLOAT_DEPTH in the leaf beside it"""
         if len(u) <= FEW_POINTS:
             # A point or two (a search's Newton steps, one point a face): walked down in plain floats, as numpy's
-            # arrays a level at a time took 0.15 ms a point, 40 levels down at a corner (2026-11-24: a point below on
-            # quadico took 50-120 ms, the drone's few a tick held it in the teens of frames a second)
+            # arrays a level at a time took 0.15 ms a point, 40 levels down at a corner (a point below on quadico took
+            # 50-120 ms, the drone's few a tick held it in the teens of frames a second)
             groups = {}
             for row, (x, y) in enumerate(zip(u.tolist(), v.tolist())):
                 leaf = self._float_leaf(f, x, y, depth)
@@ -1807,7 +1805,7 @@ class SubdivisionChart:
             # floats, all at once, from the float tree (by a border, its pieces as deep as the steps need, their
             # corners' limit points at the lattice's own points), none from the exact tree: its walks to the regular
             # pieces took 10 s of a level's 3D parts by the UV sphere's pole, and on the smooth Penrose torus, nearly
-            # every face irregular, 8,000 exact splits for its first floor (2026-11-24)
+            # every face irregular, 8,000 exact splits for its first floor
             depth = min(BORDER_DEPTH, max(COARSE_DEPTH, h.denominator.bit_length() // 2 + 12))
             step, u, v = float(h), float(U), float(V)
             points = self._evaluate(np.full(len(gi), f), u + step * gi, v + step * gj, depth=depth)
@@ -1975,7 +1973,7 @@ class SubdivisionChart:
         then clamped to the face). (faces, u, v, L): L (t, 2, 2) the map from the first face's parameters to the
         last's, d(u', v') / d(u, v). A face's own patch carried on past its sides (a polynomial's, or deep down a
         piece's next to a corner) was thousands of times the map's size a face off (the smooth Darb torus's girih
-        tiles straddle their faces, 2026-11-24)."""
+        tiles straddle their faces)."""
         f, u, v = f.copy(), u.astype(float).copy(), v.astype(float).copy()
         L = np.broadcast_to(np.eye(2), (len(f), 2, 2)).copy()
         for _ in range(MOST_HOPS):
@@ -2024,7 +2022,7 @@ class SubdivisionChart:
         """Every face's polynomial for the search for the face below (surface.Below.global_face()): a regular face's
         own, an irregular one's fitted to its points on a grid (least squares, its kind's monomials), good to some
         1e-3: the search's Newton steps over some 40 faces walked their trees every tick, 2 ms a point below on the
-        smooth icosphere, 12 ms by the UV sphere's borders (2026-11-24)"""
+        smooth icosphere, 12 ms by the UV sphere's borders"""
         return self._search
 
     def _terms(self, f):
@@ -2054,12 +2052,12 @@ class SubdivisionChart:
         return n / np.where(length > 0.0, length, 1e-300)
 
     def expansion(self, f, u, v):
-        """Regular face f's Taylor coefficients about (u, v) (exact numbers), as floats (n, n, 3): S(u + du, v + dv) = sum
-        T[a][b] du^a dv^b, its constant term aside (the point itself is placed exactly elsewhere). In floats, from the
-        float coefficients at (u, v) rounded: the derivatives there are good to a float's precision relative to
+        """Regular face f's Taylor coefficients about (u, v) (exact numbers), as floats (n, n, 3): S(u + du, v + dv) =
+        sum T[a][b] du^a dv^b, its constant term aside (the point itself is placed exactly elsewhere). In floats, from
+        the float coefficients at (u, v) rounded: the derivatives there are good to a float's precision relative to
         themselves, however deep (a point 2^-53 off has the same derivatives to as many bits); worked out exactly, with
-        numbers growing with every level, a smooth map's point below cost some 2 ms more a tick (2026-11-24). Kept for
-        the points asked again (a walk asks at the same base point tick after tick)."""
+        numbers growing with every level, a smooth map's point below cost some 2 ms more a tick. Kept for the points
+        asked again (a walk asks at the same base point tick after tick)."""
         key = (f, u, v)
         found = self._expansions.get(key)
         if found is None:
@@ -2078,7 +2076,7 @@ class SubdivisionChart:
             T = self.expansion(f, u, v)
             return T[1][0], T[0][1], T[1][1]
         # Kept: the 3D parts size their levels from the anchor's frame a few times a tick, an exact walk down the
-        # tree each (2026-11-24)
+        # tree each
         key = (f, I, J, M)
         found = self._frames.get(key)
         if found is None:
@@ -2101,7 +2099,7 @@ class SubdivisionChart:
         inv_m = 1 / M
         n = self.order
         steps = np.array([[inv_m ** (a + b - 1) if a + b else 0.0 for b in range(n)] for a in range(n)])
-        # (In one einsum: term by term, a smooth torus's floor build spent 0.2 s here, 2026-11-24)
+        # (In one einsum: term by term, a smooth torus's floor build spent 0.2 s here)
         return poly_sum(powers(np.asarray(gi, dtype=float), 0, n), powers(np.asarray(gj, dtype=float), 0, n),
                         np.asarray(T * steps[:, :, None], dtype=float))
 
@@ -2262,7 +2260,7 @@ class SubdivisionChart:
         leaf the point is in, in steps. Past a side: the sides the point found sits on with the surface still nearer
         across them (its gradient pointing out)."""
         scheme = self.schemes[f]
-        U, V, h = Fraction(I, N), Fraction(J, N), Fraction(1, N)
+        U, V = Fraction(I, N), Fraction(J, N)
         _sides, box = self._sides(f, I, J, N)
         # By a border, its float walks as deep as the level's steps need (the rough pieces' error falls as their size
         # squared): half the level's bits and some
@@ -2300,7 +2298,7 @@ class SubdivisionChart:
             d = np.zeros(2)
         # Deep down, polished on the leaf it's in (again if a step crosses into the next leaf); shallower, the surface's
         # own point stands (a leaf's polynomial, stretched past its piece by a step, pulled points near an
-        # extraordinary corner off, 2026-11-23)
+        # extraordinary corner off)
         free = d.copy()
         for _ in range(3 if N >= (1 << 40) else 0):
             E, c = self._steps_expansion(f, I, J, N, d)
@@ -2316,7 +2314,7 @@ class SubdivisionChart:
             X = (np.array(P) - base) * N
             gu, gv = float(np.array(ju) @ (X - r)), float(np.array(jv) @ (X - r))
         else:
-            # (Only deep down: worked out shallower too and not used, an exact walk and point a call, 2026-11-24)
+            # (Only deep down: worked out shallower too and not used, an exact walk and point a call)
             E, c = self._steps_expansion(f, I, J, N, d)
             X = c + evaluate(E, d)
             gu, gv = float(evaluate(E, d, 1, 0) @ (X - r)), float(evaluate(E, d, 0, 1) @ (X - r))
@@ -2328,9 +2326,9 @@ class SubdivisionChart:
         """Faces f's points at (ur + small du, vr + small dv) from their points at (ur, vr), over small (see
         surface.BilinearChart.step()): ur and vr (t,), du and dv (t, ...), as (t, ..., 3). A regular face's from its
         patch's Taylor expansion about (ur, vr), every tile's at once (one product: a tile at a time, the motif levels
-        of a smooth icosphere took 15 s to start, 2026-11-24); an irregular face's, where floats hold small (2^-24 of
-        the face and more), from its points in floats, all at once, else a tile at a time from its leaves' exact
-        expansions (_offsets())."""
+        of a smooth icosphere took 15 s to start); an irregular face's, where floats hold small (2^-24 of the face and
+        more), from its points in floats, all at once, else a tile at a time from its leaves' exact expansions
+        (_offsets())."""
         f = np.asarray(f)
         ur, vr = np.asarray(ur, dtype=float), np.asarray(vr, dtype=float)
         du, dv = np.asarray(du, dtype=float), np.asarray(dv, dtype=float)
@@ -2360,8 +2358,7 @@ class SubdivisionChart:
             if small >= FLOAT_STEP:
                 # (By a border, every piece is a split: as deep as the tiles need, STEP_EXTRA levels under them. A
                 # coarse level's bars over the whole UV sphere walked 10 levels split its pole's borders 12,500 times,
-                # 12 s of its start, while 10 levels were too few for tiles 2^-12 of a face and finer, 0.5-2% off,
-                # 2026-11-24.)
+                # 12 s of its start, while 10 levels were too few for tiles 2^-12 of a face and finer, 0.5-2% off.)
                 depth = min(BORDER_DEPTH, max(0, math.ceil(-math.log2(small))) + STEP_EXTRA)
                 faces = np.broadcast_to(f[rows].reshape((len(rows),) + extra), du[rows].shape)
                 ends = self._evaluate(faces, ur[rows].reshape((len(rows),) + extra) + small * du[rows],
@@ -2382,9 +2379,9 @@ class SubdivisionChart:
         that piece's patch, as a regular face's tiles are from its own, all at once (taylor_steps(), in the leaf's own
         parameters), into out; returns the rest's rows, for _offsets(). Exactly, a tile at a time, the tiles deep in a
         face by a corner of 3 or 5 took a millisecond each, a second a level of a laid-out map's floor (a third of its
-        faces are irregular), and a dive there outran its builds (the Tile Selected Object button's Suzanne,
-        2026-11-25). The patch's polynomial carried a tile's size past its piece is the surface's there to within the
-        tile's size squared over the piece's (the pieces meet smoothly: C2)."""
+        faces are irregular), and a dive there outran its builds (the Tile Selected Object button's Suzanne). The
+        patch's polynomial carried a tile's size past its piece is the surface's there to within the tile's size squared
+        over the piece's (the pieces meet smoothly: C2)."""
         left = []
         tiles = len(rows)
         reach = small * np.maximum(np.abs(du[rows]).reshape(tiles, -1).max(axis=1),
@@ -2593,9 +2590,9 @@ _shift_tables = {}
 
 def poly_sum(pu, pv, C):
     """sum over a, b of pu[..., a] pv[..., b] C[a, b, k]: polynomials' values at many points, pu and pv the points'
-    powers (..., n), C one patch's coefficients (n, n, 3) or each point's own (..., n, n, 3); (..., 3). As two einsums of
-    two operands (or a matrix product): one einsum of three ran a plain loop over every index, 6 times as long (13 ms for
-    50,000 points; irregular faces' float points were half a laid-out map's level builds, 2026-11-25)"""
+    powers (..., n), C one patch's coefficients (n, n, 3) or each point's own (..., n, n, 3); (..., 3). As two einsums
+    of two operands (or a matrix product): one einsum of three ran a plain loop over every index, 6 times as long (13 ms
+    for 50,000 points; irregular faces' float points were half a laid-out map's level builds)"""
     if C.ndim == 3:
         n = C.shape[0]
         by_b = (pu.reshape(-1, n) @ C.reshape(n, -1)).reshape(pu.shape[:-1] + C.shape[1:])
@@ -2608,10 +2605,10 @@ def taylor_steps(C, ur, vr, du, dv, small):
     """Polynomial patches' points at (ur + small du, vr + small dv) from their points at (ur, vr), over small: C (t, n,
     n, 3) each patch's coefficients of u^i v^j, ur and vr (t,), du and dv (t, ...); (t, ..., 3). By the patch's Taylor
     expansion about (ur, vr), T[t, a, b] = sum over i >= a, j >= b of C[i, j] binom(i, a) ur^(i - a) binom(j, b)
-    vr^(j - b) (in numpy alone: a worker thread's Python loops here kept the main thread waiting for Python's lock,
-    2026-11-24), as two matrix products, over i, then over j (as one einsum of three, numpy looped over all six indices
-    one by one, 20 times as long, most of a smooth map's level builds, 2026-11-25); then the sum over a, b of d_u^a
-    d_v^b small^(a + b - 1) T[a, b] (not the constant term), as two matrix products too: the terms with a >= 1,
+    vr^(j - b) (in numpy alone: a worker thread's Python loops here kept the main thread waiting for Python's lock), as
+    two matrix products, over i, then over j (as one einsum of three, numpy looped over all six indices one by one, 20
+    times as long, most of a smooth map's level builds); then the sum over a, b of d_u^a d_v^b small^(a + b - 1) T[a, b]
+    (not the constant term), as two matrix products too: the terms with a >= 1,
     small^(a - 1) d_u^a times small^b d_v^b, and those with a = 0, small^(b - 1) d_v^b (term by term, 16 products of
     every tile's offsets, it was half a level's build), never over small, which a level deep enough makes subnormal
     or 0."""
@@ -2652,7 +2649,7 @@ def shift_matrices(x, n):
 def derivatives(E, d):
     """An expansion E (n, n, 3) at the offset d: its value (less its constant term) and its derivatives up to the
     second, D[i, j] = d^(i + j) / du^i dv^j, (3, 3, 3), in one product (term by term, a smooth map's Newton steps for
-    the point below took most of its tick, 2026-11-24)"""
+    the point below took most of its tick)"""
     n = len(E)
     E = np.asarray(E, dtype=float)
     if E[0, 0].any():

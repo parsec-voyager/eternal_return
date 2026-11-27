@@ -1,5 +1,5 @@
-"""Endless 3D parts on the icosahedron sphere's lattice (2026-11-16: "do the 3d parts for penrose and icosahedron
-tilings"): parts.py's pieces, a vertex piece on each lattice point and an edge piece along each edge, at every level, on
+"""Endless 3D parts on the icosahedron sphere's lattice ("do the 3d parts for penrose and icosahedron tilings"):
+parts.py's pieces, a vertex piece on each lattice point and an edge piece along each edge, at every level, on
 sphere_ico.py's lattice, each of the 20 faces split 2 x 2 at every level. Six edges meet at a lattice point, and five
 at the icosahedron's 12 corners, where the rosettes close up into suns.
 
@@ -119,13 +119,7 @@ _perms = {}          # world text -> anchor_perm()
 
 
 def perm_of(world):
-    text = world.text()
-    found = _perms.get(text)
-    if found is None:
-        if len(_perms) > 64:
-            _perms.clear()
-        found = _perms[text] = anchor_perm(world)
-    return found
+    return sphere_exact.kept(_perms, world.text(), 64, lambda: anchor_perm(world))
 
 
 # ----- lattice points: a face's corners and weights on them (any whole multiples of a level's cells) -----
@@ -159,7 +153,7 @@ def offsets(world, points, view_units=None):
     summing to N: ints or Fractions), as floats: the module's docstring. view_units: about how far the points reach
     from the anchor, in units (what the chart is scaled for), worked out if not given."""
     perm = perm_of(world)
-    N, i, j = world.N, world.A_f[1], world.A_f[2]
+    i, j = world.A_f[1], world.A_f[2]
     folds = []
     for corners, weights in points:
         point = {}
@@ -268,29 +262,15 @@ class Below:
 def _fifth_root(x):
     """A complex of Decimals' fifth root, its argument taken in (-90, 270] degrees as sphere_chart.sector_root() takes
     it (the domain's values are between 0 and 180, and one on the altitude wall, at 180, mustn't go to -180 by a
-    rounding), by Newton's method from float64's; a value below a float's range is scaled up by a power of 2^5 first"""
-    C = sphere_exact.C
-    if x.re == 0 and x.im == 0:
-        return C(Decimal(0), Decimal(0))
-    shift = 0
-    while x.to_complex() == 0:
-        x = x * C(Decimal(2) ** 500)
-        shift += 100
-    z = x.to_complex()
-    angle = math.atan2(z.imag, z.real)
-    if angle <= -math.pi / 2.0:
-        angle += 2.0 * math.pi
-    v = C.of(abs(z) ** 0.2 * complex(math.cos(angle / 5.0), math.sin(angle / 5.0)))
-    five = C(Decimal(5))
-    limit = Decimal(10) ** (-2 * decimal.getcontext().prec + 4)
-    for _ in range(64):
-        v2 = v * v
-        v4 = v2 * v2
-        step = (v4 * v - x) / (v4 * five)
-        v = v - step
-        if step.abs2() <= v.abs2() * limit:
-            break
-    return v * C(Decimal(2) ** -shift) if shift else v
+    rounding), by sphere_exact.root()"""
+
+    def first(z):
+        angle = math.atan2(z.imag, z.real)
+        if angle <= -math.pi / 2.0:
+            angle += 2.0 * math.pi
+        return abs(z) ** 0.2 * complex(math.cos(angle / 5.0), math.sin(angle / 5.0))
+
+    return sphere_exact.root(x, 5, first)
 
 
 _constants = {}      # precision -> the icosahedron chart's constants as Decimals
@@ -333,12 +313,7 @@ _directions = {}
 
 def direction_kept(N, i, j):
     key = (Fraction(i, N), Fraction(j, N), decimal.getcontext().prec)
-    value = _directions.get(key)
-    if value is None:
-        if len(_directions) > 4096:
-            _directions.clear()
-        value = _directions[key] = direction(N, i, j)
-    return value
+    return sphere_exact.kept(_directions, key, 4096, lambda: direction(N, i, j))
 
 
 def _reflect_exact(m, nu):
@@ -417,13 +392,7 @@ _placers = {}
 
 
 def placer(world, digits):
-    key = (world.text(), int(digits))
-    value = _placers.get(key)
-    if value is None:
-        if len(_placers) > 16:
-            _placers.clear()
-        value = _placers[key] = IcoPlacer(world, digits)
-    return value
+    return sphere_exact.kept(_placers, (world.text(), int(digits)), 16, lambda: IcoPlacer(world, digits))
 
 
 # ----- parts.py's view of the icosahedron's lattice -----
@@ -434,12 +403,7 @@ _sizes = {}
 def cell_sizes(world, levels):
     """Each level's cells at the anchor (map units), measured, as {level: size}, as parts.cell_sizes(): from the
     level's lattice point nearest the folded anchor on its face to the next one along the face, placed exactly"""
-    text = world.text()
-    sizes = _sizes.get(text)
-    if sizes is None:
-        if len(_sizes) > 64:
-            _sizes.clear()
-        sizes = _sizes[text] = {}
+    sizes = sphere_exact.kept(_sizes, world.text(), 64, dict)
     levels = [k for k in levels if k not in sizes]
     if levels:
         N, i, j = world.N, world.A_f[1], world.A_f[2]

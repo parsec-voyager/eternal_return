@@ -7,7 +7,7 @@ Started by background.py's worker threads, one each, as
 
 it connects back, makes the add-on's modules importable by the same names as in Blender (its package without its
 __init__, which registers with Blender: no bpy here, and no build needs it), and then serves messages until the
-connection closes (Blender quit, or the worker let it go):
+connection closes (Blender quit, or the worker let it go), or until Blender is gone (leave_with()):
 
 - ("define", key, module, class, data): an object every build shares (a surface's Topology), made here once from data
   (its class's from_shared()) and kept by key: builds refer to it by key, not by a copy (background.dumps()).
@@ -17,16 +17,32 @@ connection closes (Blender quit, or the worker let it go):
 import importlib
 import os
 import sys
+import threading
+import time
 import traceback
 import types
 from multiprocessing.connection import Client
 
 # How much lower than Blender's a build process runs (os.nice())
 NICE = 10
+# How often it looks whether Blender is still there (s)
+PARENT_CHECK = 1.0
+
+
+def leave_with(parent):
+    """Ends this process once its parent (Blender, by its process id) is gone: looked for on a thread of its own.
+    The closed connection only ends it between builds, and a build can outlast Blender: one that never came to an end
+    kept a core busy for hours after Blender quit."""
+    def watch():
+        while os.getppid() == parent:
+            time.sleep(PARENT_CHECK)
+        os._exit(0)
+    threading.Thread(target=watch, daemon=True).start()
 
 
 def main():
     address, key, folder, package = sys.argv[1:5]
+    leave_with(os.getppid())
     # Below Blender's own threads: where the cores are short, the flight's frame goes first, and the builds take what's
     # left (the efficiency cores too)
     try:

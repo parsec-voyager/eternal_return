@@ -3,8 +3,8 @@
 What an endless map shows is built again and again around the drone, level by level, and a build is arithmetic on
 arrays (which tiles are near, their bars' corners, cuts) with one short step at the end that only Blender's main
 thread may take: writing the mesh. A frame at 60 a second has about 2 ms to spare for the flight's tick, and a build
-takes 5 to 50, so every build done in the tick was a frame or three dropped (2026-11-14: the Penrose surfaces at 37 to
-49 frames a second in a dive, a third of the time in builds).
+takes 5 to 50, so every build done in the tick was a frame or three dropped (the Penrose surfaces at 37 to 49 frames a
+second in a dive, a third of the time in builds).
 
 Here a build's arithmetic runs on worker threads (WORKERS of them) while the main thread goes on flying and drawing:
 the engine hands over a function and what it needs (submit()), goes on showing what it has, and takes the result in
@@ -18,13 +18,13 @@ every build is done where it's asked for, so a run comes out the same every time
 
 Jobs go by priority (lower first), and in the order they came at one priority: a level the drone is already past the
 edge of comes before one built again in good time, which comes before one built ahead of need. In order of arrival
-alone, a dive's new levels waited behind a dozen refreshes of levels still covering the view (2026-11-17: the Penrose
-sphere's levels drawn short of the drone in two thirds of a dive's ticks). A job not started yet can be handed in again
+alone, a dive's new levels waited behind a dozen refreshes of levels still covering the view (the Penrose sphere's
+levels drawn short of the drone in two thirds of a dive's ticks). A job not started yet can be handed in again
 (submit(replace=True)): it's then done with the fresher arguments and the new priority, in its place among those as
-good (2026-11-19: handed in again every tick, a job went to the back of the line each time, and in a fast glide the
-floor's and the 3D parts' builds waited up to 2.4 s, then were built round where the drone had been).
+good (handed in again every tick, a job went to the back of the line each time, and in a fast glide the floor's and the
+3D parts' builds waited up to 2.4 s, then were built round where the drone had been).
 
-Since 2026-11-20 the priorities are the engines' values (schedule.py: how much of the view a build puts right, how
+The priorities are the engines' values (schedule.py: how much of the view a build puts right, how
 soon, for its cost), worked out again every tick, better or worse, and a free worker takes the best job waiting at that
 moment (from all of them: some 50 at most). In a line of fixed priorities, a fast dive's floor always had a level drawn
 short of the drone to build first, and the 3D parts' new levels waited a third of a second and more behind them, built
@@ -40,14 +40,14 @@ evaluation and the drawing, most of a frame, needs no Python, and is the workers
 A worker in pure Python (exact Fractions, deep down) never lets go of the lock by itself: Python takes it from it only
 every switch interval, 5 ms by default, and the main thread waited that long each time it came into Python, which it
 does many times a frame (the tick, each handler, each draw's), with or without foreground. Climbing out of a deep
-dive, where every coarser level's tiles are placed exactly, the frame rate fell from 30 to 7 (2026-11-19). So the
-workers start with a switch interval of SWITCH_INTERVAL, and their exact steps give way a face at a time.
+dive, where every coarser level's tiles are placed exactly, the frame rate fell from 30 to 7. So the workers start with
+a switch interval of SWITCH_INTERVAL, and their exact steps give way a face at a time.
 
 Python's garbage collector holds the lock through a whole collection, whichever thread it runs in, and a full one goes
 over every object Python is keeping: with a smooth map's subdivision trees kept (some 5 million objects) that was 1.3 s,
-the frame stopped while a worker collected, and a start's dozen of them 3.4 s of 16 (2026-11-24, the smooth UV sphere).
-So while flying (hold_heap()), what has come through a collection of the younger generations is frozen out of the later
-ones (gc.freeze()): the caches the engines keep are long-lived, and a full collection then goes over only what's new.
+the frame stopped while a worker collected, and a start's dozen of them 3.4 s of 16 (the smooth UV sphere). So while
+flying (hold_heap()), what has come through a collection of the younger generations is frozen out of the later ones
+(gc.freeze()): the caches the engines keep are long-lived, and a full collection then goes over only what's new.
 """
 
 import functools
@@ -82,10 +82,10 @@ _ran = {}                    # key -> how long its last job ran (s): what a buil
 _number = 0
 _threads = []
 # How many worker threads: numpy lets go of Python's lock in its array loops, so two builds run on two cores at once
-# for the most part (2026-11-19: on one, a fast glide's 3D parts, strapwork and cuts kept it busy 9 s of 10, and the
-# strapwork's builds waited up to 2 s). Each runs its builds in a process of its own (PROCESSES): three were no more
-# of the view drawn in time than two on an M1, and the flight's own frames over 33 ms went from 7 to 51 (2026-11-25:
-# three build processes and Blender's main thread filled its four fast cores)
+# for the most part (on one, a fast glide's 3D parts, strapwork and cuts kept it busy 9 s of 10, and the strapwork's
+# builds waited up to 2 s). Each runs its builds in a process of its own (PROCESSES): three were no more
+# of the view drawn in time than two on an M1, and the flight's own frames over 33 ms went from 7 to 51 (three build
+# processes and Blender's main thread filled its four fast cores)
 WORKERS = 2
 # Python's switch interval once the workers run, seconds (above: at 1 ms the climb still fell to 17 frames a second, at
 # 0.2 to 23 at worst)
@@ -126,7 +126,7 @@ GIVE_WAY_MOST = 0.05
 GIVE_WAY = True
 # A worker gives way at most once this long of its own work (s): asked at every small step (a smooth floor's faces,
 # some 920 a round), each wait up to the main thread's whole tick, a floor build of a few seconds' work took 35 s on
-# the knot, and a 3D parts window 50 s, each a worker's whole flight (2026-11-25)
+# the knot, and a 3D parts window 50 s, each a worker's whole flight
 GIVE_WAY_EVERY = 0.0005
 _last_wait = threading.local()
 
@@ -184,7 +184,7 @@ def _take():
 def _work():
     while True:
         number, key, (function, args) = _take()
-        # give way only before a job's work (2026-11-19: giving way before each stale entry of the old line too, up
+        # give way only before a job's work (giving way before each stale entry of the old line too, up
         # to GIVE_WAY_MOST each, kept both workers idle half a fast dive, the 3D frames' levels left unbuilt)
         give_way()
         started = time.perf_counter()
@@ -289,8 +289,8 @@ def forget(owner=None):
 # Python runs one thread's Python at a time, so the worker threads took turns with the flight's tick for one core of the
 # machine's (an M1's eight), and a fast flight's builds waited in line: in a dive and a climb back, up to 50 builds
 # waiting, the oldest a second, the floor's finer levels and the 3D frames' missing from 2 to 25% of the view
-# (2026-11-25). A function marked builds_apart (an attribute set on it: its arguments and result pickle, it touches no
-# bpy and no state kept between builds) is worked out by a Python process of the worker thread's own
+# . A function marked builds_apart (an attribute set on it: its arguments and result pickle, it touches no bpy and no
+# state kept between builds) is worked out by a Python process of the worker thread's own
 # (build_process.py), which it starts the first time: the thread waits on its connection without Python's lock.
 # Objects every build shares and too big to send with each (a surface's Topology: its class has shared_by_key, and
 # shared_data() and from_shared() to send and make it) are sent to a process once and then named by key in what's
@@ -360,8 +360,8 @@ SEND_RETRIES = 2000
 def sturdy(connection):
     """connection (multiprocessing's, over a socket) writing in chunks, each retried while the system has no buffer
     space for it (ENOBUFS, EAGAIN; a write that fails writes nothing, so the stream stays whole): one write of a
-    level's 3 MB answer failed so on macOS, mid-glide, and the build process died with it (2026-11-25). Not on Windows,
-    whose sockets aren't written with os.write (multiprocessing's own send there)."""
+    level's 3 MB answer failed so on macOS, mid-glide, and the build process died with it. Not on Windows, whose sockets
+    aren't written with os.write (multiprocessing's own send there)."""
     import errno
     if sys.platform == "win32":
         return connection

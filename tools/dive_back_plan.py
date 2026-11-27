@@ -3,8 +3,8 @@ this .blend flown in, then flown backward away from its floor at full throttle. 
 the chart's) near the file's drone camera, inside a face away from its corners, is the target, with a line in at the
 mode's angle (or steeper) that keeps off the surface; the drone starts 15% of the map's size out along it (on an
 endless plane, as far as the file's camera is) and flies in (throttle 0.5) until DIVE seconds, then goes full throttle
-backward until DIVE + BACK. How it flies in (the pilot's ways, 2026-11-25: the
-user flies fast and low over the surface, turning, more than straight down):
+backward until DIVE + BACK. How it flies in (the pilot's ways: fast and low over the surface, turning, more than
+straight down):
 
 - dive: at 50 degrees, tracked (a perfect pilot holding the line at the target)
 - glide: at 12 degrees, tracked: low over the surface, the view along it, far more of it in sight
@@ -13,7 +13,7 @@ user flies fast and low over the surface, turning, more than straight down):
   tilted 90 degrees (the user's: looking along the thrust), that's the roll stick; yaw only spins the view about its
   own axis. Tracked like the others: after each tick's roll the pilot slides the drone back onto its line from the
   target along its view, so it sweeps sideways across the surface as it dives in (untracked, on round and tube maps
-  it flew off the surface: 0 to 6 loops in 30 s, against a tracked dive's 20 to 70, 2026-11-26)
+  it flew off the surface: 0 to 6 loops in 30 s, against a tracked dive's 20 to 70)
 
     Blender -b <map.blend> --factory-startup --python tools/dive_back_plan.py -- <out.json> [DIVE] [BACK] [dive|glide|turns]
 """
@@ -34,7 +34,7 @@ TURN_PERIOD = 2.0
 # How far each sweep turns the drone (degrees): the roll stick's peak is worked out from the file's roll rate at the
 # stick's center (scene.stick_rates, Actual rates, nearly linear there; the add-on's default 145 degrees a second if
 # the file has none). At a fixed 0.5 it turned 73 degrees a sweep, and even tracked the view swung off the target and
-# the drone with it (0 to 2 loops in 30 s, 2026-11-26)
+# the drone with it (0 to 2 loops in 30 s)
 TURN_SWEEP = 30.0
 CENTER_RATE = 145.0
 GRID = 9
@@ -53,7 +53,7 @@ mesh = source.data
 camera = np.array(bpy.data.objects["Drone_Camera"].matrix_world.translation)
 # The map's own surface (its chart's, from the repo's add-on): a smooth map's limit surface lies inside its mesh, most at
 # rounded edges (a text's thin letters: 3% of its size), and lines aimed at the mesh's faces passed over the surface
-# and flew on out of the map, the drone growing forever (2026-11-25)
+# and flew on out of the map, the drone growing forever
 package = types.ModuleType("er_plan")
 package.__path__ = [os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "eternal_return")]
 sys.modules["er_plan"] = package
@@ -78,7 +78,7 @@ samples = world(chart.points(faces, us, vs))
 size = float(np.ptp(samples, axis=0).max())
 # How far out the drone starts: 15% of the map's size. On an endless plane (one face, wrapped) the face says nothing of
 # that: 15% of it started the drone 0.2 units out at full scale, which auto scale took as a plunge (482 loops in 30 s,
-# 77% of the view missing, against 25 loops on the plane's own plan, 2026-11-26). There, as far as the file's camera is.
+# 77% of the view missing, against 25 loops on the plane's own plan). There, as far as the file's camera is.
 START_SHARE = 0.15
 reach = (START_SHARE * size if len(mesh.polygons) > 1
          else float(np.linalg.norm(camera - samples[np.argmin(np.linalg.norm(samples - camera, axis=1))])))

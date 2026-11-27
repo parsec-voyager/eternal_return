@@ -12,7 +12,7 @@ A loop in a self-similar world (flight.loops_go_deeper(): endless, substitution,
 also relabels the world. Its factor's worth of finer world is now the size the coarser one was in Blender's
 coordinates, so a Blender unit is the factor's worth fewer meters. A loop about a plain mesh relabels nothing: the
 mesh is the same after it, the drone the factor bigger next to it, so the true scale is the Blender scale, and flying
-back out reads the drone's normal size again (2026-11-23). The meters a Blender unit is are kept as a log2:
+back out reads the drone's normal size again. The meters a Blender unit is are kept as a log2:
 the scene's "er_unit_log2", which loops add to and Reset Scale clears, plus the scene's unit scale. A dive of a
 thousand loops of 10 is 10^-1000 meters a unit, past any float, and in logs it's exact enough. On the Earth (a sphere
 map with a planet or 3D tiles), the map knows its own size instead: its R = rho N map units are the Earth's radius

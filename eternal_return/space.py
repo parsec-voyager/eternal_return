@@ -1,5 +1,5 @@
 """The sky over the Earth (sphere maps that are the Earth, sphere.meters_log2()), from the ground up into space with
-stars (the user, 2026-11-16: "i want the atmosphere to fade to space with stars when you fly upward").
+stars.
 
 Drawn by the sphere's draw handler before anything of the planet, at the far plane, behind everything the view has
 drawn: wherever there's nothing, the sky. Its brightness along a view ray is how much clear air the ray passes through

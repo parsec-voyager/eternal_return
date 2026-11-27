@@ -1,9 +1,9 @@
-"""Endless motifs on square-lattice surface maps (2026-11-23, phase 4 of the unified engines: one motif language). A
-surface map (surface.py) whose rule is "square" splits every quad face k x k at every level, forever; with a motif
-(motif.Pieces: the plane maps' per-cell pieces, the Inferno's star outlines and gold lines, say) its cells are drawn the
-way surface_substitution.py draws a substitution rule's tiles: the same levels (each its own object, finer ones on top,
-the floor under them all), outlines, builds on the worker threads, coarse levels cut to a box. A square's k x k split is
-a substitution rule too, a periodic one, so all that's needed here is where the tiles are:
+"""Endless motifs on square-lattice surface maps (phase 4 of the unified engines: one motif language). A surface map
+(surface.py) whose rule is "square" splits every quad face k x k at every level, forever; with a motif (motif.Pieces:
+the plane maps' per-cell pieces, the Inferno's star outlines and gold lines, say) its cells are drawn the way
+surface_substitution.py draws a substitution rule's tiles: the same levels (each its own object, finer ones on top, the
+floor under them all), outlines, builds on the worker threads, coarse levels cut to a box. A square's k x k split is a
+substitution rule too, a periodic one, so all that's needed here is where the tiles are:
 - CellRule: the rule, three kinds (the unit square, a cell, and its halves, a triangle face's), each level k times
   finer
 - CellFaces: what the drawing asks of the faces (surface_substitution.Faces holds a labeled mesh's): a face's (u, v)
@@ -123,18 +123,9 @@ class CellLevel(SS.Level):
             root[2], root[3] = float(Fraction(I, M)), float(Fraction(J, M))
         return root
 
-    def reroot(self, limit=SS.COEF_LIMIT):
-        """Faces whose cells are far from their root get a cell near their middle as their root"""
-        for f in list(self.roots):
-            rows = np.flatnonzero(self.face == f)
-            if not len(rows) or np.abs(self.coef[rows]).max() < limit:
-                continue
-            middle = rows[np.argmin(np.linalg.norm(self.rel[rows] - self.rel[rows].mean(axis=0), axis=1))]
-            shift = self.coef[middle].copy()
-            I, J = self.roots[f][0]
-            self.roots[f] = [(I + int(shift[0]), J + int(shift[1])), None, 0.0, 0.0]
-            self.coef[rows] -= shift
-        self.set_tiles(self.face, self.kind, self.rot, self.mirror, self.coef)
+    def moved_root(self, root, shift):
+        """A face's root cell (I, J), moved by a cell's steps (Level.reroot())"""
+        return root[0] + int(shift[0]), root[1] + int(shift[1])
 
     def keep_near(self, world, faces, centers, window, center):
         """Keep the cells within window (map units) of center: by their map places, which are good near the drone at

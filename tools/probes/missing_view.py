@@ -1,8 +1,8 @@
 """Flight harness probe (tools/flight_sim.py --probe): how much of the view is missing, the floor's levels and the 3D
 frames not keeping up with the drone, against the map fully built where the camera is. The test that matters for any
-change to an endless map's builds, scheduling or speed (2026-11-25, the user: "test whether frames and floors are
-keeping up, not just fps"): fly it --realtime, diving and flying backward away from the floor fast
-(tools/dive_back_plan.py), on every map the change touches, and look at the worst pictures.
+change to an endless map's builds, scheduling or speed (whether frames and floors keep up, not just fps): fly it
+--realtime, diving and flying backward away from the floor fast (tools/dive_back_plan.py), on every map the change
+touches, and look at the worst pictures.
 
 Every MISSING_EVERY frames from MISSING_FROM s: the view rendered as it is (live); then every surface map settled here
 and now (the worker threads off, build budgets unbounded, MISSING_ROUNDS rounds) and rendered again (settled). The

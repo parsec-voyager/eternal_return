@@ -1,5 +1,5 @@
-"""Tile Selected Object (phase 7 of the engines' plan, 2026-11-25): any object made an endless surface map from the
-sidebar, the map build scripts' setup moved into the add-on. The object's shape is laid out once, now, as the map's
+"""Tile Selected Object (phase 7 of the engines' plan): any object made an endless surface map from the sidebar, the map
+build scripts' setup moved into the add-on. The object's shape is laid out once, now, as the map's
 mesh (layout.py): as about so many quads, near square on the shape (Blender's QuadriFlow, regularized(), and on a
 smooth surface fit()), or triangles, near equilateral (triangulated()), or its own faces as they are. That mesh is the
 map's top level, every face splitting factor x factor forever below it (surface.py), with a floor motif on every

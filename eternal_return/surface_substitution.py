@@ -1,8 +1,6 @@
-"""Endless substitution tilings on any surface: Penrose (2026-11-13, step 4 of tiling any surface: "i want a general
-way of tiling a plane with penrose tiles regardless of the curvature of the plane, just like with square and triangle
-tilings") and, since 2026-11-22, any substitution.Rule (Darb-i Imam's girih), each a plug-in to this one engine. Named
-surface_penrose.py until 2026-11-23. What follows is told for Penrose's rhombs; a girih mesh's pieces are labeled
-instead by the TILE and IDEAL attributes (Faces), its tiles clipped to their faces (Level.face_sides()).
+"""Endless substitution tilings on any surface: Penrose's rhombs, and any other substitution.Rule (Darb-i Imam's girih),
+each a plug-in to this one engine. What follows is told for Penrose's rhombs; a girih mesh's pieces are labeled instead
+by the TILE and IDEAL attributes (Faces), its tiles clipped to their faces (Level.face_sides()).
 
 A surface map (surface.py) whose settings say "rule": "penrose" has a rhomb mesh as its source: every face a Penrose
 rhomb, its loop (B, A, C, A') counterclockwise from outside, and its kind (0 thin, 1 thick) in the face attribute
@@ -54,7 +52,7 @@ from . import schedule
 from . import substitution
 from . import surface
 from . import tiling
-from .cyclotomic import RING10 as RING, float_sqrt, q_add, q_div, q_mul, q_scale, q_sub
+from .cyclotomic import RING10 as RING, float_sqrt, q_add, q_div, q_mul, q_sub
 from .motif import Edges, Hankin, Pieces
 
 PROPERTY = "surface_substitution"
@@ -91,28 +89,26 @@ BUILD_SLACK = 1.4
 # far ahead, would see past the level's edge, and is built that much wider (at least twice it) and centered ahead of
 # the drone along its flight (by the wait and half its slack beyond). Asked for only once the drone was past the edge,
 # every build came late, and the finest levels, a fifth of a drone height wide, were drawn short of it in three
-# quarters of the ticks at a cruise of a height a second (2026-11-17).
+# quarters of the ticks at a cruise of a height a second.
 # The drone's speed over the surface and the builds' wait: the map's schedule.Motion, shared with its 3D parts.
-# 2026-11-19: the build's slack grew with the speed (twice the flight in the wait, up to 1.5 windows) and its center
-# went at most that slack ahead, so flying faster than 1.5 windows in a wait (the user's low glides: hundreds of the
-# finest levels' tiles a second), every build was behind the drone when it was drawn: rebuilt again and again, drawn
-# short (bare floor), and its kept tiles six windows across, cut in the tick (a quarter of each frame, 13 to 18 frames a
-# second). Now a build is centered where the drone will be when it's drawn, plus its slack along the flight, its size
-# the same at any speed: faster flight asks for more builds, not bigger ones.
+# A build is centered where the drone will be when it's drawn, plus its slack along the flight, its size the same at any
+# speed: faster flight asks for more builds, not bigger ones. With a slack that grew with the speed (twice the flight in
+# the wait, up to 1.5 windows) and a center at most that slack ahead, flying faster than 1.5 windows in a wait (low
+# glides: hundreds of the finest levels' tiles a second), every build was behind the drone when it was drawn: rebuilt
+# again and again, drawn short (bare floor), and its kept tiles six windows across, cut in the tick (a quarter of each
+# frame, 13 to 18 frames a second).
 # The worker threads' priority: what a build is worth (schedule.value(), by the same rule as the 3D parts'): the share
 # of the view it puts right (its level's disc, worth()), how much of its colors it shows there (its fade), both as they
-# will be when the build lands, and how soon it's wanted, for its cost. Before 2026-11-20 a table: a level short of the
-# drone first, the coarser first (but a level not drawn at all, the finest first), then one built again before it's
-# short, then the next finer one built ahead, each tuned against the last failure (2026-11-19: a fast glide kept the
-# workers on bars a pixel wide while the levels between were short; a fast dive built each new level just as it turned
-# coarse, the view "a solid color").
+# will be when the build lands, and how soon it's wanted, for its cost. (A table of fixed priorities, each tuned against
+# the last failure, always left another: a fast glide kept the workers on bars a pixel wide while the levels between
+# were short; a fast dive built each new level just as it turned coarse, the view one flat color.)
 # Rated as it is when asked for, and its bars' width counted again on top of its fade, a new fine level in a fast dive
 # was worth a hundredth of the next 3D parts build; it landed half shown or more after it was wanted, the floor near
-# the drone plain, in two ticks of three (2026-11-20, the user: "the floor is a solid color").
+# the drone plain, in two ticks of three.
 # How much of the view round them a level's bars fill, against the 3D parts' pieces (parts.INK): the same, both are
-# what's missing where they'd be (0.25 until 2026-11-20)
+# what's missing where they'd be
 INK = 1.0
-# A floor build's cost until one's measured (s): some 20 ms on a worker (2026-11-19)
+# A floor build's cost until one's measured (s): some 20 ms on a worker
 COST_FIRST = 0.02
 # A build still waiting is handed in again round its new middle once that's moved this share of its reach
 FRESH = 0.25
@@ -121,9 +117,8 @@ MAX_TILES = 60000
 PUSH_STEP = surface.PUSH_STEP
 # Levels whose tiles are small enough that radius of them fit in the sight are "plain": drawn within radius of their
 # tiles. Bigger ones are "coarse": drawn out to the sight, cut to a box round the drone (their bars reach far past
-# it), and the first whose bar holds the whole box covers everything coarser (coarse_level()). (Until 2026-11-14 a level
-# was coarse from bars 200 px wide, still thousands of tiles in its window, all of them cut to a box that cut none.)
-# Levels whose tiles are more than this many of their windows across are "giant": never drawn (their places, from a
+# it), and the first whose bar holds the whole box covers everything coarser. Levels whose tiles are more than this many
+# of their windows across are "giant": never drawn (their places, from a
 # root rounded once, are only good to ~1e-16 of their size), only the floor tinted by the bar the drone is in, if any
 # (giant_tint())
 GIANT = 1e6
@@ -172,7 +167,7 @@ def periodic(faces):
 #   length, along a power of zeta) and counterclockwise. The tile is drawn cut to the face (Faces.clip), so a tile split
 #   into faces any way is drawn whole, and two tiles' faces meet edge to edge. A Darb-i Imam decagon or hexagon is
 #   rhombs, a bowtie triangles; and any two girih tiles join seamlessly at a fold (each tile edge is a mirror line of
-#   everything drawn across it, at every depth: 2026-11-21, checked exactly to depth 3).
+#   everything drawn across it, at every depth: checked exactly to depth 3).
 IDEAL = "ideal_"
 TILE = "tile_"
 
@@ -261,7 +256,7 @@ class Faces:
             tile[name] = values.tolist()
         starts = np.empty(count, dtype=np.int64)
         mesh.polygons.foreach_get("loop_start", starts)
-        rule, R = self.rule, RING
+        R = RING
         units = {R.power(k): k for k in range(R.n)}
         self.kind = np.zeros(count, np.int32)
         self.ev_x, self.ev_y = np.zeros(count), np.zeros(count)
@@ -486,8 +481,8 @@ class Level:
         all four normal . p <= offset (a triangle's third side twice). Each side's offset is the root's distance from
         it: exactly once its corners are big (deep down a face's corners are far bigger than the tiles' places near the
         drone, and the distance of a line near the drone, from floats of them, would be all rounding), in float64 while
-        they're under FLOAT_SIDES (shallow levels, thousands of faces: exactly, they were most of a first build,
-        2026-11-22). Kept a face and root at a time, whatever the tiles."""
+        they're under FLOAT_SIDES (shallow levels, thousands of faces: exactly, they were most of a first build). Kept a
+        face and root at a time, whatever the tiles."""
         kept = self.__dict__.setdefault("_face_sides", {})
         fs, index = np.unique(self.face[rows], return_inverse=True)
         offsets = np.empty((len(fs), 4))
@@ -546,8 +541,8 @@ class Level:
 
     def face_params(self, world, faces, rows):
         """For tiles rows: each one's face's root's map place (t, 3), u_r and v_r (t,). Every tile's are worked out
-        the first time and kept (a build asks some 15 times, and sorting the tiles' faces each time was a tenth of it,
-        2026-11-14)."""
+        the first time and kept (a build asks some 15 times, and sorting the tiles' faces each time was a tenth of
+        it)."""
         if self.params is None:
             fs, index = np.unique(self.face, return_inverse=True)
             params = [self.place_root(world, faces, int(f)) for f in fs]
@@ -610,9 +605,13 @@ class Level:
                 continue
             middle = rows[np.argmin(np.linalg.norm(self.rel[rows] - self.rel[rows].mean(axis=0), axis=1))]
             shift = self.coef[middle].copy()
-            self.roots[f] = [RING.add(self.roots[f][0], tuple(int(c) for c in shift)), None, 0.0, 0.0]
+            self.roots[f] = [self.moved_root(self.roots[f][0], shift), None, 0.0, 0.0]
             self.coef[rows] -= shift
         self.set_tiles(self.face, self.kind, self.rot, self.mirror, self.coef)
+
+    def moved_root(self, root, shift):
+        """A face's root's place, moved by a tile's coefficients"""
+        return RING.add(root, tuple(int(c) for c in shift))
 
     def keep_near(self, world, faces, centers, window, center):
         """Keep the tiles whose halves come within window (map units) of the point below (center). Shallow, by their
@@ -671,12 +670,12 @@ class Level:
                     covered = min(covered, margin * per)
             # A face's ideal units are at least per map units, and up to its greatest stretch: on a stretched face
             # (a Catmull-Clark icosahedron's, 3 to 1) that kept ten times the tiles the window reaches, each gone
-            # through again by every level under this one and every build (2026-11-14). Of those kept, the ones whose
-            # map places are out of the window's reach go too, unless the window is a speck in a tile (MIN_KEEP: a
+            # through again by every level under this one and every build. Of those kept, the ones whose map places are
+            # out of the window's reach go too, unless the window is a speck in a tile (MIN_KEEP: a
             # big level's places are only good to a ten-thousandth of a tile).
             # A few kept (a giant level's: the window a speck in its tiles) are near whatever their places: placing
             # each face's root exactly was a third of a deep endless plane's first settle (a thousand giant levels for
-            # the floor's tint, 2026-11-23)
+            # the floor's tint)
             rows = np.flatnonzero(keep)
             if len(rows) > FEW_KEPT:
                 size = self.scale * faces.sigma_hi[self.face[rows]]
@@ -709,7 +708,6 @@ class Level:
 
 def near_faces(world, faces, center, window):
     """The faces whose corners' sphere comes within window of center (map units), shallow (float64)"""
-    top = world.topology
     mesh_center = surface.d_float(world.anchor_point()) + center / (world.rho * math.ldexp(1.0, world.n))
     reach = window / (world.rho * math.ldexp(1.0, world.n))
     return np.flatnonzero(np.linalg.norm(faces.middle - mesh_center, axis=1) - faces.radius <= reach).tolist()
@@ -719,8 +717,8 @@ def level_zero(world, faces, centers, center, window):
     """Level 0: the tiles of the faces near the point below (Faces.tiles), each face's root its first tile's place; on
     a curved chart its corner 0 (its own frame's origin), always on the face: a girih tile's place is often a face or
     more off its pieces, and a point off its face is the surface's beyond its sides (relocated()), which around a cone
-    corner is two places, one by each way round (the smooth Darb torus's tiles placed 1.3 off, 2026-11-24). A root is a
-    point, the same one at every level below (LAMBDA times its coefficients)."""
+    corner is two places, one by each way round (the smooth Darb torus's tiles placed 1.3 off). A root is a point, the
+    same one at every level below (LAMBDA times its coefficients)."""
     level = Level(0, world, center, faces.rule)
     face, kind, rot, mirror, coef = [], [], [], [], []
     on_face = not world.topology.chart.flat_cells
@@ -865,12 +863,12 @@ def kept_levels(world, faces, below, st, finest, center, need, lowest=None):
     isn't kept yet) cut again from the one above it, which does by then (needs shrink down the levels). Every level from
     lowest (finest - KEPT_ASKED by default) is asked: a need that grows with the drone's speed (settle()) left a coarse
     level short while the finer ones covered, and its builds, short of its window, were stale as soon as they were
-    written, built again and again (2026-11-17). Coarser ones (giant: only the floor's tint asks for them) only up to
-    the first that still covers: deep down there are a thousand and more.
+    written, built again and again. Coarser ones (giant: only the floor's tint asks for them) only up to the first that
+    still covers: deep down there are a thousand and more.
 
-    Since 2026-11-19 only for the levels read in the tick: the giant ones (the floor's tint, the 3D parts' giant
-    pieces). The levels the builds draw are cut where they're built (tiles()): cut here, ahead of the drone, they were a
-    quarter of the main thread's time in a fast dive, and the 3D parts' builds cut them again for their own windows."""
+    Only for the levels read in the tick: the giant ones (the floor's tint, the 3D parts' giant pieces). The levels the
+    builds draw are cut where they're built (tiles()): cut here, ahead of the drone, they were a quarter of the main
+    thread's time in a fast dive, and the 3D parts' builds cut them again for their own windows."""
     text = world.text()
     now = []
 
@@ -878,7 +876,7 @@ def kept_levels(world, faces, below, st, finest, center, need, lowest=None):
         """The point below a cut's own center: deep down, keep_near() keeps a level's tiles round the point its
         Centers were worked out from (below), and says they're round the center it's given. Cut round where the drone
         will be (foot_soon) from the point below it now, a level said it held tiles it didn't, and every level cut from
-        it came out empty; the 3D parts' builds failed, in the tick too, which ended the flight (2026-11-19)"""
+        it came out empty; the 3D parts' builds failed, in the tick too, which ended the flight"""
         point = np.asarray(point, dtype=float)
         return below if np.array_equal(point, world.rho * below.foot) else surface.Below(world, point)
     lowest = max(0, finest - KEPT_ASKED) if lowest is None else max(0, min(lowest, finest))
@@ -895,7 +893,7 @@ def kept_levels(world, faces, below, st, finest, center, need, lowest=None):
         cut_below = below_at(center)
         window = lambda k: need(k) * SLACK + min(SLACK_TILES * surface_tile(world, faces, cut_below, k), 8.0 * need(k))
         # One cut for them all, each from the one cut before it or the kept one above it: its Centers worked out once
-        # (a cut a level, a deep endless plane's first settle worked them out a thousand times, 2026-11-23)
+        # (a cut a level, a deep endless plane's first settle worked them out a thousand times)
         asked = set(now)
         parents = {k - 1: parent_of(world, faces, st, k) for k in now if k > 0 and k - 1 not in asked}
         cut = cut_levels(world, faces, cut_below, parents, [(k, window(k)) for k in now], center,
@@ -965,9 +963,9 @@ def tiles(st, world, faces, d, center, window):
     and the floor's builds were drawn late). Nothing here touches Blender, so it runs where the builds do, on the worker
     threads, or in the tick when a build is done there.
 
-    2026-11-19: before, the floor's levels were cut in the tick round where the drone would be (a quarter of the main
-    thread's time in a fast dive), and each 3D parts' build cut its level again on the worker thread for its own
-    window (some 40% of its time there)."""
+    Cut in the tick round where the drone would be, the floor's levels took a quarter of the main thread's time in a
+    fast dive, and each 3D parts' build cut its level again on the worker thread for its own window (some 40% of its
+    time there)."""
     if periodic(faces):
         # A square map's cells, found anew: whole numbers from the root, nothing to walk down from the level above
         from . import surface_cells
@@ -1018,7 +1016,7 @@ def keep_copy(st, level):
     """A copy of a kept level that a build re-rooted, and placed its roots for (exactly, deep down), kept in its place,
     if it still holds what it was copied from (not trimmed) and that's still kept: the same tiles, worked out once.
     Thrown away, every coarse build re-rooted its copy and placed its roots again, some 2 ms a face deep down, in the
-    tick for a level never drawn (a climb's new coarse levels, 2026-11-19). The level isn't changed after this."""
+    tick for a level never drawn (a climb's new coarse levels). The level isn't changed after this."""
     source = getattr(level, "source", None)
     if source is None or level.window < source[1] or len(level.face) != len(source[0].face):
         return
@@ -1053,7 +1051,7 @@ def cut_levels(world, faces, below, parents, cuts, center, centers_window):
             # A parent kept far wider than this window (a coarse level the floor keeps out to the clip end) is cut to
             # what its children can reach first: its children straddle it by its rule's PAD at most (stretched faces
             # allowed for). Cut whole, a Darb-i Imam parent's 211 children a tile were made and thrown away, up to a
-            # million a cut, and the 3D frames' builds took seconds (2026-11-23).
+            # million a cut, and the 3D frames' builds took seconds.
             reach = window + PAD_STRETCH * parent.rule.pad * surface_tile(world, faces, below, k - 1)
             if len(parent.face) * parent.rule.most_children > TRIM_MIN and parent.window > schedule.OVERBUILT * reach:
                 parent = parent.copy()
@@ -1089,7 +1087,7 @@ def surface_tile(world, faces, below, d):
     corners' (corner_edges()), so it changes smoothly over the mesh. The face's own edge jumped at every side, and
     every level's window, bars' width on screen and fade with it: crossing onto a face a sixth bigger, every level was
     short of its window at once, sixteen builds were asked for in a tick, and the worker thread fell up to 2.5 s behind
-    (2026-11-17)."""
+   ."""
     top = world.topology
     f = below.face
     corner = corner_edges(top)[np.asarray(top.corners[f])]
@@ -1211,20 +1209,20 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
     that comes within the box of half side window round center, cut to it (a coarse level's).
 
     motifs = (outlined, cores): the tiles within outline_within of the camera (map units) are drawn outlined, the rest
-    as their cores alone, at a fifth of the faces (outlines everywhere were 42k faces a level, 2026-11-13). The strips
-    are the floor's color, so on the floor the two look the same; only on a coarser level's bar do the strips show, and
-    they're narrow by then. (Far bars whole in the mean color looked the same only under a pixel: on the floor, a bar
-    switching between the two grew or shrank by its strips, and the flight harness saw it at loops.)
+    as their cores alone, at a fifth of the faces (outlines everywhere were 42k faces a level). The strips are the
+    floor's color, so on the floor the two look the same; only on a coarser level's bar do the strips show, and they're
+    narrow by then. (Far bars whole in the mean color looked the same only under a pixel: on the floor, a bar switching
+    between the two grew or shrank by its strips, and the flight harness saw it at loops.)
 
     On a bent face (its blend twisted) a bar is cut across into pieces short enough that each, flat between its
     corners, stays within BAR_FLATNESS of its distance from the camera (at least the drone's height) of the face: drawn
     whole, a long bar's middle sank under the floor, which split finer near the drone, and the floor showed through
-    its side, differently after every loop (2026-11-13: Catmull-Clark icosahedron).
+    its side, differently after every loop (Catmull-Clark icosahedron).
 
     Only the tiles that can reach the window (or the box) are gone through at all, and where no bar is cut (no box,
     and the face flat enough for whole bars, as every one is a few loops down), a kind's bars' corners are one product
     for all its tiles, each tile's place and frame times its prototile's bars (Level.tile_frames()): gathering each
-    polygon's face and working its corners out one polygon at a time took three times as long (2026-11-14)."""
+    polygon's face and working its corners out one polygon at a time took three times as long."""
     out_corners, out_sizes, out_codes = [], [], []
     split_any = False
     # How far the camera could come down before one of the pieces stood off toward it by more than the layer over it
@@ -1291,16 +1289,16 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
             if camera is not None and (bend > 0.0).any():
                 frames = level.tile_frames(world, faces, every, rule.orient[rots[every], int(mirror)])
                 # Cut for the drone come down to height (its SPLIT_AHEAD): a build cut for where it is was due
-                # again as soon as it came down at all, and the worker threads did nothing else (2026-11-25)
+                # again as soon as it came down at all, and the worker threads did nothing else
                 room, rise, over = push_rooms(frames, camera, distance, height, height * (1.0 / SPLIT_AHEAD - 1.0))
                 with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
                     by_push = np.where(rise > 0.0, np.sqrt(4.0 * room / rise), math.inf)
                     # Out along a bar the room grows with the camera's height over the surface, not with its distance
                     # (split_along()'s bands, each twice as long as the last, were for the distance's room: a coarse
                     # bar deep down, the surface under it nearly flat, was cut for the drone's height near the camera
-                    # and was 40,000 heights long pieces near the horizon, standing 10 heights up, 2026-11-25). Where
-                    # the surface rises toward the camera, the camera's height over it grows by that rise: room for
-                    # pieces twice as long (four times the height) once the rise is three times the height here
+                    # and was 40,000 heights long pieces near the horizon, standing 10 heights up). Where the surface
+                    # rises toward the camera, the camera's height over it grows by that rise: room for pieces twice as
+                    # long (four times the height) once the rise is three times the height here
                     push_step = np.sqrt(3.0 * over / np.where(rise > 0.0, rise, 1.0))
                 binds = by_push < longest
                 longest = np.where(binds, by_push, longest)
@@ -1356,7 +1354,7 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
                         # A curved patch's expansion checked against the surface at the prototile's outermost
                         # corners: a tile it strays from by more than its bars may (BAR_FLATNESS of the distance) goes a
                         # polygon at a time, its corners the surface's own (by a corner where 16 triangles meet, the
-                        # smooth Darb torus's, a tile's expansion missed the surface by most of a tile, 2026-11-24)
+                        # smooth Darb torus's, a tile's expansion missed the surface by most of a tile)
                         probe = outermost(flat)
                         ideal_probe = level.rel[sel[whole]][:, None, :] + flat[probe] @ turn.transpose(0, 2, 1)
                         true = level.map_points(world, faces, sel[whole], ideal_probe)
@@ -1430,7 +1428,7 @@ def level_bars(world, faces, level, motifs, center, window, box=False, camera=No
                     # and a plain level's where its tile curves up toward the camera (elsewhere they sag away); not
                     # those the face's bound on its bend (bend: over the sag of any piece L long, bend L^2, by four
                     # times at least) already holds to half their room either way (measured, all of them were a
-                    # third of a level's build, 2026-11-25)
+                    # third of a level's build)
                     rising = np.zeros(len(level.face), dtype=bool)
                     rising[every] = rise > 0.0
                     bound = np.zeros(len(level.face))
@@ -1484,10 +1482,10 @@ def outermost(flat):
     return found
 # A level whose bars were cut into pieces is built again once the drone's height is this share of what it was: its
 # pieces were cut for that distance, and nearer, their sag grew past the push between layers, so a coarse bar poked
-# up through finer levels until its next build (2026-11-13, harness dive on the icosphere: 4.5% of pixels at once)
+# up through finer levels until its next build (harness dive on the icosphere: 4.5% of pixels at once)
 SPLIT_FOLLOW = 0.7
 # ... and its bars are cut for a drone this much lower than it is: diving, a level cut for the drone's height was due
-# again at every 30% of it, most of a dive's builds (2026-11-17: 532 of 790 on the Penrose sphere), and cut for half
+# again at every 30% of it, most of a dive's builds (532 of 790 on the Penrose sphere), and cut for half
 # of it, each holds three times as far down
 SPLIT_AHEAD = 0.5
 # inside_bar() looks at the tiles within this many level units of the point (for Penrose halves, whose furthest corner
@@ -1496,21 +1494,21 @@ INSIDE_REACH = 2.5
 PENROSE_RADIUS = float(substitution.prototile_reach(penrose)[1].max())
 # The finest levels fade in in this many steps: each step writes every corner's color again and has Blender send the
 # mesh to the GPU again, and with substitution.fade()'s 32, three or four levels fading in at once in a dive came to
-# 70 a second, more than one a tick (2026-11-14)
+# 70 a second, more than one a tick
 FADE_STEPS = 8
 # A level's fade step changes only once its fade is this share of a step past the step's edge (settle())
 FADE_HOLD = 0.25
 # A tick writes at most this many faces of finished builds and recolored levels, and one mesh however big: writing a
 # level's mesh is half a millisecond here, and then Blender's turn, which evaluates it and sends it to the GPU before
 # the next picture (a few ms for a level of 10,000 faces). A dive writes some 30 a second (builds and fade steps), and
-# the frames two of them fell on were the ones dropped (2026-11-14). The rest wait a tick or two. 2026-11-19, 20,000:
-# builds a fixed size at any speed (settle()) are some 6,000 faces, so 2,000 wrote one a tick, and in a fast glide up to
-# 31 finished builds waited to be written, drawn 0.4 to 1 s after they were asked for; 20,000 drew none of them short by
-# more than 2.3 windows (5.6 before) at the same frame rates, gliding and cruising.
+# the frames two of them fell on were the ones dropped. The rest wait a tick or two. 20,000: builds a fixed size at any
+# speed (settle()) are some 6,000 faces, so 2,000 wrote one a tick, and in a fast glide up to 31 finished builds waited
+# to be written, drawn 0.4 to 1 s after they were asked for; 20,000 drew none of them short by more than 2.3 windows
+# (5.6 before) at the same frame rates, gliding and cruising.
 WRITE_FACES = 20000
 # A tick builds levels for at most this long (s); a level already drawn whose rebuild comes due after that waits for
 # a later tick (it was due with slack to spare: BUILD_SLACK, half its outlines' reach). Several levels coming due in
-# one tick took it to 150-270 ms on bent maps (2026-11-13).
+# one tick took it to 150-270 ms on bent maps.
 BUILD_BUDGET = 0.012
 # A bar cut to its face with less area than this (level units: its tile's edge is 1) is a sliver along a face's side
 SLIVER = 1e-9
@@ -1594,8 +1592,8 @@ def halve_off(world, faces, level, ideal, counts, rows, codes, places, camera, h
     either way by more than BAR_FLATNESS of its distance: the pieces as measured, not as their tile's curvature and
     split_along()'s bands foretold them (a coarse level's tiles are as big as faces, its pieces cut by one point's
     curvature and at most MAX_PIECES a band: on the knot's inner bend, deep down, pieces 10 drone heights off the
-    surface were left, 2026-11-25). Only the pieces check says are measured; each round, only the halves it made.
-    Returns them, whether any was
+    surface were left). Only the pieces check says are measured; each round, only the halves it made. Returns them,
+    whether any was
     halved, and the lift: how far below the camera now a camera would see one of them stand off by more than its room
     (the most any piece's rise over its room exceeds, as camera heights: negative, it holds that much lower)."""
     if not check.any():
@@ -1693,7 +1691,7 @@ def split_along(corners, counts, spacing, seen, step, span=math.inf):
     meet without cracks: (corners, counts, the row each piece came from). Rows whose spacing is infinite (or longer
     than they are) stay whole: those whose spacing is at least span (no polygon is longer) are left out before
     anything is worked out for them, which is every bar of a level a few loops down, where the surface is flat to
-    far under the pieces' allowance (finding that out a polygon at a time was a tenth of a deep build, 2026-11-14)."""
+    far under the pieces' allowance (finding that out a polygon at a time was a tenth of a deep build)."""
     r, k = corners.shape[:2]
     with np.errstate(invalid="ignore"):
         maybe = np.flatnonzero(np.isfinite(spacing) & (spacing > 0.0) & (spacing < span) & np.isfinite(step))
@@ -1825,7 +1823,7 @@ def stale(world, text, record, foot, window, camera, outline_within, height, rea
 
     Not for having been built the other way (plain or coarse): a level's tiles outgrow the sight with all of it still
     drawn, and it's built coarse the next time it's due (every level was built again right at the switch, 31 ms each,
-    1.4 a second diving, 2026-11-14). Nor an empty one for anything but its cover: no bar in a box is none in a
+    1.4 a second diving). Nor an empty one for anything but its cover: no bar in a box is none in a
     smaller one (the coarse levels with no bar in sight, some 30 deep down, were each built again every 1.5 s as the
     sight shrank: 12 builds a second of nothing)."""
     _text, center, record_camera, scale = placed(world, text, record)
@@ -1927,21 +1925,14 @@ def place_pushed(obj, location, scale):
 
 
 def level_object(obj, st, d):
-    """A level object for level d: one of the map's free ones, or a new one"""
-    import bpy
+    """A level object for level d: one of the map's free ones, or a new one (parts.map_child())"""
     used = {o.name for o, _r in st.drawn.values() if o is not None}
     for child in obj.children:
         if child.get(LEVEL_KEY) == obj.name and child.name not in used:
             return child
-    name = f"{obj.name}.substitution"
-    level_obj = bpy.data.objects.new(name, bpy.data.meshes.new(name))
-    for c in obj.users_collection:
-        c.objects.link(level_obj)
-    level_obj.parent = obj
-    level_obj[LEVEL_KEY] = obj.name
-    level_obj[POOL] = True
-    level_obj["scaling_target"] = obj
     from . import parts
+    level_obj = parts.map_child(obj, f"{obj.name}.substitution", LEVEL_KEY)
+    level_obj[POOL] = True
     level_obj.data.materials.append(parts.parts_material())
     parts.no_shadow(level_obj)
     add_push_drivers(level_obj)
@@ -1999,7 +1990,7 @@ def giant_tint(obj, world, faces, below, st, top, foot, sight):
     The walk's answer is kept whole too (st.giant_walk: top, the color, the level it's from, and a Drawn round the
     foot for as far as every answer it went by holds), so a tick asks once however deep the map is: with the drone
     over no bar at all, the walk goes by every giant level there is, 1.4 more of them every loop down, and every tick
-    took longer than the last (2026-11-14)."""
+    took longer than the last."""
     if world.n < FLOAT_N or top <= 0:
         return None
     text = world.text()
@@ -2056,7 +2047,7 @@ def giant_answer(obj, world, faces, below, st, d, foot, sight, centers):
             level = st.levels.get(d)
             if level is not None and level.world_text != text:
                 # Kept loops ago: its scale and window in that world's map units, the clearance came out thousands of
-                # times too small or too big (2026-11-23: the endless Penrose plane's tint kept for a bar long left)
+                # times too small or too big (the endless Penrose plane's tint kept for a bar long left)
                 with st.lock:
                     level = st.levels[d] = rebased(world, faces, level)
             found, clearance = inside_bar(obj, world, faces, below, level, centers[0], d)
@@ -2187,8 +2178,8 @@ def settle(obj, camera_world, start=True):
     pushed (finer on top, the floor under them all). Nothing fades out: from the finest (bars min_bar_px wide under the
     drone, fading in from there) every level is drawn, the plain ones within radius of their tiles, the coarse ones
     out to the sight, up to the first whose bar holds the whole view; past the giant ones' threshold, the floor takes
-    the color of the bar the drone is in, if any (2026-11-13: "i like the patterns to remain static"). With builds on
-    the worker thread, each is asked for and built ahead of the drone's flight by the time builds take (BUILD_SLACK)."""
+    the color of the bar the drone is in, if any. With builds on the worker thread, each is asked for and built ahead of
+    the drone's flight by the time builds take (BUILD_SLACK)."""
     world = surface.world_of(obj)
     top = world.topology
     faces = faces_of(obj, top)
@@ -2204,7 +2195,7 @@ def settle(obj, camera_world, start=True):
         return
     sight = float(surface.setting(obj, "window")) * clip_end
     motifs = motifs_of(obj)
-    # Only the fade in: maps built before 2026-11-13 hold the old [in, in, out, out] band, and nothing fades out now
+    # Only the fade in: older maps hold an [in, in, out, out] band, and nothing fades out now
     settings = {"fade": list(setting(obj, "fade") or [])[:2]}
     focal = float(setting(obj, "focal"))
     bar = 2.0 * float(setting(obj, "half_width"))
@@ -2229,9 +2220,9 @@ def settle(obj, camera_world, start=True):
     drawable = min(plain, max(0, r + math.ceil(log_level(tile0 / (GIANT * sight)))))
     drawn_window = functools.lru_cache(None)(lambda d: min(sight, radius * tile0 * shrink(d)))
     # With nothing drawn yet at a start (a flight's, a map just made), everything is built before the first picture. Not
-    # in flight: there nothing drawn is a fast climb outrunning its builds (the coarse levels coming into sight not built
-    # yet, the finer ones gone too fine), and every level built here at once froze the flight 1-2 s (the Tile Selected
-    # Object button's Suzanne, gliding and climbing back, 2026-11-25)
+    # in flight: there nothing drawn is a fast climb outrunning its builds (the coarse levels coming into sight not
+    # built yet, the finer ones gone too fine), and every level built here at once froze the flight 1-2 s (the Tile
+    # Selected Object button's Suzanne, gliding and climbing back)
     first = not st.drawn and start
     # Where the drone will be when a build asked for now is drawn (soon), and each level's build (plan()): its middle,
     # how far it reaches, and how far ahead of the drone it is
@@ -2262,8 +2253,8 @@ def settle(obj, camera_world, start=True):
     # A giant level one of whose bars' edges is within sight is drawn as a coarse level, not left to the tint: tinted,
     # it showed all or nothing (the whole floor its color with the drone in its bar, nothing with the drone beside
     # it), and changed in one frame as the drone shrank it past the threshold, half the view a moment before
-    # (2026-11-23, the endless Penrose plane's dive: 70% seams at recenters). Drawn until the edge is EDGE_KEEP sights
-    # off, so a drone hovering by it doesn't switch it every tick.
+    # (the endless Penrose plane's dive: 70% seams at recenters). Drawn until the edge is EDGE_KEEP sights off, so a
+    # drone hovering by it doesn't switch it every tick.
     giant_centers = [None]
     for _ in range(EDGE_LEVELS if world.n >= FLOAT_N else 0):
         d = drawable - 1
@@ -2286,7 +2277,7 @@ def settle(obj, camera_world, start=True):
             return 1.0
         steps = fade_steps(d)
         # A drawn level keeps its step until the fade is FADE_HOLD of a step past its edge: a drone holding its height
-        # near one switched a level between two steps and back within a tick or two, a flicker (2026-11-17)
+        # near one switched a level between two steps and back within a tick or two, a flicker
         entry = st.drawn.get(d)
         if entry is not None and abs(steps - entry[1].shown * FADE_STEPS) < 0.5 + FADE_HOLD:
             return entry[1].shown
@@ -2353,7 +2344,7 @@ def settle(obj, camera_world, start=True):
     # Writing, at most WRITE_FACES a tick (and one mesh however big): the finished builds of levels drawn short of the
     # drone first, then a fade step (the level furthest behind its colors), then the rest. A rebuilt level shows the
     # same picture a tick later, but one drawn short shows the floor through, and a level kept waiting for its colors
-    # (builds written every tick of a fast dive) jumped several steps at once (2026-11-14).
+    # (builds written every tick of a fast dive) jumped several steps at once.
     wrote = write_ready(obj, st, shown_of, short, 0, urgent=True)
     behind = [(abs(record.shown - (shown_of(d) or 0.0)), d) for d, (level_obj, record) in st.drawn.items()
               if level_obj is not None and (shown_of(d) or 0.0) > 0.0]
@@ -2374,11 +2365,10 @@ def settle(obj, camera_world, start=True):
         entry = st.drawn.get(d)
         # One never drawn is built: at a flight's start here and now, whether its bar holds the view saying where the
         # walk ends; in flight on a worker thread, first in line, the walk going on past it until it's drawn (built
-        # here, by a corner of 3 or 5 faces on the smooth pretzel, deep down, one took 16 s, 2026-11-25). One drawn
+        # here, by a corner of 3 or 5 faces on the smooth pretzel, deep down, one took 16 s). One drawn
         # from a build of when it was plain (diving, every level turns coarse in turn) is built coarse: its plain build
         # reaches past the sight, so it's never due, and it says nothing of a bar holding the view, so the walk went on
         # to the giant levels, every one drawn as it was when plain: 50 levels of 8,500 bars where 20 were wanted
-        # (2026-11-19, the user: "the framerate drops off after awhile")
         if entry is None or due(d, entry[1]):
             ask(d, 1.0, True, first, *worth(d, 1.0))
         elif not entry[1].coarse:
@@ -2393,7 +2383,7 @@ def settle(obj, camera_world, start=True):
     for d in [d for d in st.drawn if d not in wanted]:
         st.drawn.pop(d)
     # And their builds still waiting on the worker thread (all but the finest's, built ahead of need below): diving,
-    # those of the levels left behind stayed in line, some 230 ten seconds into a fast dive (2026-11-19)
+    # those of the levels left behind stayed in line, some 230 ten seconds into a fast dive
     for d in [d for d in st.jobs if d not in wanted and d != finest]:
         background.cancel((obj.name, d))
         st.jobs.pop(d)
@@ -2421,8 +2411,8 @@ def settle(obj, camera_world, start=True):
         offset, scale = surface.transform(world, text, record)
         place_pushed(level_obj, offset + scale * record.center, scale)
     # The next finer level built ahead of need, kept until it fades in (write_ready()): diving, a new level comes in
-    # every quarter of a second or so, and asked for only once it showed, it came in half faded in (2026-11-17: the
-    # Penrose sphere's dive, a level that should have been drawn half shown missing in two thirds of the ticks)
+    # every quarter of a second or so, and asked for only once it showed, it came in half faded in (the Penrose sphere's
+    # dive, a level that should have been drawn half shown missing in two thirds of the ticks)
     if background.enabled and not first and plain <= finest and finest not in wanted:
         ready = st.ready.get(finest)
         if ready is None or due(finest, ready[1]):
@@ -2436,7 +2426,7 @@ def settle(obj, camera_world, start=True):
     # The giant levels' tint, from the coarsest level drawn: one that's past the giant ones' threshold now but not
     # drawn yet (its build still on a worker thread, as it comes in from the giant ones at a loop or a dive) tints the
     # floor until it's drawn. Tinted from the threshold, the floor went dark under such a band for the ticks between,
-    # and back as it landed: a hovering drone's floor flickered between the band's color and dark (2026-11-23)
+    # and back as it landed: a hovering drone's floor flickered between the band's color and dark
     top = max(drawable, min(st.drawn, default=drawable))
     tint_floor(obj, st, None if covered else giant_tint(obj, world, faces, below, st, top, foot, sight))
     # Finer levels on top: the finest unpushed, each coarser a step under; the floor a step under them all
@@ -2473,7 +2463,7 @@ def recolor(obj, d, level_obj, record, shown):
 # A curved level built for a drone this many times higher than it is now is built again before what's merely due
 # (urgent_below()), at this share of what it'd be worth missing: at its full worth, the 30-odd coarse levels of a
 # dive, each crossing it in turn, kept the worker threads from the finer levels, which came undrawn, were built on the
-# main thread (0.3 s each), and starved the workers more (2026-11-25)
+# main thread (0.3 s each), and starved the workers more
 STALE_HEIGHT = 64.0
 URGENT_SHARE = 0.1
 
@@ -2481,7 +2471,7 @@ URGENT_SHARE = 0.1
 def holds(world, height, lift):
     """How low the drone may come (map units, this world) before a level built for it at height stands off toward the
     camera through the levels over it (its pieces' margins, lift: level_bars()'s), so it's due again (stale(); at the
-    worth of a refresh, as a level cut for a drone higher always was: 2026-11-25, every curved level due at full
+    worth of a refresh, as a level cut for a drone higher always was: every curved level due at full
     worth each time the drone's height halved kept the worker threads from all else, and new levels came undrawn).
     None for flat faces, whose pieces lie on them at any height, or none measured."""
     if not math.isfinite(lift) or height + lift <= 0.0:
@@ -2491,9 +2481,9 @@ def holds(world, height, lift):
 
 def urgent_below(world, height):
     """How low the drone may come (map units, this world) before a level built for it at height is wrong (worth():
-    URGENT_SHARE of missing), so it's built again before what's merely due: on curved faces, STALE_HEIGHT times lower (levels drawn whole for a
-    drone thousands of times higher, never built again as it came down and then only as a refresh, stood up through the
-    finer levels as slabs: the knot, 2026-11-25). None for flat faces."""
+    URGENT_SHARE of missing), so it's built again before what's merely due: on curved faces, STALE_HEIGHT times lower
+    (levels drawn whole for a drone thousands of times higher, never built again as it came down and then only as a
+    refresh, stood up through the finer levels as slabs: the knot). None for flat faces."""
     if world.topology.chart.flat_cells:
         return None
     return height / STALE_HEIGHT
@@ -2505,7 +2495,7 @@ def built_level(world, faces, level, motifs, coarse, foot, center, reach, camera
     holds it all (Drawn.cover). Outlined within outline_within of the camera (level_bars()). level is trimmed and
     re-rooted as the build needs it. The build is said to reach only as far as the level's tiles do (it's drawn from
     them): one said to reach further was kept on with a gap in it (its tiles held what a build reaches, but they were
-    only kept for the level's window, 2026-11-17). Nothing here touches Blender, so it can run on the worker
+    only kept for the level's window). Nothing here touches Blender, so it can run on the worker
     thread (background.py), given its own world and level."""
     # A level kept far wider than this build wants (cut when the drone was bigger) is cut down first: kept, it held every
     # tile it had when it was small on screen, and coarse builds went through tens of thousands of them deep down
@@ -2618,15 +2608,14 @@ def build_level(obj, world, faces, st, motifs, d, shown, coarse, foot, center, r
     job = st.jobs.get(d)
     # A build still waiting is handed in again, in its place in line, if its middle has moved FRESH of its reach since
     # it was asked for: waiting behind others in a fast glide, builds asked round where the drone had been were short
-    # of it when drawn (2026-11-19); or it's plain and a coarse one is asked for. Else it's only rated again.
+    # of it when drawn; or it's plain and a coarse one is asked for. Else it's only rated again.
     if background.pending(key) and (job is None or background.running(key) or (
             job[3] == text and job[4] >= coarse and np.linalg.norm(center - job[2]) < FRESH * reach)):
         background.rate(key, priority)
         if job is not None and not background.running(key):
             st.jobs[d] = job[:1] + (priority,) + job[2:5] + (urgent or job[5],)
         return
-    # Its own world (its factor too: one of 2 on a 3 x 3 map placed every level built there wrong, 2026-11-23): this
-    # thread loops on
+    # Its own world (its factor too: one of 2 on a 3 x 3 map placed every level built there wrong): this thread loops on
     own = surface.World.from_text(text, world.rho, world.topology, world.k)
     # A square map's cells are cut anew from whole numbers, nothing kept between builds: in a build process of its own
     # (built_from_cells()). A substitution rule's levels are cut from the kept ones (st): in the worker thread.

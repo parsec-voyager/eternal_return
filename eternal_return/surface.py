@@ -1,8 +1,7 @@
 """Endless surface maps: any mesh of quads and triangles, its faces the biggest tiles of a lattice, each splitting k x k
 at every level (a quad into k^2 quads, a triangle into k^2 triangles; k the map's factor, 2 by default), that the drone
-can dive into anywhere forever and climb back out of to see the whole object (2026-11-12: step 2 of tiling any surface,
-quads; 2026-11-13, step 3: triangles, and corners where any number of faces meet; 2026-11-21, phase 2 of the unified
-engines: any factor, the Inferno's 3 x 3 too; see ~/blender_tests/surface).
+can dive into anywhere forever and climb back out of to see the whole object (quads and triangles, corners where any
+number of faces meet, any factor, the Inferno's 3 x 3 too; see ~/blender_tests/surface).
 
 The faces are flat tiles, folded at the mesh's edges (sphere.py's chart is conformal instead, made for one surface). A
 quad's lattice at level L is its corners' bilinear blend at u, v = I / M, J / M, M = k^L cells across: the points its
@@ -48,7 +47,6 @@ The map's object (an empty at the map's origin, its axes the mesh's, scaled unif
 
 import math
 import random
-import time
 from fractions import Fraction
 
 import numpy as np
@@ -138,8 +136,8 @@ FLOOR_FOLLOW = 16.0
 # curved layer (a motif level's bar piece) stands off the surface toward the camera by its sag wherever the surface
 # curves up toward the camera (a bowl's, a tube's inner bend), and seen almost edge-on (gliding, the far wall of a bend)
 # a sag of a thousandth of its distance was hundreds of times the push across it: coarse bars stood up through the
-# finer levels as slabs over the camera's height (the knot, 2026-11-25). So a piece may stand toward the camera by at
-# most PUSH_SHARE of the push across the surface (push_room()); sagging away from it never shows (it's under the
+# finer levels as slabs over the camera's height (the knot). So a piece may stand toward the camera by at most
+# PUSH_SHARE of the push across the surface (push_room()); sagging away from it never shows (it's under the
 # layer over it anyway), so a convex surface's pieces stay as long as they were.
 PUSH_STEP = 100000.0 / 2 ** 24
 PUSH_SHARE = 0.5
@@ -147,7 +145,7 @@ PUSH_SHARE = 0.5
 # of this angle (radians) times the piece's distance: toward a horizon it falls to nothing, and so would the pieces'
 # length, but a piece seen that nearly edge-on is a sliver a pixel or so tall, whatever's over or under it (the
 # knot's tube seen along its curve: coarse pieces halved 16 times over and still short, every build some 4 times as
-# long, 2026-11-25)
+# long)
 PUSH_LEAST_HEIGHT = 0.25
 PUSH_LEAST_ANGLE = math.radians(1.0)
 # The grid a face's Jacobian is bounded on (Topology)
@@ -270,11 +268,11 @@ class BilinearChart:
     triangle the plane through its three), P0 + u eu + v ev + u v w with P0 its corner 0, eu and ev its sides from
     there (to corners 1 and -1) and the twist w = P0 - P1 + P2 - P3 (0 for a triangle). As floats and exactly, as ints
     over 2^E (the float32 coordinates as they are). Everything the engine asks of the shape is asked here (phase 6 of
-    the unified engines plan, 2026-11-23): its points, in bulk in floats (points(), jacobians()) and exactly (point(),
-    point_q5()), how a level's points step from one placed exactly (frame(), step(): exact for a bilinear patch), its
-    normals, its corners, and bounds (a ball round each face, middle and radius; sigma_lo and sigma_hi, how far a step
-    of a face's parameters moves its point at least and at most; edge_sizes(); twist_norms()). A smooth chart (a
-    subdivision surface's limit) answers the same questions.
+    the unified engines plan): its points, in bulk in floats (points(), jacobians()) and exactly (point(), point_q5()),
+    how a level's points step from one placed exactly (frame(), step(): exact for a bilinear patch), its normals, its
+    corners, and bounds (a ball round each face, middle and radius; sigma_lo and sigma_hi, how far a step of a face's
+    parameters moves its point at least and at most; edge_sizes(); twist_norms()). A smooth chart (a subdivision
+    surface's limit) answers the same questions.
 
     Each method does its arithmetic in the order its callers did when they did it themselves, so the floats come out
     the same to the last bit."""
@@ -695,7 +693,7 @@ class Topology:
         """key_slope() of many keys at once: every face's normal at them in one batch (the chart's normals(), where it
         has them), each key's mean of its faces' (or its first face's where they cancel), and each face's tilt from it.
         A key at a time, a laid-out map's giant 3D frames spent a second a build here (a point at a time through
-        irregular faces' trees, every normal twice: the key's and its faces', 2026-11-25)."""
+        irregular faces' trees, every normal twice: the key's and its faces')."""
         out = np.zeros(len(keys))
         rows, fs, us, vs = [], [], [], []
         for r, key in enumerate(keys):
@@ -769,7 +767,7 @@ class LevelLattice:
         # Every face's grid of (M + 1) x (M + 1), a triangle's points the ones with I + J <= M (-1: not a point): each
         # key's row is its place in the order the keys first come up in, face by face. All faces' keys at once
         # (Topology.grid_keys()), and the slopes and neighbors left for whoever needs them (_around()): everything
-        # here a point at a time, as until 2026-11-14, a level of 15k points took 100 to 230 ms in the floor's build,
+        # here a point at a time, a level of 15k points took 100 to 230 ms in the floor's build,
         # a dozen frames gone the first time a dive reached it.
         grid_keys = top.grid_keys(M).reshape(-1, 4)
         valid = np.flatnonzero(grid_keys[:, 0] >= 0)
@@ -921,7 +919,7 @@ class World:
         # Sent to a build process (background.py) without what a substitution map's frames hang on it, the map's
         # level tables (parts_substitution.SubstitutionLattice.world()): this process's, held by a lock. With them,
         # every floor build of a Penrose map with frames failed to pickle, and was asked for again, tick after tick
-        # (2026-11-26)
+        # 
         state = dict(self.__dict__)
         state.pop("substitution", None)
         return state
@@ -947,9 +945,6 @@ class World:
     def units(self, point):
         """An exact point's offset from A's, in units (the mesh's times N)"""
         return d_float(d_sub(point, self.anchor_point()), self.N)
-
-    def key_units(self, key, level):
-        return self.units(self.topology.key_point(key, self.across(level)))
 
     def camera_point(self, q):
         """The exact point at q units from A's (q floats)"""
@@ -1013,7 +1008,7 @@ def nearest_in_face(a, b, w, inv_n, r, box):
     against the residual too, while that keeps the step a descent."""
     tw = w * inv_n
     d0 = d1 = 0.0
-    # The steps in plain floats: a 2 x 2 system a step, which numpy's calls took 0.5 ms a face for (2026-11-13)
+    # The steps in plain floats: a 2 x 2 system a step, which numpy's calls took 0.5 ms a face for
     (ax, ay, az), (bx, by, bz), (tx, ty, tz), (rx, ry, rz) = a.tolist(), b.tolist(), tw.tolist(), r.tolist()
     for _ in range(NEWTON_STEPS):
         ux, uy, uz = ax + d1 * tx, ay + d1 * ty, az + d1 * tz
@@ -1127,6 +1122,10 @@ class Below:
 
     def __init__(self, world, p, start=None):
         self.world = world
+        # The level its base is a point of: the world's now. A loop changes the world in place (dive(), climb()), and
+        # the base read at the world's new level put the point k^j times nearer its face's corner: after every loop
+        # stay() walked from there, to whichever dip, and over a saddle corner the point below jumped to the other one
+        self.n = world.n
         top = world.topology
         N = world.N
         inv_n = 1 / N
@@ -1190,7 +1189,7 @@ class Below:
         N = world.N
         s = d_float(world.anchor_point()) + q * (1 / N)
         # Only the faces whose balls reach nearer than the nearest middle: a handful of a mesh's thousands, so a tick's
-        # few points below cost a fraction of a millisecond (all 1990 of the Penrose torus's were 1 ms each, 2026-11-13)
+        # few points below cost a fraction of a millisecond (all 1990 of the Penrose torus's were 1 ms each)
         reach = np.linalg.norm(top.middle - s, axis=1)
         faces = np.flatnonzero(reach - top.radius <= float(np.min(reach)))
         f, (U, V) = Below.nearest_face(top, faces, s)
@@ -1225,7 +1224,7 @@ class Below:
         """Where the point is in the level's cells of its face, (u, v) in cells as Fractions: the base's exactly, plus
         d"""
         world = self.world
-        shift = world.n - level
+        shift = self.n - level
         Ub, Vb = self.base
         scale = Fraction(1, world.k ** shift) if shift >= 0 else Fraction(world.k ** -shift)
         return ((Fraction(Ub) + Fraction(float(self.d[0]))) * scale, (Fraction(Vb) + Fraction(float(self.d[1]))) * scale)
@@ -1306,7 +1305,7 @@ def below_of(obj, world, p):
     text = world.text()
     kept = _below.setdefault(obj.name, [])
     # The same point to within the camera's own float32 rounding: scaled about itself, or taken along with its map,
-    # the camera comes back a step or two off, and each of those was another point below, 2.6 a tick (2026-11-14)
+    # the camera comes back a step or two off, and each of those was another point below, 2.6 a tick
     near = BELOW_SAME * float(np.abs(p).max())
     for cached in kept:
         if cached[0] == text and float(np.abs(cached[1] - p).max()) <= near:
@@ -1318,8 +1317,8 @@ def below_of(obj, world, p):
     # some 0.6 heights, at a point of each loop's dive, and back and forth tick after tick in a mirror plane of the
     # tiling, where the two are as near to the last digits; and every engine that builds round it with it: the 3D
     # parts' finest level, a few tenths of a height across, was rebuilt round one and then the other, missing from 47%
-    # of the frames of such a dive (2026-11-23). So the point below stays in the dip it was in (walked down to from the
-    # last one) until that's BELOW_STICK of the height further than the nearest: 19% (most of it the climb back out,
+    # of the frames of such a dive. So the point below stays in the dip it was in (walked down to from the last one)
+    # until that's BELOW_STICK of the height further than the nearest: 19% (most of it the climb back out,
     # as on any face). Walked from a point below in a face next to it, the same point, so elsewhere nothing changes.
     if kept:
         same = [cached for cached in kept if cached[0] == text] or kept
@@ -1363,7 +1362,7 @@ def crossing(obj, start_world, end_world):
     start, end = map_point(obj, start_world), map_point(obj, end_world)
     h0 = below_of(obj, world, start).height
     # A move starting under the surface, or shorter than the height it starts at, can't cross it: then its end's point
-    # below isn't needed (a smooth map's are a millisecond or two each, 2026-11-24)
+    # below isn't needed (a smooth map's are a millisecond or two each)
     if h0 <= 0.0 or h0 > float(np.linalg.norm(end - start)) / world.rho:
         return None
     h1 = below_of(obj, world, end).height
@@ -1427,8 +1426,8 @@ def retop(obj, world, levels, clear=None):
     where one keeps the anchor's point in from its sides, else one turned half round (which turns the lattice under it:
     the same triangles, but its up cells are the new top's down ones, colored so; a top made up at a corner of the old
     one is never in from the sides at k = 2 in an upright one, and every level after kept the anchor at a corner, the
-    climb a column of corner posts, 2026-11-24). The digits are random (seeded by the setting and the depth, so a map
-    makes up the same ones every time) among those that keep the anchor's point at least 1/(2k) of the new top's side
+    climb a column of corner posts). The digits are random (seeded by the setting and the depth, so a map makes up the
+    same ones every time) among those that keep the anchor's point at least 1/(2k) of the new top's side
     in from its sides (a square's has one: the one nearest its middle; a triangle's 1/(4k), failing which its furthest
     in), and of those, the ones where it's clear of the motif's pieces at that level
     (clear(x, y): the point's place in the new top's cell; none clear, any), so a made-up level never puts its lines or
@@ -1528,20 +1527,12 @@ FLOOR_SPLIT_TILE = 0.5
 
 
 def floor_object(obj):
-    """The map's floor's object, made the first time: a plain mesh, a child of the map's object, which clicking selects
-    the map through (scaling_target)"""
-    import bpy
+    """The map's floor's object, made the first time: a plain mesh, a child of the map's object (parts.map_child())"""
     found = next((o for o in obj.children if o.get(FLOOR_KEY) == obj.name), None)
     if found is not None:
         parts.no_shadow(found)
         return found
-    name = f"{obj.name}.floor"
-    floor_obj = bpy.data.objects.new(name, bpy.data.meshes.new(name))
-    for c in obj.users_collection:
-        c.objects.link(floor_obj)
-    floor_obj.parent = obj
-    floor_obj[FLOOR_KEY] = obj.name
-    floor_obj["scaling_target"] = obj
+    floor_obj = parts.map_child(obj, f"{obj.name}.floor", FLOOR_KEY)
     floor_obj.data.materials.append(parts.parts_material())
     # Built again as the drone flies, like the parts: no shadow (parts.no_shadow())
     parts.no_shadow(floor_obj)
@@ -1554,8 +1545,8 @@ def transform(world, text, built):
     are now. Exact from the two anchors' places (World.anchor_point())."""
     if built.transform is not None and built.transform[0] == text:
         return built.transform[1], built.transform[2]
-    # The same pair of worlds for everything built in one: a Penrose level's patches (surface_substitution.patch_bars()),
-    # a hundred a build, each worked its transform out exactly again at every loop (2026-11-20)
+    # The same pair of worlds for everything built in one: a Penrose level's patches
+    # (surface_substitution.level_bars()), a hundred a build, each worked its transform out exactly again at every loop
     key = (text, built.world_text, world.rho, id(world.topology), world.k)
     found = _transforms.get(key)
     if found is None:
@@ -1600,7 +1591,7 @@ def face_grid(top, f, IR, JR, M, ref, reach, cap, scale=1.0):
     if top._sides[f] == 3 and not top.chart.flat_cells:
         # A curved triangle's points past its long side aren't its surface's (a subdivision surface's tree has no
         # piece there: asked for one next to an extraordinary corner, its exact walk went on toward the corner for
-        # ever, 14 GB, 2026-11-24): left out (nan), as every caller leaves them out anyway
+        # ever, 14 GB): left out (nan), as every caller leaves them out anyway
         inside = gi + gj <= rem
         places = np.full(gi.shape + (3,), np.nan)
         places[inside] = ref + scale * top.chart.grid_offsets(f, IR, JR, M, gi[inside], gj[inside])
@@ -1634,6 +1625,23 @@ def push_room(height_over, distance, near):
     return PUSH_SHARE * PUSH_STEP * np.maximum(np.minimum(height_over, distance), least)
 
 
+def quad_twist(corners):
+    """Quad cells' unit normals (across their diagonals), and how far each one's middle is off the two triangles it's
+    drawn as: a quarter of its corners' twist off that plane (a flat trapezoid's corners twist too, within its plane)"""
+    across = np.cross(corners[:, 2] - corners[:, 0], corners[:, 3] - corners[:, 1])
+    across /= np.maximum(np.linalg.norm(across, axis=1, keepdims=True), 1e-300)
+    twist = corners[:, 0] - corners[:, 1] + corners[:, 2] - corners[:, 3]
+    return across, np.abs(np.sum(twist * across, axis=1)) / 4.0
+
+
+def bulging(corners, middle, bulge, near):
+    """The cells that bulge by more than FLOOR_FLATNESS of their distance from the camera (corners from it), or of
+    near if that's more"""
+    radius = np.linalg.norm(corners - middle[:, None], axis=-1).max(axis=1)
+    distance = np.maximum(np.linalg.norm(middle, axis=1) - radius, near)
+    return bulge > FLOOR_FLATNESS * distance
+
+
 def refine(corners, faces, near):
     """Quad cells of the floor (corners (m, 4, 3) from the camera, their faces), each split 2 x 2 while it bulges off the
     two triangles it's drawn as by more than FLOOR_FLATNESS of its distance from the camera, or of near (the drone's
@@ -1646,15 +1654,8 @@ def refine(corners, faces, near):
     plane, which the triangles are in too: only the twist off the cell's plane counts)."""
     out_corners, out_faces = [], []
     for _ in range(FLOOR_SPLITS):
-        # Off the cell's plane (its diagonals'): a flat trapezoid's corners twist too, within its plane
-        across = np.cross(corners[:, 2] - corners[:, 0], corners[:, 3] - corners[:, 1])
-        across /= np.maximum(np.linalg.norm(across, axis=1, keepdims=True), 1e-300)
-        twist = corners[:, 0] - corners[:, 1] + corners[:, 2] - corners[:, 3]
-        bulge = np.abs(np.sum(twist * across, axis=1)) / 4.0
-        middle = corners.mean(axis=1)
-        radius = np.linalg.norm(corners - middle[:, None], axis=-1).max(axis=1)
-        distance = np.maximum(np.linalg.norm(middle, axis=1) - radius, near)
-        split = bulge > FLOOR_FLATNESS * distance
+        _across, bulge = quad_twist(corners)
+        split = bulging(corners, corners.mean(axis=1), bulge, near)
         out_corners.append(corners[~split])
         out_faces.append(faces[~split])
         if not split.any():
@@ -1678,8 +1679,8 @@ def refine_smooth(corners, faces, near, chart, M, scale, at, bases):
     its face's base point: at (m, k, 2) is each cell's corners' offsets from its face's base (floats, level steps),
     bases[f] = (I, J, place from the camera) that base, a point of the level of M cells across, scale map units its
     steps' units. Split by averaging, its corners were on the big cell's chords, off the surface by its sag (the smooth
-    torus's floor, 0.14 off by a cell 4 across, curving at 12: the user, 2026-11-23). A split cell's side meets an
-    unsplit neighbor's chord within the flatness (about a pixel)."""
+    torus's floor, 0.14 off by a cell 4 across, curving at 12). A split cell's side meets an unsplit neighbor's chord
+    within the flatness (about a pixel)."""
 
     def place(faces_, offsets):
         """The surface's points at offsets (..., 2) of faces_ (...), from the camera"""
@@ -1700,17 +1701,13 @@ def refine_smooth(corners, faces, near, chart, M, scale, at, bases):
         middle = corners.mean(axis=1)
         true = place(faces, at.mean(axis=1))
         if k == 4:
-            across = np.cross(corners[:, 2] - corners[:, 0], corners[:, 3] - corners[:, 1])
-            across /= np.maximum(np.linalg.norm(across, axis=1, keepdims=True), 1e-300)
-            twist = corners[:, 0] - corners[:, 1] + corners[:, 2] - corners[:, 3]
-            bulge = np.abs(np.sum(twist * across, axis=1)) / 4.0 + np.abs(np.sum((true - middle) * across, axis=1))
+            across, bulge = quad_twist(corners)
+            bulge = bulge + np.abs(np.sum((true - middle) * across, axis=1))
         else:
             across = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
             across /= np.maximum(np.linalg.norm(across, axis=1, keepdims=True), 1e-300)
             bulge = np.abs(np.sum((true - middle) * across, axis=1))
-        radius = np.linalg.norm(corners - middle[:, None], axis=-1).max(axis=1)
-        distance = np.maximum(np.linalg.norm(middle, axis=1) - radius, near)
-        split = bulge > FLOOR_FLATNESS * distance
+        split = bulging(corners, middle, bulge, near)
         out_corners.append(corners[~split])
         out_faces.append(faces[~split])
         if not split.any():
@@ -1877,7 +1874,7 @@ def settle_floor(obj, world, camera, below, clip_end):
     camera was (a bent quad's, refine()) once it's moved on FLOOR_FOLLOW of its heights or come down to half its height,
     else only moved and scaled. Once there's a floor, it's built again on a worker thread (background.py) and stays as
     it was until that's written in a later tick: built here, a smooth chart's floor took 0.1 to 0.3 s, a freeze at every
-    loop of a dive (the user, 2026-11-24)."""
+    loop of a dive."""
     window = float(setting(obj, "window")) * clip_end
     floor_obj = floor_object(obj)
     text = world.text()
@@ -2180,7 +2177,7 @@ def cell_sizes(world, levels, below=None):
     the floor measures them (floor_level()). Not at the anchor: a mesh's faces differ in size, and next to an
     extraordinary corner a level's cells shrink by the corner's own ratio, not k. On a Suzanne map the anchor's
     level-n cells were 5 times the size of those under the drone, and a recenter or a loop, moving the anchor, changed
-    the 3D parts' finest levels by up to three, seams of 2-5% (2026-11-26)."""
+    the 3D parts' finest levels by up to three, seams of 2-5%."""
     unit = level_cell(world, below)
     if below is not None and not (unit > 0.0 and math.isfinite(unit)):
         unit = level_cell(world)
@@ -2231,7 +2228,7 @@ def exact_piece_at(world, level, kind, offsets, normals, stretch, scales, relati
     scale (a level unit in map units) instead of unit, relative is the camera's offset from P in the level's own units,
     floats, and it's all worked out in float64, as parts.add_levels() does where that's exact to well under the drone's
     height (parts.EXACT_SHARE): with Fractions, some 7 ms a piece, and a fast climb's hundreds of pieces took seconds
-    a tick (2026-11-19)."""
+    a tick."""
     place, size, axes = parts.piece_axes(kind, offsets, normals, shape.meet, stretch, shape.heights[0], scales)
     frame = np.array([[axes[c][i] for c in range(3)] for i in range(3)])
     # The camera in the piece's own units, exactly: frame^-1 (camera - place) 2^level / size. Its exact inverse, not
@@ -2256,7 +2253,7 @@ def exact_piece_at(world, level, kind, offsets, normals, stretch, scales, relati
     u_float = np.array([float(c) for c in u])
     distance = min(prism.distance_one(u_float.tolist()) for prism in shape.prisms[kind])
     faces = [face @ frame.T for face, _ in corners]
-    colors = [parts.piece_color(settings["pieces"][index], phase) for _, index in corners]
+    colors = parts.face_colors(settings, corners, phase)
     return parts.ExactPiece(level, kind, frame, float(size_map), tuple(u_float), None, faces, colors,
                             float(distance) * float(size_map))
 
@@ -2427,7 +2424,7 @@ class MeshLattice:
         """A level's build for the worker thread (parts.SphereLattice.pieces_job()); None: built here. A curved chart's
         (a subdivision surface's) on the worker: 0.2 to 0.6 s a level on quadico's, built here they froze the flight.
         A flat one's here: a few ms each, and on the worker, in a dive at a plane (some 46 a second, beside the giant
-        levels' window builds), the finest level was missing in 31% of the frames, against 3.5% (2026-11-24)."""
+        levels' window builds), the finest level was missing in 31% of the frames, against 3.5%."""
         if world.topology.chart.flat_cells:
             return None
         own = World.from_text(world.text(), world.rho, world.topology, world.k)

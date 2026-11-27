@@ -124,27 +124,6 @@ def parents(tile):
     return [((pk, slot), parent(tile, pk, slot)) for pk, slot in INVERSE[tile[0]]]
 
 
-def choice(kind, slot):
-    """What a parent of kind holding a child in slot is called, for telling whether climbing repeats itself"""
-    return kind, slot
-
-
-# The default parent rule (~/blender_tests/girih/default_chain.py): a thick half's parent is the thin half it's slot 1
-# of, a thin half's the thick half it's slot 2 of; their cycle's fixed point is 0.0885 of the tile clear of every line
-# and edge (hankin54)
-DEFAULT = {THICK: (THIN, 1), THIN: (THICK, 2)}
-
-
-def default_parent(tile):
-    return parent(tile, *DEFAULT[tile[0]])
-
-
-def rotated(tile, k):
-    """tile turned k * 36 degrees about the origin"""
-    kind, r, m, tau = tile
-    return (kind, (r + k) % N, m, RING.rot(tau, k))
-
-
 def mirrored(tile, a, b):
     """tile mirrored across the line through a and b: z -> a + zeta^j conj(z - a), zeta^j = (b - a) / conj(b - a)"""
     d = RING.sub(b, a)
@@ -170,9 +149,6 @@ def rhomb(tile):
     far = RING.sub(RING.add(b, c), a)
     corners = [a, b, far, c]
     return corners[::-1] if tile[2] else corners
-
-
-coverage = rhomb
 
 
 def corners_float(tile):
@@ -209,12 +185,6 @@ def color_class(kind, rotation, mirror):
     axis = 18 if kind == THIN else 54                    # the prototile's axis, degrees
     angle = (-axis if mirror else axis) + 36 * rotation
     return 5 * kind + round(((angle - axis) % 180) / 36) % 5
-
-
-def tile_key(tile):
-    """A tile as its kind and corners, the same however its (rot, mirror, tau) write it; apex first"""
-    a, b, c = (place(tile, v) for v in PROTOTILE[tile[0]])
-    return tile[0], a, frozenset((b, c))
 
 
 def pieces(kind):

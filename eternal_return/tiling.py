@@ -3,11 +3,6 @@ the 3D parts (parts.py) share: convex polygons cut by half planes (clip_half_pla
 arrays (polygons_of(), corners_of(), take_corners()), huge polygons cut near the camera for depth precision
 (split_near()), a piece extruded into a solid (solid_faces()), and a mesh written straight into Blender's attribute
 arrays (write_mesh()).
-
-Until 2026-11-23 this was also the endless lattice floors' engine (endless.py's "tiling": the Inferno's, the
-strapwork's and the triangle floors' parts in every cell of every level, their biggest levels built from the anchor
-exactly). Phase 5 of the unified engines plan moved those floors onto the surface engine (an endless plane is a
-one-square surface map), and that engine went.
 """
 
 import numpy as np
@@ -56,14 +51,14 @@ SPLIT_RATIO = 4.0
 
 
 def split_near(points, counts, middle, tile, ratio=SPLIT_RATIO):
-    """Convex polygons (n, corners, d: their first three coordinates a place, any after carried along) that are more than
-    ratio times bigger than their distance from middle (or tile, near it), cut on the planes at middle +- tile * 2^k
-    along each axis: tiles() in three dimensions, for surfaces that fold (a mesh's levels and floor). A polygon's depth
-    near the camera is interpolated from its corners, in float32 from its object's middle, so one reaching tens of
+    """Convex polygons (n, corners, d: their first three coordinates a place, any after carried along) that are more
+    than ratio times bigger than their distance from middle (or tile, near it), cut on the planes at middle +- tile *
+    2^k along each axis: tiles() in three dimensions, for surfaces that fold (a mesh's levels and floor). A polygon's
+    depth near the camera is interpolated from its corners, in float32 from its object's middle, so one reaching tens of
     thousands of units off (a coarse level's band holding the whole view, a floor cell a quarter of the window across)
     had it wrong near the camera by about as much as the layers of finer levels on top are apart, and they z-fought: a
-    giant band flickered against the floor as the camera moved (the user, 2026-11-23). Cut so, each piece is no more
-    than about its distance from the camera across. Returns (points, counts, rows: the polygon each piece is of)."""
+    giant band flickered against the floor as the camera moved. Cut so, each piece is no more than about its distance
+    from the camera across. Returns (points, counts, rows: the polygon each piece is of)."""
     n, width = points.shape[:2]
     rows = np.arange(n)
     if n == 0:
@@ -121,10 +116,10 @@ def take_corners(points, indices):
 
 
 def compact_corners(points, flags):
-    """The corners of each row of points (n, corners, 2 or 3) that flags (n, corners) keeps, moved to its start in order,
-    as (points, counts); past each row's count, zeros. Each kept corner goes straight to its place (how many kept ones
-    come before it): a stable argsort of every row and take_along_axis, as until 2026-11-05, took twice as long, and
-    most of a girih level's split (tiles())."""
+    """The corners of each row of points (n, corners, 2 or 3) that flags (n, corners) keeps, moved to its start in
+    order, as (points, counts); past each row's count, zeros. Each kept corner goes straight to its place (how many kept
+    ones come before it): a stable argsort of every row and take_along_axis took twice as long, and most of a girih
+    level's split (tiles())."""
     counts = flags.sum(axis=1)
     out = np.zeros((len(points), max(1, int(counts.max(initial=0))), points.shape[2]))
     rows, columns = np.nonzero(flags)
@@ -167,10 +162,10 @@ def write_mesh(obj, corners, sizes, colors, normals=None, convex=False):
 
     Corners and the corner list go straight into their attribute arrays, and the faces get only their starts (each
     face's corner count follows from the next one's start): through vertices.co, loops.vertex_index and loop_total,
-    a girih level of 10k faces took 6.9 ms, which a dive spent some 30 times a second (2026-11-05), and 1.4 ms this way,
-    the same mesh (~/blender_tests/girih/perf/write_mesh_equal.py).
+    a girih level of 10k faces took 6.9 ms, which a dive spent some 30 times a second, and 1.4 ms this way, the same
+    mesh (~/blender_tests/girih/perf/write_mesh_equal.py).
 
-    What Blender does with a written mesh before it's drawn is kept short too (2026-11-14: a tenth of the main thread
+    What Blender does with a written mesh before it's drawn is kept short too (a tenth of the main thread
     in a dive, with some 20 levels written a second):
     - Without normals given, the faces are flat ("sharp_face"): each has its own corners, so it looks the same, but
       for a smooth mesh Blender works out every vertex's normal (and which faces meet at it, for that).

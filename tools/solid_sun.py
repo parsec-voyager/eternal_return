@@ -4,10 +4,10 @@ mode's shadow, cast from it. For maps flown in Solid mode, where EEVEE's real su
 Why not the MatCap the maps use: a MatCap is a picture of a lit sphere, looked up by which way a surface faces the
 camera, so its light turns with the view and can never come from a sun. Studio lighting with World Space Lighting is
 fixed in the world instead. Its outdoor.sl rig is a sun and a sky: a warm, fairly sharp key light about 40 degrees up,
-a soft blue sky light, and a dim bounce from below. Measured in World Space Lighting (seen from above, 2026-10-30), its
-key light comes from azimuth KEY_AZIMUTH at studiolight_rotate_z 0, and turning studiolight_rotate_z up turns it the
-other way, so facing it toward the Sun is a rotation of KEY_AZIMUTH less the Sun's azimuth. Its height is the rig's,
-KEY_ELEVATION, whatever the Sun's.
+a soft blue sky light, and a dim bounce from below. Measured in World Space Lighting (seen from above), its key light
+comes from azimuth KEY_AZIMUTH at studiolight_rotate_z 0, and turning studiolight_rotate_z up turns it the other way, so
+facing it toward the Sun is a rotation of KEY_AZIMUTH less the Sun's azimuth. Its height is the rig's, KEY_ELEVATION,
+whatever the Sun's.
 
 Solid mode's Shadow option casts every object's shadow along the scene's light direction (scene.display), which is set
 toward the Sun's azimuth at the key light's height, so light and shadows agree. It's off unless asked for: on the

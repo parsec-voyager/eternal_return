@@ -3,12 +3,9 @@ darb_imam.py's girih tiles (decagons, elongated hexagons, bowties, looping by 2 
 same names, and their tables as arrays (Rule) for the surface engine that draws them (surface_substitution.py: a
 rule's levels on any labeled mesh, the endless planes' too, and parts_substitution.py's frames on them).
 
-Until 2026-11-23 this was also the plane floors' own engine (a universe kept as one exact tile, its levels drawn in
-a pool of objects round the drone), with endless.py and tiling.py's lattice floors beside it. Phase 5 of the unified
-engines plan moved the planes onto the surface engine (an endless plane is a one-tile surface map made up a thousand
-levels up), and that engine went. What's left: the rules' tables, the exact tests of which children of a tile meet a
-square (cut(), and shows(), which the endless planes' build script uses to keep its made-up levels' bars clear of the
-drone), and fade(), how much of its colors a level shows by how wide its bars are on screen.
+Here: the rules' tables, the exact tests of which children of a tile meet a square (cut(), and shows(), which the
+endless planes' build script uses to keep its made-up levels' bars clear of the drone), and fade(), how much of its
+colors a level shows by how wide its bars are on screen.
 """
 
 import importlib
@@ -145,7 +142,7 @@ def prototile_reach(m):
 class Rules:
     """The rules by name (penrose.py's and darb_imam.py's NAME), each built the first time a map asks for it: both built
     when this was imported, the first flight on any substitution or cell map waited 0.7 s for them, the rule it doesn't
-    use too (2026-11-24)"""
+    use too"""
 
     MODULES = ("penrose", "darb_imam")
 

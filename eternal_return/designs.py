@@ -1,12 +1,12 @@
-"""The looks a surface map is given (phase 7 of the engines' plan, 2026-11-25: one place for them, the add-on's, which
-the Tile Selected Object button and the map builders both take them from): a floor motif on every level's cells
-(surface_substitution.py's settings: strapwork, the Inferno's stars, or a plain floor), the 3D frames standing on the
-lattice (parts.py's settings: open frames), the mesh's own faces' tones (the floor's colors between motif bars), and
+"""The looks a surface map is given (one place for them, the add-on's, which the Tile Selected Object button and the map
+builders both take them from): a floor motif on every level's cells (surface_substitution.py's settings: strapwork, the
+Inferno's stars, or a plain floor), the 3D frames standing on the lattice (parts.py's settings: open frames), the mesh's
+own faces' tones (the floor's colors between motif bars), and
 the scaling config that makes a map loop and scale with the drone.
 
 The motifs are flat pieces in a cell's units, [0, 1] x [0, 1], each a polygon with a paint (motif.Pieces lays them out):
 bands as a core between two outline strips of the floor's color, so diving into any band reaches the dark floor again
-through its finer levels' outlines (every endless floor's look since 2026-11-15). The frames: an octagonal post on
+through its finer levels' outlines (every endless floor's look). The frames: an octagonal post on
 every vertex, and along every edge a beam with a horseshoe ring standing under its middle, thin and open between, so
 the coarser levels' frames round the drone don't wall it in; four colors by level in turn, the posts ivory.
 """
@@ -269,7 +269,7 @@ def triangle_pieces(shear=EQUILATERAL, inset=0.07, frame=0.012, frame_core=0.008
 # The substitution rules' floors (a map's "rule"), and what their open frames change: Penrose levels are phi times
 # finer, not 2: some 29 levels between cells a 32nd of the drone and the giant ones' threshold, against the square
 # maps' 19, so more level objects, and with phi times as many levels each built out to 10 of its cells, not 14 (the
-# next coarser goes on to 16 of them): 41 draws a second on the sphere against 29, the look the same (2026-11-16)
+# next coarser goes on to 16 of them): 41 draws a second on the sphere against 29, the look the same
 RULES = {"penrose": {"count": 36, "build": 10.0}}
 
 # The floor motifs a map can have (floor_settings()), for the Tile Selected Object button's choice

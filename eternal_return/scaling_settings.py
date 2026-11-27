@@ -1,7 +1,6 @@
 """The scaling tools' settings, and the flight settings that aren't a control's own (the HUD's Horizon and Velocity,
 Solid Fog, ...): the ScalingSettings mixin of the scene's control_settings (controls.py),
 so every one of them stays where scenes and scaling configs have them."""
-import math
 import bpy
 
 # Default scale limits of the Drone object. User values cannot go beyond these.

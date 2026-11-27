@@ -50,8 +50,8 @@ The map's "endless" settings hold "fractal" (written by its build script):
 - finest: the smallest cells built. Closer to the fractal than that (flying into it without its config), what's
   closest stays closed.
 - palette: a color (linear RGBA) per kept digit
-- eye: the empty the geometry nodes draw from, a child of the map's object, which follow() moves. Maps built before
-  2026-10-30 have none, their eye driven to the camera instead.
+- eye: the empty the geometry nodes draw from, a child of the map's object, which follow() moves. Old maps have none,
+  their eye driven to the camera instead.
 """
 
 import math
@@ -67,7 +67,6 @@ from . import endless
 POOL = "fractal_pool"       # on a level object: it's one of the map's level objects
 LEVEL = "fractal_level"     # on a level object: the level it holds, absent while it's free
 FRAME = "fractal_frame"     # on a level object: its corner from the map's origin, exactly, as text
-SQRT3 = math.sqrt(3.0)
 
 # alive() by (factor, kept digits, index): the same at every level and for every anchor, so kept between calls
 _alive_cache = {}

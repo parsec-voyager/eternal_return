@@ -1,5 +1,5 @@
-"""Points of the cube placed on the sphere with as many digits as a depth needs (2026-11-12), for what has to be exact
-far past float64: the pieces of a giant level next to the drone (parts.py).
+"""Points of the cube placed on the sphere with as many digits as a depth needs, for what has to be exact far past
+float64: the pieces of a giant level next to the drone (parts.py).
 
 sphere.surface_offsets() places a point from the anchor in float64 without cancellation, so it's exact to about 1e-15
 of the point's distance from the anchor. That's plenty for anything near the anchor, but a giant level's pillar has its
@@ -32,6 +32,16 @@ DIGITS_BASE = 30
 DIGITS_PER_BIT = 0.302 * 1.4
 # Digits come in steps of this many, so a world's values stay usable over a few loops
 DIGITS_STEP = 16
+
+
+def kept(cache, key, most, make):
+    """cache[key], made (make()) the first time it's asked for; a cache past most entries is emptied first"""
+    value = cache.get(key)
+    if value is None:
+        if len(cache) > most:
+            cache.clear()
+        value = cache[key] = make()
+    return value
 
 
 def digits_for(n, h_units):
@@ -78,25 +88,32 @@ class C:
         return complex(float(self.re), float(self.im))
 
 
-def cube_root(x):
-    """The principal cube root, by Newton's method from float64's (which picks the principal one); a value below a
-    float's range is scaled up by a power of 8 first"""
+def root(x, n, first):
+    """x's n-th root (n = 3 or 5: n - 1 a power of 2), by Newton's method from first(z), the float64 root of x as a
+    float64 z, which picks the branch; a value below a float's range is scaled up by a power of 2^n first"""
     if x.re == 0 and x.im == 0:
         return C(Decimal(0), Decimal(0))
     shift = 0
     while x.to_complex() == 0:
-        x = x * C(Decimal(2) ** 300)
+        x = x * C(Decimal(2) ** (100 * n))
         shift += 100
-    v = C.of(x.to_complex() ** (1.0 / 3.0))
-    three = C(Decimal(3))
+    v = C.of(first(x.to_complex()))
+    order = C(Decimal(n))
     limit = Decimal(10) ** (-2 * decimal.getcontext().prec + 4)
     for _ in range(64):
-        v2 = v * v
-        step = (v2 * v - x) / (v2 * three)
+        power = v * v                      # v^(n - 1), by squaring
+        for _ in range((n - 1).bit_length() - 2):
+            power = power * power
+        step = (power * v - x) / (power * order)
         v = v - step
         if step.abs2() <= v.abs2() * limit:
             break
     return v * C(Decimal(2) ** -shift) if shift else v
+
+
+def cube_root(x):
+    """The principal cube root (float64's start picks it)"""
+    return root(x, 3, lambda z: z ** (1.0 / 3.0))
 
 
 _constants = {}      # precision -> the chart's constants as Decimals
@@ -138,12 +155,7 @@ def direction_kept(N, a, b):
     """direction(), kept by the point (the same point at every depth: after a loop it's a, b and N times 2^k) and the
     precision"""
     key = (Fraction(a, N), Fraction(b, N), decimal.getcontext().prec)
-    value = _directions.get(key)
-    if value is None:
-        if len(_directions) > 4096:
-            _directions.clear()
-        value = _directions[key] = direction(N, a, b)
-    return value
+    return kept(_directions, key, 4096, lambda: direction(N, a, b))
 
 
 def add(u, v):
@@ -256,13 +268,7 @@ _placers = {}        # (world text, digits) -> Placer
 
 def placer(world, digits):
     """The world's Placer at digits digits, kept"""
-    key = (world.text(), int(digits))
-    value = _placers.get(key)
-    if value is None:
-        if len(_placers) > 16:
-            _placers.clear()
-        value = _placers[key] = Placer(world, digits)
-    return value
+    return kept(_placers, (world.text(), int(digits)), 16, lambda: Placer(world, digits))
 
 
 def forget():

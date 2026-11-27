@@ -24,13 +24,12 @@ self-similar about one point, like concentric spheres, can loop by any factor, b
 
 Every endless map is a fractal that fills space, like a Sierpinski tetrahedron ("fractal" settings), whose every level
 depends on the anchor: fractal.py builds its cells around the drone, its random digits are its kept ones, and auto
-scale in mesh mode measures to the shapes it draws. See there. (Until 2026-11-23 the plane floors were endless maps too,
-the Inferno's and the strapwork's, their biggest levels built from the anchor by tiling.py; they're surface maps now,
-surface.py's endless planes.)
+scale in mesh mode measures to the shapes it draws. See there. (The plane floors, the Inferno's and the strapwork's, are
+surface maps: surface.py's endless planes.)
 
 The add-on calls scale_anchor() when it loops about an endless map's object, and recenter_steps() and shift_anchor()
 each tick to move the drone back by whole steps (see ER_OT_Fly.recenter_endless()). The map's object holds:
-- "endless": its settings (see SETTINGS), written by the map's build script
+- "endless": its settings (the keys listed below), written by the map's build script
 - "endless_anchor": the anchor, one whole number of steps per anchored axis, as text so it can be any size (in hex:
   Python won't turn an integer of over 4300 digits into decimal, which 9000 diving loops make it)
 - "endless_horizon": the highest digit of the anchor made up so far (the stack's far end), a power of the factor in steps
@@ -60,7 +59,6 @@ HORIZON = "endless_horizon"
 #     anchored axis) repeating upward from "to" + 1, kept in the anchor for background_depth digits (0 beyond them):
 #     the fractal's kept digits, in its lattice's own digits (see fractal.keep_background()), like [[0, 0, 0],
 #     [2, 2, 2]] for Cantor dust
-SETTINGS = ("factor", "step", "axes", "fractal", "random")
 
 
 def is_endless(obj):
@@ -79,7 +77,7 @@ def anchored_axes(obj):
 def get_anchor(obj):
     """The anchor, one whole number of steps per anchored axis"""
     count = len(anchored_axes(obj))
-    # Hex since 2026-10-29, decimal before
+    # Hex, or decimal in old maps
     values = [int(v, 0) for v in obj.get(ANCHOR, "").split()][:count]
     return tuple(values + [0] * (count - len(values)))
 

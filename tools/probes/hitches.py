@@ -26,7 +26,7 @@ def wrap(owner, name, label):
 
     # (functools.wraps: the harness reads what it takes, inspect.signature(surface.settle): wrapped without it,
     # settle showed no start parameter, so the harness's settles at loops ran as flight starts, every level built
-    # on the main thread, 20 s on a smooth Penrose torus, 2026-11-26)
+    # on the main thread, 20 s on a smooth Penrose torus)
     @functools.wraps(function)
     def timed(*args, **kwargs):
         if threading.current_thread() is not MAIN:

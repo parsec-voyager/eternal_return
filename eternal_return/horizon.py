@@ -28,10 +28,10 @@ degrees. Toward a closest surface point (Mesh) or along gravity, it sends the di
 camera slides along a flat face, or as the simulation turns the drone, and the draw turns it into the view by the view's
 own rotation.
 
-Until 2026-11-17 it was a geometry nodes object under the camera, its tubes made again at every depsgraph
+As a geometry nodes object under the camera, its tubes were made again at every depsgraph
 evaluation that moved the camera: twice a frame, about 1 ms each, mostly the node graph's own overhead for a
-few hundred points (2026-11-17, Tokyo). Drawn, it costs no evaluation at all, and a draw's own work is a few hundred
-points of numpy. Its lines are flat, the same thickness on screen as the tubes were, instead of lit.
+few hundred points (Tokyo). Drawn, it costs no evaluation at all, and a draw's own work is a few hundred points of
+numpy. Its lines are flat, the same thickness on screen as the tubes were, instead of lit.
 
 Everything is drawn inside the HUD's ring too, where the click aims: the click is view3d.select at the middle of the
 view, which never picks what a draw handler draws.

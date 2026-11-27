@@ -1,12 +1,11 @@
-"""Endless 3D parts on a substitution surface map (named parts_penrose.py until 2026-11-23). First Penrose's
-(2026-11-16: "do the 3d parts for penrose and icosahedron tilings"): parts.py's
+"""Endless 3D parts on a substitution surface map. Penrose's: parts.py's
 pieces on the levels of the rhomb tiling surface_substitution.py draws, a vertex piece on each corner of its rhombs and an
 edge piece along each of their edges, from the mesh's own faces (level 0) down forever, each level phi times finer
-than the one above. Since the same day's flights they're on every other level only (level_step), phi^2 apart: on every
-level they were dense. The open frames (posts, beams and horseshoe rings) stand on the same lines the strapwork's levels
-are drawn on, and a coarser level's corners are corners of every finer one, so the posts nest as the square maps' do.
-Since 2026-11-22 any rule's (one SubstitutionLattice each): on a girih mesh (Darb-i Imam), the girih tiles' corners and
-edges, on every level, LAMBDA = 8.5 times finer (pieces_near(), Atlas).
+than the one above. They're on every other level only (level_step), phi^2 apart: on every level they were dense. The
+open frames (posts, beams and horseshoe rings) stand on the same lines the strapwork's levels are drawn on, and a
+coarser level's corners are corners of every finer one, so the posts nest as the square maps' do. Any other rule's too
+(one SubstitutionLattice each): on a girih mesh (Darb-i Imam), the girih tiles' corners and edges, on every level,
+LAMBDA = 8.5 times finer (pieces_near(), Atlas).
 
 What parts.py asks of the lattice (parts.SphereLattice, surface.MeshLattice) is answered here, from the tiles the
 strapwork already keeps near the drone (surface_substitution.State's levels, shared: the parts ask for the windows they need
@@ -41,8 +40,8 @@ from . import schedule
 from . import substitution
 from . import surface
 from . import surface_substitution as SS
-from .cyclotomic import (RING10 as RING, im_pair, q_add, q_float, q_fraction, q_mul, q_scale,
-                         q_sub, re2_pair, ring_im, ring_re2)
+from .cyclotomic import (RING10 as RING, im_pair, q_float, q_fraction, q_mul, q_sub, re2_pair, ring_im,
+                         ring_re2)
 
 
 # A rhomb mesh's tiles (rhombs_near()) are Penrose's (penrose_rule(): built when first asked for, substitution.Rules)
@@ -74,7 +73,7 @@ REROOT = 64
 # nearer of the window and its nearest piece round that camera, for as long as that holds (its tiles are only kept
 # out to the window; an edge piece's frame isn't a rotation, so its distances are only near the true ones). Every
 # rebuild of the giant window looked at every giant level again, nearly all with nothing near: in a fast dive a
-# rebuild each loop, ~10 ms a level, 0.24 s a tick 48 loops down (2026-11-19, 5 to 9 frames a second)
+# rebuild each loop, ~10 ms a level, 0.24 s a tick 48 loops down (5 to 9 frames a second)
 NO_PIECES_SHARE = 0.5
 # Substitution levels with frames are at least this many times finer than the next coarser with them
 FRAME_SPACING = 2.5
@@ -628,7 +627,6 @@ class SubstitutionPieces(parts.LaidOut):
 
     def __init__(self, world, faces, level, center, radius, settings, shape):
         self.world, self.faces, self.level, self.d = world, faces, level, level.d
-        top = world.topology
         # Each face's tiles from a root among them (a kept level's can be 2^40 of its tiles from it, and float64 then
         # places a corner a ten-thousandth of a tile off, a different way for each root: a level built again turned
         # pieces by that), so every corner is a few tiles from its root, placed to ~1e-14 of a tile
@@ -636,8 +634,8 @@ class SubstitutionPieces(parts.LaidOut):
             level.reroot(REROOT)
         near = self.near = lattice_near(world, faces, level, center, radius + 2.0)
         if not len(near.places):
-            # What it was given, for finding out why (seen once on the worker thread, 2026-11-17, not reproduced): the
-            # build is then made again in the tick (parts.MapState.failed)
+            # What it was given, for finding out why (seen once on the worker thread, not reproduced): the build is then
+            # made again in the tick (parts.MapState.failed)
             raise ValueError(f"parts_substitution: no corners near the drone (level {level.d}, {len(level.face)} tiles on "
                              f"faces {sorted(set(level.face.tolist()))[:8]}, kept for {level.window:.4g} round a point "
                              f"{float(np.linalg.norm(np.asarray(center) - level.center)):.4g} from this one, radius "
@@ -743,7 +741,7 @@ class SubstitutionLattice(surface.MeshLattice):
         super().__init__(rule.loop)
         self.rule = rule
         # Frames on every level_step-th level, at least FRAME_SPACING apart: Penrose's every other level, phi^2 (on
-        # every level they were dense, the user, 2026-11-16), Darb-i Imam's every level, LAMBDA = 8.5
+        # every level they were dense), Darb-i Imam's every level, LAMBDA = 8.5
         self.level_step = max(1, math.ceil(math.log(FRAME_SPACING) / rule.log_loop - 1e-9))
 
     def world(self, obj):
@@ -800,9 +798,9 @@ class SubstitutionLattice(surface.MeshLattice):
         """pieces() for the worker thread (parts.SphereLattice.pieces_job()): the corners found and the pieces laid out
         there (5 to 15 ms a level), on its own world, from the level's tiles as the strapwork keeps them, or cut there
         (tiles_pieces()), and kept for the strapwork too: a Penrose map's levels are cut once for both
-        (surface_substitution.tiles(), 2026-11-19). Cut in the tick round a center ahead of the drone (parts.settle()), cuts
-        took up to 50 ms, and the strapwork then cut its own levels again for its own windows (2026-11-17); cut in each
-        parts build, they were some 40% of its time in a fast dive (2026-11-19)."""
+        (surface_substitution.tiles()). Cut in the tick round a center ahead of the drone (parts.settle()), cuts took up
+        to 50 ms, and the strapwork then cut its own levels again for its own windows; cut in each parts build, they
+        were some 40% of its time in a fast dive."""
         faces, st = world.substitution
         own = surface.World.from_text(world.text(), world.rho, world.topology, world.k)
         center = np.array(center, dtype=float)
@@ -819,7 +817,7 @@ class SubstitutionLattice(surface.MeshLattice):
         down to the window round the foot if it's much wider, and kept (st.giant_tiles) while the kept level has the
         same tiles (SS.origin_of()) and the window holds. The kept levels near the boundary are as wide as the 3D
         parts' instanced builds of them want, some 30,000 tiles, and every giant level's pieces went through all of
-        them at every window build: 400 ms a second of a climb's ticks (2026-11-19)."""
+        them at every window build: 400 ms a second of a climb's ticks."""
         text = world.text()
         kept = st.levels[d]
         if kept.world_text != text:
@@ -864,11 +862,10 @@ class SubstitutionLattice(surface.MeshLattice):
     def add_levels_job(self, world, camera, q, h, window, levels, settings, shape, phases, placer):
         """add_levels() as (function, args), for the worker thread (parts.settle_exact()): what reads and keeps the
         map's levels (its state's kept levels and giant tiles, the levels known to have nothing round the camera) done
-        here, the pieces there (in a build process: levels_pieces()), on a world of its own. Built here instead (until
-        2026-11-26), a smooth Penrose map's giant window took 2 to 4 s of a climb's ticks at a time, frozen; it was
-        kept here on 2026-11-24, when on the worker thread a dive at the Penrose plane lost its frames' fourth finest
-        level in 87% of its frames, against 11%: before the build processes, its 0.1 to 0.4 s builds held Python's
-        lock against the levels' own."""
+        here, the pieces there (in a build process: levels_pieces()), on a world of its own. Built here instead, a
+        smooth Penrose map's giant window took 2 to 4 s of a climb's ticks at a time, frozen. (On a worker thread
+        without the build processes, its 0.1 to 0.4 s builds held Python's lock against the levels' own: a dive at the
+        Penrose plane lost its frames' fourth finest level in 87% of its frames, against 11%.)"""
         faces, st = world.substitution
         text = world.text()
         own = surface.World.from_text(text, world.rho, world.topology, world.k)

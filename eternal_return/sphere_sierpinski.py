@@ -123,7 +123,7 @@ class Carpet:
         own below which the carpet is mirrored (the face's middle line) and from which on (the cube's edge), along
         each, and the level's colors"""
         sp = sphere_module()
-        N, C = world.N, world.cell(level)
+        C = world.cell(level)
         M = 1 << (level - 1)
         values, low, high = [], [], []
         for c in (int(world.A_f[1]), int(world.A_f[2])):

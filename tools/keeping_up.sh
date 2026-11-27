@@ -1,9 +1,9 @@
 #!/bin/zsh
-# The keeping-up battery (2026-11-26): every way of flying the tests have been caught missing, on each map given, with
-# the repo's add-on. For each map: plans made by tools/dive_back_plan.py (dive, glide, turns: each flown in, then full
-# throttle backward), each flown --realtime with tools/probes/missing_view.py (the share of the view missing, live
-# against settled), and the dive flown once more frame-stepped for its loops' and recenters' seams. One summary line a
-# flight; the worst live|settled pictures are kept in the output folder, to be looked at.
+# The keeping-up battery: every way of flying the tests have been caught missing, on each map given, with the repo's
+# add-on. For each map: plans made by tools/dive_back_plan.py (dive, glide, turns: each flown in, then full throttle
+# backward), each flown --realtime with tools/probes/missing_view.py (the share of the view missing, live against
+# settled), and the dive flown once more frame-stepped for its loops' and recenters' seams. One summary line a flight;
+# the worst live|settled pictures are kept in the output folder, to be looked at.
 #
 #     tools/keeping_up.sh <out dir> [<map.blend> ...]          (no maps: DEFAULT_MAPS, every kind)
 #     MODES="dive glide" DIVE=18 BACK=12 MEMORY=7000 tools/keeping_up.sh ...
@@ -12,11 +12,13 @@
 
 set -u
 cd "${0:A:h}/.."
+# Awake for as long as this runs: the Mac idles to sleep with nobody at the keyboard, however busy, and a battery left
+# overnight then flies its realtime flights in the few seconds of each maintenance wake
+caffeinate -i -w $$ &
 # The maps flown when none are given: one of every kind of map the add-on draws, so a change that breaks one kind
-# shows. On 2026-11-26 none was a Penrose map with frames, and a pickling bug that broke every Penrose and Darb map
-# with frames went out with the build processes (9487c64), retrying a failed build for 2.5 hours on the first one
-# flown. A new kind of map gets a map here. (Sphere maps of sphere.py, cube and icosahedron, aren't surface maps:
-# dive_back_plan.py can't plan them.)
+# shows. (With no Penrose map with frames here, a pickling bug that broke every Penrose and Darb map with frames went
+# out with the build processes, retrying a failed build for 2.5 hours on the first one flown.) A new kind of map gets a
+# map here. (Sphere maps of sphere.py, cube and icosahedron, aren't surface maps: dive_back_plan.py can't plan them.)
 DEFAULT_MAPS=(
     ~/blender_tests/tile_object/tile_monkey.blend               # laid-out quads, corners of 3 and 5, open edges
     ~/blender_tests/tile_object/tile_monkey_triangles.blend     # laid-out triangles (Loop), corners of 4 to 8

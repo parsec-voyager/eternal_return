@@ -16,7 +16,7 @@ Usage:
     Blender -b <map.blend> --python tools/flight_sim.py -- <plan.json> [--out DIR] [--every N] [--size WxH]
     Blender -b <map.blend> --python tools/flight_sim.py -- --replay <recorded camera object> [same options]
         [--addon installed|working] [--video] [--engine workbench|scene] [--seed N] [--realtime] [--timing]
-        [--probe SCRIPT]   (probes in tools/probes/)
+        [--probe SCRIPT ...]   (probes in tools/probes/; given more than once, each runs, in turn)
 
 Nothing is saved to the .blend. Output in DIR (default: a "flight_<plan>" folder next to the plan): frames/NNNNN.png
 (every Nth frame), log.csv (one row per rendered frame), events.txt (loops, wraps, origin moves, clicks, jump cuts,
@@ -121,10 +121,11 @@ def parse_args():
                         help="keep simulated time no faster than the wall clock, and hand builds to the add-on's worker "
                              "threads as a real flight does (background.py keeps them off in a background Blender): "
                              "they get as much time a frame as in a real flight (their schedulers read the real clock)")
-    parser.add_argument("--probe", metavar="SCRIPT",
+    parser.add_argument("--probe", metavar="SCRIPT", action="append", default=[],
                         help="a Python file whose frame(t, frame, m, scene) runs after every frame and whose "
-                             "report(out) runs at the end, e.g. to count what a map hasn't built yet; setup(m), if "
-                             "it has one, runs before the first tick (tools/probes/)")
+                             "report(out) runs at the end, e.g. to count what a map hasn't built yet; setup(m) runs "
+                             "before the first tick; each is optional (tools/probes/). Given more than once, each "
+                             "probe runs, in the order given")
     parser.add_argument("--save-as", metavar="PATH", help="save the .blend after the flight, e.g. with a recording")
     parser.add_argument("--replay", metavar="OBJECT",
                         help="instead of flying a plan, replay a flight recorded with the add-on's Record Camera into "
@@ -232,7 +233,7 @@ def viewport_shading(scene):
     """Workbench renders with the scene's display shading, but the user flies in a 3D view with its own: copy the file's
     biggest Solid 3D view's shading onto the scene's, so the frames show what the user sees. The substitution maps
     color their bars by vertex color in the view only: rendered with the scene's (material gray) the strapwork was
-    invisible, and every pop and seam check on those maps was blind to it (2026-11-22)."""
+    invisible, and every pop and seam check on those maps was blind to it."""
     views = [(area.width * area.height, space) for screen in bpy.data.screens for area in screen.areas
              if area.type == 'VIEW_3D' for space in area.spaces[:1] if space.shading.type == 'SOLID']
     if not views:
@@ -318,8 +319,8 @@ def make_operator(m, events, clock, snap, click_select=None, moved=None, out=Non
     def snap():
         """The view as the add-on leaves it at the end of the tick: an endless fractal's level objects and eye are only
         put in place then (its fractal.settle()), and a sphere or surface map's floor and 3D parts (surface.settle(),
-        parts.settle(), 2026-11-21: after a loop they're still the size they were, the whole torus 8 times too small),
-        so a render just after a loop, mid-tick, has to do it first"""
+        parts.settle(): after a loop they're still the size they were, the whole torus 8 times too small), so a render
+        just after a loop, mid-tick, has to do it first"""
         if hasattr(getattr(m, "fractal", None), "settle"):
             bpy.context.view_layer.update()
             for obj in bpy.context.scene.objects:
@@ -470,8 +471,8 @@ def start_flight(m, op, clock, keep_state=False):
         m.physics.reset(m.drone_obj)
     context.view_layer.update()
     # As the flight's start does (after start_physics()): the surface maps' first picture built whole, here and now
-    # (since 2026-11-25 their ticks never build on the main thread, so without this the harness's flights started with
-    # nothing drawn, unlike a real one)
+    # (their ticks never build on the main thread, so without this the harness's flights started with nothing drawn,
+    # unlike a real one)
     if hasattr(m, "surface") and hasattr(m, "parts"):
         for obj in context.scene.objects:
             m.surface.settle(obj, m.drone_camera.matrix_world.translation)
@@ -612,8 +613,7 @@ def render_with_world(m, scene, snapshot, path):
     that with the frame as rendered separates what the map did (a level switching, a patch moving) from what the
     camera did (moving, passing close to something). An object whose mesh was written again since stays as it is: its
     new points are from its new middle, which it's moved to (a floor's rebuild round the camera), and its old matrix
-    with them drew the floor a frame's rebuild away, a slab across the view (every smooth torus rebuild a fake pop,
-    2026-11-24)."""
+    with them drew the floor a frame's rebuild away, a slab across the view (every smooth torus rebuild a fake pop)."""
     matrices, inputs, pushes, tokens = snapshot
     offset = Vector(scene.drone_rig.world_offset)
     # The pushed layers, pushed as they were, but about the camera now, as the map's drivers do
@@ -968,11 +968,12 @@ def main():
 
     start = plan.get("start", {})
     turn_after_click = "click_at" in start and "look_at" in start
-    probe = None
-    if args.probe:
+    probes = []
+    for path in args.probe:
         probe = types.ModuleType("probe")
-        probe.__file__ = os.path.abspath(args.probe)
-        exec(compile(open(args.probe).read(), args.probe, "exec"), probe.__dict__)
+        probe.__file__ = os.path.abspath(path)
+        exec(compile(open(path).read(), path, "exec"), probe.__dict__)
+        probes.append(probe)
         # (Before the first tick, which builds what the map shows first: wrappers set here see the start too)
         if hasattr(probe, "setup"):
             probe.setup(m)
@@ -1046,8 +1047,9 @@ def main():
         tick_ms.append(0.0)
         next_frame += 1.0 / fps
         frame_count += 1
-        if probe is not None:
-            probe.frame(clock.t, frame_count, m, scene)
+        for probe in probes:
+            if hasattr(probe, "frame"):
+                probe.frame(clock.t, frame_count, m, scene)
         # The add-on moves the Drone object onto the simulated drone once it's drifted RECENTER_DISTANCE from it, and
         # the simulation subtracts the same offset, so the camera shouldn't move
         physics = m.physics
@@ -1142,8 +1144,9 @@ def main():
               f"{np.percentile(ticks, 99):.0f} max {ticks.max():.0f}; frame step median {np.median(steps):.1f} p99 "
               f"{np.percentile(steps, 99):.0f}; frames over 33 ms {(frames > 33).sum()}, over 100 ms "
               f"{(frames > 100).sum()}, worst {frames.max():.0f}")
-    if probe is not None and hasattr(probe, "report"):
-        probe.report(out)
+    for probe in probes:
+        if hasattr(probe, "report"):
+            probe.report(out)
     for broken in invalid_drivers():
         events.append((duration, "DRIVER", f"switched off after an error: {broken}"))
     events.sort(key=lambda e: e[0])

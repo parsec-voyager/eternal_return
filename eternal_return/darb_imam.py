@@ -4,13 +4,13 @@ point of Z[zeta_10] (cyclotomic.py). Each tile is cut into 35 to 211 tiles LAMBD
 
 Lu and Steinhardt (Science 2007) found the subdivision in the Darb-i Imam shrine's tilework (Isfahan, 1453), and
 Tennant (Bridges 2008) gave the full rules. The layout of the children (darb_imam_rule.json) was read from the Tilings
-Encyclopedia's picture of it and checked exactly (~/blender_tests/darb_imam: extract.py, own.py, fill.py, verify.py,
-2026-11-06): no overlaps, as symmetric as each big tile, and every kind cut three times, 1.1 million tiles, has every
-inner edge shared by exactly two tiles: no gaps, no overlaps (debug/edge_check.py). Every big edge carries a decagon on
-its midpoint and a hexagon near each end, their middles on the edge. The picture's hexagons and bowties lost some of
-those end hexagons (at the hexagon's 144 degree corners, the bowtie's 72 degree ones), so where two big hexagons met,
-neither listed it: a hole at every level below, which zooming into its edge never ended ("i can zoom into the edge of
-this gap seemingly infinitely but it remains an empty space", 2026-11-06). The 12 are now in the rule.
+Encyclopedia's picture of it and checked exactly (~/blender_tests/darb_imam: extract.py, own.py, fill.py, verify.py): no
+overlaps, as symmetric as each big tile, and every kind cut three times, 1.1 million tiles, has every inner edge shared
+by exactly two tiles: no gaps, no overlaps (debug/edge_check.py). Every big edge carries a decagon on its midpoint and a
+hexagon near each end, their middles on the edge. The picture's hexagons and bowties lost some of those end hexagons (at
+the hexagon's 144 degree corners, the bowtie's 72 degree ones), so where two big hexagons met, neither listed it: a hole
+at every level below, which zooming into its edge never ended ("i can zoom into the edge of this gap seemingly
+infinitely but it remains an empty space"). The 12 are now in the rule.
 
 Same interface as penrose.py. Two things set it apart:
 - Children straddle their parent's edges. The picture clips them, but each level is a plain edge-to-edge tiling. Each
@@ -19,7 +19,7 @@ Same interface as penrose.py. Two things set it apart:
   parents' children with doubles dropped (STRADDLE). A tile alone decides only what's more than PAD inside its edges:
   a child reaches at most phi (a decagon's radius) from its middle, the grandchildren 1 / LAMBDA of that further, and
   so on. Owning only the edge children of edges at 0 to 144 degrees, to have no doubles, lost hexagons: near some
-  corners only one of the two tiles lists them (2026-11-06).
+  corners only one of the two tiles lists them.
 - LAMBDA isn't a unit of the ring (it's 2 times one). Cutting is exact in whole numbers, but a parent's place is its
   child's divided by LAMBDA, so places may have powers of 2 under them (Fractions; cyclotomic.xy_float() takes them).
 
@@ -179,7 +179,7 @@ def parent_steps(kind, rot):
     """How to get from a tile (kind, rot, False, tau) to each tile one level up that has it as a child, in whole
     numbers: (parent kind, parent rot, B, choice), the parent's place being (tau phi^-3 + B) / 2 for a whole-number tau
     (darb_imam's 2 phi^3 = LAMBDA). Every pose of the child is tried: a hexagon parent turned about the decagon it holds
-    by 36 degrees is a different parent. parents() took 70 ms with Fractions (2026-11-06), these tables 2."""
+    by 36 degrees is a different parent. parents() took 70 ms with Fractions, these tables 2."""
     steps = []
     for pk, slot in INVERSE[kind]:
         _ck, cr, _cm, ct = RULE[pk][slot]
@@ -224,47 +224,6 @@ def parents(tile):
         if key not in found:
             found[key] = c
     return [(c, (pk, pr, False, from_common(scaled, 2 * common))) for (pk, pr, scaled), c in found.items()]
-
-
-def nearest_slot(pk, kind):
-    """The slot of a kind's child inside a big tile of kind pk nearest its middle"""
-    bx, by = middle(pk, 0, ZERO)
-    distance = lambda j: math.hypot(middle(RULE[pk][j][0], RULE[pk][j][1], RULE[pk][j][3])[0] - bx * LOOP,
-                                    middle(RULE[pk][j][0], RULE[pk][j][1], RULE[pk][j][3])[1] - by * LOOP)
-    return min((j for j, child in enumerate(RULE[pk]) if child[0] == kind), key=distance)
-
-
-# The default parent: the big decagon whose middle child holds the tile (for a decagon, the one round it, so the
-# default chain is concentric decagons, O going to their middle, 0.95 of a tile clear of the star's lines)
-DEFAULT = {kind: (DECAGON, nearest_slot(DECAGON, kind)) for kind in KINDS}
-
-
-def default_steps():
-    """parent_steps() for the default parent of each kind and rot"""
-    out = {}
-    for kind in KINDS:
-        pk, slot = DEFAULT[kind]
-        out[kind] = []
-        for rot in range(PERIOD[kind]):
-            _ck, cr, _cm, ct = RULE[pk][slot]
-            pr = (rot - cr) % N
-            offset = RING.mul(RING.neg(RING.rot(ct, pr)), PHI3_INV)
-            for s2, j2 in SYMMETRIES[pk]:
-                if (pr + s2) % N < PERIOD[pk]:
-                    out[kind].append((pk, (pr + s2) % N, RING.add(offset, RING.scale(RING.rot(PROTOTILE[pk][j2], pr), 2))))
-                    break
-    return out
-
-
-DEFAULT_STEPS = default_steps()
-
-
-def default_parent(tile):
-    kind, rot, _m, tau = canonical(tile[0], tile[1], tile[3])
-    whole, common = over_common(tau)
-    shrunk = RING.mul(whole, PHI3_INV)
-    pk, pr, b = DEFAULT_STEPS[kind][rot]
-    return pk, pr, False, from_common(tuple(s + common * c for s, c in zip(shrunk, b)), 2 * common)
 
 
 def tops(tile):

@@ -1,14 +1,11 @@
 """The sky seen while flying: the sun's disc and glow on the fog color, which is the same everywhere else, in both Solid
-mode and the Rendered viewport (the user, 2026-11-16: no clouds, "i only want the blue sky and fog"; then a sky
-"uniform and match the fog"; then the sun back, but "no color change, just uniform blue that matches the fog"; then
-"give the sun the glow it had before rather than just a white circle"). apply(gradient=True) puts back the deeper blue
-overhead the sky had before that, apply(glow=False) leaves the disc alone, and apply(solid_clouds=True,
-rendered_clouds=True) puts clouds in it.
+mode and the Rendered viewport (no clouds, no color change: a uniform blue that matches the fog). apply(gradient=True)
+puts back the deeper blue overhead the sky had before that, apply(glow=False) leaves the disc alone, and
+apply(solid_clouds=True, rendered_clouds=True) puts clouds in it.
 
 apply(plain=True) makes a plain sky instead, the fog color everywhere in both modes: the Sky group gives the fog color
 alone, to the world and to the fog's sky light, and Solid mode has no sky objects, only its background in the fog
-color. The Earth's maps have it, under their own sky (space.py); it was every map's for an hour on 2026-11-16, until
-the user missed the sun on the others. plain_sky() makes a map's sky plain in place.
+color. The Earth's maps have it, under their own sky (space.py). plain_sky() makes a map's sky plain in place.
 
 The sky is a function of view direction only, so it sits at infinity: moving, scaling, looping and wrapping never
 change it, the way the real sky doesn't change as you walk.
@@ -17,10 +14,9 @@ Rendered (EEVEE): the Sky shader node group turns a view direction into the sky'
 worked out per pixel, on the fog color, so fog_color and the lamp's color still change it live. The world uses it, and
 so does the fog's sky light (fog_look's Fog group), looked up along the view ray (-Incoming), without the disc:
 whatever the fog hides fades into the sky right behind it (glow included). No clouds by default: a cloud behind
-something fading in through the fog shows through it, which looked wrong (the user, 2026-10-30). apply(rendered_clouds=
-True) puts them back, from Sky_pattern, an 8-bit equirectangular image of their cover and light (Blender's convention:
-column u looks along azimuth pi - 2 pi u, row v up at elevation (v - 1/2) pi, checked in EEVEE); a float picture this
-size packs into 100 MB.
+something fading in through the fog shows through it, which looked wrong. apply(rendered_clouds= True) puts them back,
+from Sky_pattern, an 8-bit equirectangular image of their cover and light (Blender's convention: column u looks along
+azimuth pi - 2 pi u, row v up at elevation (v - 1/2) pi, checked in EEVEE); a float picture this size packs into 100 MB.
 
 Solid (Workbench) can't draw a sky: its background is one color, and it lights every face, so a mesh sun facing the
 camera would be lit from behind (Workbench flips back faces to face the viewer too). Image empties are the exception:
@@ -30,7 +26,7 @@ mesh with no geometry (it draws nothing), which follows the camera's position an
 cube always lies just beyond the far clip plane, which hides the frames Blender draws around image empties (see
 solid_sky()). Its rotation stays put, so the sky stays fixed while the camera turns. They can't be selected, so a drone
 click on the sky selects nothing. Image empties are overlays: turning overlays off hides the Solid sky, leaving Solid
-mode's background, which is set to the fog color too. Solid mode had clouds until 2026-11-16, since it has no fog.
+mode's background, which is set to the fog color too.
 
 The sun is where the maps' light comes from: the Sun lamp's compass direction at fog_look.SUN_HEIGHT degrees up, as in
 both modes' shading (solid_sun.py, fog_look.sunlight()). The pictures are made for that direction and the fog color,

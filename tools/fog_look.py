@@ -363,10 +363,10 @@ def fog_parts(scene, distance=EARTH_VISIBILITY):
     """Fog on a sphere or surface map (call after ensure_fog_look()): the add-on's parts and floor material
     (_ER_Parts, parts.py, which takes it by name when it builds them) made a fog material, kept with a fake user
     until the add-on builds them, so the Fog group is kept too (with no users, saving drops both, and these maps had no
-    fog: the user, 2026-11-16, "i just reflew torus_square and there is no fog"); and fog_distance at distance drone
-    sizes, as on every map, so it grows and shrinks with the drone (the sphere's own shader takes it too). The fog is
-    there to hide the clip end's sharp edge (the user, same day): at the template's 23000, with the clip end at 50000
-    (100000 clip starts of 0.5, which scale with the drone too), even red is down to 0.2% there."""
+    fog); and fog_distance at distance drone sizes, as on every map, so it grows and shrinks with the drone (the
+    sphere's own shader takes it too). The fog is there to hide the clip end's sharp edge: at the template's 23000, with
+    the clip end at 50000 (100000 clip starts of 0.5, which scale with the drone too), even red is down to 0.2%
+    there."""
     material = fog_material(PARTS_MATERIAL, bpy.data.node_groups[GROUP], True)
     material.use_fake_user = True
     scene["fog_distance"] = distance

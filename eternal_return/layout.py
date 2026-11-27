@@ -1,5 +1,5 @@
-"""A shape laid out as a map's mesh, once, when the map is built (phase 7 of the engines' plan, 2026-11-24). The flight
-code only splits a mesh's faces and evaluates its surface (surface.py; subdivision.py for a smooth one), so what makes
+"""A shape laid out as a map's mesh, once, when the map is built (phase 7 of the engines' plan). The flight code only
+splits a mesh's faces and evaluates its surface (surface.py; subdivision.py for a smooth one), so what makes
 a map's cells square on its shape (its faces' layout) and its smooth surface the shape's (its points) is worked out
 here, before flying, never per point in flight.
 
@@ -50,9 +50,9 @@ REGULAR_SIZES = (0.5, 2.0)
 REGULAR = {n: np.exp(2j * np.pi * np.arange(n) / n) for n in (3, 4)}
 
 # triangulated()'s turns of regularized() (so many rounds each) and flips, and how far past 180 degrees the angles
-# facing an edge go before it's flipped. Measured 2026-11-26 (corners of other than 6; the angles' median off 60):
-# Botsch and Kobbelt's isotropic remeshing (long edges split, short ones collapsed, flips toward 6, relaxing) made a
-# torus 98 odd corners, 4.0 degrees (a quad's diagonal is 1.32 times the side of the equilateral triangle of its
+# facing an edge go before it's flipped. Measured (corners of other than 6; the angles' median off 60): Botsch and
+# Kobbelt's isotropic remeshing (long edges split, short ones collapsed, flips toward 6, relaxing) made a torus 98 odd
+# corners, 4.0 degrees (a quad's diagonal is 1.32 times the side of the equilateral triangle of its
 # half's area, at their split threshold, 4/3); the aligned cuts with flips toward 6, 9 and 19 degrees (the sheared
 # grid couldn't close round the tube); these flips 12 and 6.6 (cube 10 and 1.4, Suzanne 106 and 5.4: most of its odd
 # corners its quads' own)
@@ -239,7 +239,7 @@ def corner_rhombs(mesh, smooth=True):
     """mesh's faces each cut into a quad at each corner (the corner, its two sides' middles, the face's middle), each
     labeled a thick Penrose rhomb: a Penrose map's mesh (surface_substitution.KIND, its loops (B, A, C, A'): B the
     corner, C the middle, counterclockwise as the face). Penrose's matching rules then agree across every edge,
-    whatever the mesh (~/blender_tests/penrose_surface/rhomb_mesh.py, 2026-11-13), with special points where the
+    whatever the mesh (~/blender_tests/penrose_surface/rhomb_mesh.py), with special points where the
     rhombs' angles don't come to 360 degrees: a corner of v faces 72 v, a face's middle 72 times its sides, a side's
     middle 432 (an open side's, 216). On a smooth surface its points are Catmull-Clark's first split's (an open edge's
     by its rim's B-spline, as subdivision.LocalMesh splits), so its surface is the mesh's own (a quad mesh's exactly);

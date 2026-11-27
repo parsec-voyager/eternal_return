@@ -24,7 +24,6 @@ is the one finer averaged 2 x 2 (in sRGB, as map tiles usually are).
 """
 
 import json
-import math
 import os
 import sys
 import tempfile

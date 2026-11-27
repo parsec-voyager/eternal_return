@@ -1,8 +1,8 @@
 """Endless 3D parts on a sphere map's lattice, or a surface map's: pieces on its vertices and along its edges, like
 pillars and the arches between them, at every level, from the globe (or the whole mesh) down forever, standing on the
-surface (2026-11-11: the first step of tiling any surface, see ~/blender_tests/sphere/parts; 2026-11-12, the second:
-any quad mesh, surface.py, see ~/blender_tests/surface; 2026-11-13, the third: triangles and odd corners, where a
-vertex piece stands among 3 to 24 edge pieces, and where the surface folds, stretched down to reach the floor).
+surface: a sphere map's (see ~/blender_tests/sphere/parts), any quad mesh's (surface.py, see ~/blender_tests/surface),
+and triangles and odd corners, where a vertex piece stands among 3 to 24 edge pieces, and where the surface folds,
+stretched down to reach the floor.
 
 Every level of a sphere map's lattice (sphere.py: each cube face split 2 x 2 at every level) has the same parts, at the
 level's own size: a vertex piece on each of its vertices and an edge piece along each of its edges. The lattice is on
@@ -40,24 +40,25 @@ Or, with no fade (the "fade" setting 0), nothing sinks: every piece a level obje
 endless maps' patches (2d_time_endless's cube frames), and a level is drawn from when its cells are a fine-th of the
 drone's height, where its pieces are a pixel or two, so finer levels come in too small to see and take shape only
 through the view's own perspective as the drone comes down. Low pieces read as the surface's texture from afar. Each
-level reaches "build" of its cells around the drone, and where the camera looks, "ahead" of them (the view's reach,
-2026-11-19), and the coarser levels go on past it. Built "build" (10) all round, a level with cells a 16th of the
-drone's height reached only 0.7 heights ahead, its pieces still 100 px wide at its edge, so whatever the drone flew
-toward got its finer pieces only once it was nearly over it; built 32 all round, a level had ten times the pieces, and
-the frame rate halved. So a level is built "ahead" all round, and shows past "build" only what a view VIEW_ROOM wider
-than the camera's sees (aim(): its points' "shown", which the node group instances only where set). Turning, that's
-worked out again in the tick, with no build (built again on every turn, the worker thread's queue kept the floor's
-builds waiting 0.7 s); and what's shown all round is round the point below the drone, which flies on through what's
-built, so a level is built again only after "margin" as much a share of "ahead" as of "build". The drone camera's lens
-is wide (122 degrees across), so a level still shows a third to half of its disc: in 2026-11-19's flights over the
-Penrose sphere's frames, 3,300 to 6,300 pieces a level against 11,700 built, at the frame rate and worker thread load
-of 20 all round. Flown fast and low (the user's way: auto scale shrinking the drone 0.005x a second on the HUD, gliding
-in at 20 to 30 degrees), the levels between the biggest and the finest went unbuilt where the drone looked: their builds
-waited up to 2.4 s on the worker thread, behind the finest levels', and were then built round where the drone had
+level reaches "build" of its cells around the drone, and where the camera looks, "ahead" of them (the view's reach), and
+the coarser levels go on past it. Built "build" (10) all round, a level with cells a 16th of the drone's height reached
+only 0.7 heights ahead, its pieces still 100 px wide at its edge, so whatever the drone flew toward got its finer pieces
+only once it was nearly over it; built 32 all round, a level had ten times the pieces, and the frame rate halved. So a
+level is built "ahead" all round, and shows past "build" only what a view VIEW_ROOM wider than the camera's sees (aim():
+its points' "shown", which the node group instances only where set). Turning, that's worked out again in the tick, with
+no build (built again on every turn, the worker thread's queue kept the floor's builds waiting 0.7 s); and what's shown
+all round is round the point below the drone, which flies on through what's built, so a level is built again only after
+"margin" as much a share of "ahead" as of "build". The drone camera's lens is wide (122 degrees across), so a level
+still shows a third to half of its disc: in flights over the Penrose sphere's frames, 3,300 to 6,300 pieces a level
+against 11,700 built, at the frame rate and worker thread load of 20 all round. Flown fast and low (auto scale shrinking
+the drone 0.005x a second on the HUD, gliding in at 20 to 30 degrees), the levels between the biggest and the finest
+went unbuilt where the drone looked: their builds waited up to 2.4 s on the worker thread, behind the finest levels',
+and were then built round where the drone had
 been. So a build still waiting is handed in again round the drone's newest point, in its place in line (background.py),
 the coarser levels' builds go first, and a level is built round a point far enough ahead that a build lasts 2.5 times
 the flight (settle()): in such a glide, a level between was missing where the view looked in none of the ticks, where
-the committed version missed one in a third of them, and the finest level, 40 of its cells off, in about a fifth.
+builds round the drone itself missed one in a third of them, and the finest level, 40 of its cells off, in about a
+fifth.
 
 The bigger levels, every one up to the globe however deep a dive goes, are the giant levels (Exact), built the way the
 endless maps build their big pillars (tiling.py): only their pieces within reach of the camera (the window, "window"
@@ -103,13 +104,12 @@ parts_sphere.SphereLattice for a sphere map, everything above, with its layout's
 icosahedron's: parts_ico.IcoChart); surface.MeshLattice for a surface map, whose faces are flat, so its pieces are
 placed from the anchor without a chart, and its giant levels' pieces worked out with Fractions (surface.add_levels()).
 
-2026-11-16, the icosahedron sphere's lattice (parts_ico.py: triangles, 5 edges at its 12 corners) and the
-Penrose surface maps' (parts_substitution.SubstitutionLattice: each level's rhombs' corners and edges, levels phi times finer, so
-a lattice says how much finer each level is, its ratio). Same day, at the user's request, the Penrose frames are on
+Other lattices: the icosahedron sphere's (parts_ico.py: triangles, 5 edges at its 12 corners) and any substitution
+rule's (parts_substitution.SubstitutionLattice, one per rule). The Penrose surface maps' is each level's rhombs' corners
+and edges, levels phi times finer, so a lattice says how much finer each level is, its ratio; and their frames are on
 every other level only (phi^2 apart, less dense): a lattice's level_step, 1 for the rest, says which levels have parts
-(drawn()); the levels between are left out of the instanced and giant levels alike. 2026-11-22: any substitution
-rule's (parts_substitution.SubstitutionLattice, one per rule): Darb-i Imam's girih tiles' corners and edges, on every level
-(LAMBDA = 8.5 apart).
+(drawn()); the levels between are left out of the instanced and giant levels alike. Darb-i Imam's is its girih tiles'
+corners and edges, on every level (LAMBDA = 8.5 apart).
 
 Not yet: maps with 3D tiles (the lift: parts stand on the sphere, not the tiles' ground).
 """
@@ -175,17 +175,17 @@ FLOAT_ERROR = 1e-14
 # the view sees, of the same pieces. Hovering, or with the view looking another way than the flight (drifting back,
 # or straight down), there's no lead, and a level is built round the drone. Built round
 # where the drone was when asked, the finest levels' cells passed by 15 to 40 a second at a cruise, and the drone was
-# past the edge of a level built 10 cells out in 2026-11-17's flights (in 55% of the ticks past the margin).
+# past the edge of a level built 10 cells out (in 55% of the ticks past the margin).
 LEAD_MOST = 1.0
 # A rising level (see settle()) is handed over before its instances are built once its cells are this many times
 # smaller than exact_from: its pieces in the window grow as the square of that, each one worked out on the main thread
-# at every window build (climbing at 0.005x/s, a level kept giant for 2 s had 360 pieces, ticks of 3 s, 2026-11-19)
+# at every window build (climbing at 0.005x/s, a level kept giant for 2 s had 360 pieces, ticks of 3 s)
 RISING_LATE = 4.0
 # Diving, a level wanted within EARLY_TIME s (and at most EARLY_MOST of them, the next finer ones) is built before it's
 # wanted, round where the drone will be then, and kept hidden until it is (settle()). In a fast dive (7.6 halvings a
-# second, the user's) a new level came every 0.18 s, went from the finest wanted to the fourth finest in 0.55 s, and
+# second) a new level came every 0.18 s, went from the finest wanted to the fourth finest in 0.55 s, and
 # its first build, asked for once it was wanted, landed 0.1 to 0.3 s later: the finest three or four levels were
-# missing in nine ticks of ten (2026-11-20)
+# missing in nine ticks of ten
 EARLY_TIME = 0.4
 EARLY_MOST = 2
 # The view's reach ("ahead"): what a level shows past "build" is what a view this much wider than the camera's sees,
@@ -308,6 +308,20 @@ def piece_color(piece, phase):
     """A piece's linear RGBA at a level of phase phase"""
     colors = list(piece.get("colors", [[0.8, 0.8, 0.8, 1.0]]))
     return [float(v) for v in colors[phase % len(colors)]]
+
+
+def face_colors(settings, faces, phase):
+    """Each face's linear RGBA at a level of phase phase (faces: window_faces()'s, each with its piece's index), a
+    piece's color read once (a post is dozens of faces of one piece, and read for every face, a climb's giant windows
+    read them a million times)"""
+    by_piece = {}
+    colors = []
+    for _, index in faces:
+        color = by_piece.get(index)
+        if color is None:
+            color = by_piece[index] = piece_color(settings["pieces"][index], phase)
+        colors.append(color)
+    return colors
 
 
 def _plain(value):
@@ -567,10 +581,22 @@ def node_group():
 
 # ----- the level objects -----
 
-def pool(obj):
-    """The map's level objects, made the first time: children of the map's object, points instanced by the node
-    group, unselectable, and clicking one selects the map (scaling_target)"""
+def map_child(obj, name, key):
+    """A new mesh object of the map's (a level's, the floor's): a child of the map's object, in its collections,
+    marked as the map's (key), and clicking it selects the map (scaling_target)"""
     import bpy
+    child = bpy.data.objects.new(name, bpy.data.meshes.new(name))
+    for c in obj.users_collection:
+        c.objects.link(child)
+    child.parent = obj
+    child[key] = obj.name
+    child["scaling_target"] = obj
+    return child
+
+
+def pool(obj):
+    """The map's level objects, made the first time: children of the map's object (map_child()), points instanced by
+    the node group, unselectable"""
     settings = obj[PROPERTY]
     wanted = int(setting(settings, "count"))
     objects = sorted((o for o in obj.children if o.get(OWNER_KEY) == obj.name), key=lambda o: o.name)
@@ -587,14 +613,8 @@ def pool(obj):
         return objects
     collection, _phases, _shape = references(obj, settings)
     for k in range(len(objects), wanted):
-        name = f"{obj.name}.parts.{k:02d}"
-        level_obj = bpy.data.objects.new(name, bpy.data.meshes.new(name))
-        for c in obj.users_collection:
-            c.objects.link(level_obj)
-        level_obj.parent = obj
+        level_obj = map_child(obj, f"{obj.name}.parts.{k:02d}", OWNER_KEY)
         level_obj.hide_select = True
-        level_obj[OWNER_KEY] = obj.name
-        level_obj["scaling_target"] = obj
         modifier = level_obj.modifiers.new(MODIFIER, 'NODES')
         modifier.node_group = group
         socket = group.interface.items_tree["Pieces"]
@@ -604,21 +624,14 @@ def pool(obj):
 
 
 def exact_object(obj):
-    """The map's giant levels' object, made the first time: a plain mesh, a child of the map's object, unselectable,
-    and clicking it selects the map"""
-    import bpy
+    """The map's giant levels' object, made the first time: a plain mesh, a child of the map's object (map_child()),
+    unselectable"""
     found = next((o for o in obj.children if o.get(EXACT_KEY) == obj.name), None)
     if found is not None:
         no_shadow(found)
         return found
-    name = f"{obj.name}.parts.exact"
-    exact_obj = bpy.data.objects.new(name, bpy.data.meshes.new(name))
-    for c in obj.users_collection:
-        c.objects.link(exact_obj)
-    exact_obj.parent = obj
+    exact_obj = map_child(obj, f"{obj.name}.parts.exact", EXACT_KEY)
     exact_obj.hide_select = True
-    exact_obj[EXACT_KEY] = obj.name
-    exact_obj["scaling_target"] = obj
     exact_obj.data.materials.append(parts_material())
     no_shadow(exact_obj)
     return exact_obj
@@ -879,7 +892,7 @@ def write_level(level_obj, world, level, pieces, origin, phase, radius):
 # beams and rings standing up, where the strapwork is thin bars on the ground
 INK = 1.0
 # What a build is guessed to take of the workers' time until one's measured (schedule.Costs): s a cell squared (a
-# Penrose level's 32 cells round, ~11,700 pieces, took ~110 ms on a worker, 2026-11-19), or s for a whole level
+# Penrose level's 32 cells round, ~11,700 pieces, took ~110 ms on a worker), or s for a whole level
 COST_FIRST = 1e-4
 
 
@@ -1184,14 +1197,13 @@ def settle(obj, camera_world, budget=BUILD_BUDGET, view=None):
         if built is not None and built.level == level and math.isfinite(built.radius) and math.isfinite(radius):
             # One the drone has left the build of shows nothing round it: built again as if never built (its quick
             # build first). Asked for its full reach, a coarse level's was ten times the quick build's cost for the
-            # same share of the view, and it waited a second and a half behind the floor's (2026-11-20)
+            # same share of the view, and it waited a second and a half behind the floor's
             offset, scale = lattice.transform(world, text, built)
             behind = built.away((soon - offset) / scale) > built.radius
         if built is None or built.level != level or abs(world.n - built.n) > LOOPS_STALE or behind:
             # A level with nothing of its own drawn is built out to "build" first, a tenth of the pieces of "ahead", and
             # out to its full reach after (below): in a fast dive some six new levels came a second, each built in full
             # (about 110 ms on a worker thread), and most were passed before they were drawn, the view only floor
-            # (2026-11-19, the user: "at certain points there were no arches in view")
             quick = viewed and math.isfinite(radius)
             reach = build if quick else radius
             due.append((share(level, reach), 0.0, level, level_obj, reach, margin if quick else led, None))
@@ -1219,8 +1231,7 @@ def settle(obj, camera_world, budget=BUILD_BUDGET, view=None):
             due.append((stake, cells_away(level, radius - step - moved), level, level_obj, radius, led, None))
     plain = None
     # What each is worth (schedule.value(), by the same rule as the floor's), the best asked for first (a tick asks for
-    # budget s at most). Until 2026-11-20 by rank: rising levels first, then the coarser (2026-11-19: with the finest
-    # first, a fast glide kept the workers on them, the levels between unbuilt), urgent before the rest
+    # budget s at most)
     parts_wait = state.motion.wait("parts")
     rated = []
     for stake, needed_in, level, level_obj, radius, led, at in due:
@@ -1266,7 +1277,7 @@ def settle(obj, camera_world, budget=BUILD_BUDGET, view=None):
             build_level(lattice, obj, level_obj, world, level, center, settings, phases, shape, placer, radius)
         except ValueError:
             # One that fails here too stays as it was, the error printed, and goes to the worker thread again next
-            # time: raised, it ended the flight (2026-11-19, a Penrose level cut with no tiles near the drone)
+            # time: raised, it ended the flight (a Penrose level cut with no tiles near the drone)
             traceback.print_exc()
     # Handed over from the boundary down: each rising level once its instances are built, or it has no parts, or it's
     # RISING_LATE behind
@@ -1457,7 +1468,7 @@ class Exact(schedule.Window):
 
 # The giant levels' window builds go before the levels' (background.submit()'s priority, lower first): a level handed
 # over waits for one, instanced (sinking), holding a level object (after the levels', a dive at a plane kept 13 levels
-# sinking, and the finest ran out of objects, 2026-11-24)
+# sinking, and the finest ran out of objects)
 EXACT_PRIORITY = -1e29
 
 
@@ -1521,7 +1532,7 @@ def settle_exact(lattice, obj, state, world, text, camera, q, h, clip_end, windo
     Once there's a window, a lattice that can (lattice.add_levels_job()) has those builds done on the worker thread
     (exact_async()): the window stays as it was until they're taken in (land_exact(), at the start of the next
     settle()), a level handed over meanwhile still instanced (sinking). Built here, the plane maps' took 50 to 110 ms
-    two or three times a loop, which a dive at a plane comes to once a second (2026-11-24)."""
+    two or three times a loop, which a dive at a plane comes to once a second."""
     exact_obj = exact_object(obj)
     built = state.exact
     # A loop changes only the window's transform (by a power of 2, exactly): it's the same window, the same size
@@ -1651,7 +1662,7 @@ def exact_piece(pieces, row, level, camera, local, window, shape, settings, phas
     if turn is not None:
         faces = [face @ turn for face in faces]
         frame = turn.T @ frame
-    colors = [piece_color(settings["pieces"][index], level % phases) for _, index in corners]
+    colors = face_colors(settings, corners, level % phases)
     return ExactPiece(level, kind, frame, size, u, digits, faces, colors, distance)
 
 
@@ -1714,8 +1725,8 @@ def window_faces(shape, kind, u, half, size, number):
     map units (m, 3, floats: size map units a piece unit), the piece's index)]. Every face against the window at once
     (face_stack()) in floats: those wholly outside it left out, and with floats, those wholly inside it (most of them:
     near the boundary a piece is a few hundredths of the window across) taken as they are; only the rest cut (one at a
-    time, face by face, the float path's pieces took 1.4 ms each, 2026-11-19). The corners are scaled to map units
-    before they're floats: a giant piece's own units can be far past a float's range, the window's corners never."""
+    time, face by face, the float path's pieces took 1.4 ms each). The corners are scaled to map units before they're
+    floats: a giant piece's own units can be far past a float's range, the window's corners never."""
     u_float = np.array([float(c) for c in u])
     half_float = float(half)
     slack = 4e-16 * (1.0 + float(np.abs(u_float).max()))
@@ -1740,13 +1751,13 @@ def window_faces(shape, kind, u, half, size, number):
             corners.append((near_all[starts[f]:ends[f]] * float(size), index))
             continue
         # (On a worker thread, out of the main thread's way between faces: the cut is pure Python, exactly, and without
-        # these the tick's own Python ran at half speed beside it, 2026-11-24)
+        # these the tick's own Python ran at half speed beside it)
         background.give_way()
         if u_rest is not None and 0.0 < half_float and float(size) < math.inf:
             # Its corners from the camera in floats (less the camera's rest): within FLOAT_CUT_REACH of the window's
             # size, cut in floats (rounding moves a cut by under 2^-33 of the window); only a face reaching far past it,
             # a giant piece's, cut exactly (every face exactly, a laid-out map's giant frames' window took a second a
-            # build, 2026-11-25)
+            # build)
             near_float = near_all[starts[f]:ends[f]] - u_rest
             if float(np.abs(near_float).max()) <= FLOAT_CUT_REACH * half_float:
                 cut = cut_to_window(near_float.tolist(), half_float)
