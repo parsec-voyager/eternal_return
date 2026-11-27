@@ -53,6 +53,20 @@ import numpy as np
 
 from .cyclotomic import q_add, q_mul, q_scale, q_sub
 
+# The engine in Rust (the eternal_return_core wheel's), for the patches' arithmetic that's been moved there (poly_at(),
+# taylor_steps(), derivatives(), evaluate(), newton(), side_newton()): the same numbers to a float's last few bits
+# (numpy's matrix products round their sums in another order). A core that doesn't have a function yet (an older
+# wheel, or none) leaves the Python here to do it.
+try:
+    from eternal_return_core import _native
+except ImportError:
+    _native = None
+
+
+def _floats(a):
+    """a as the core takes arrays: float64, in a row"""
+    return np.ascontiguousarray(a, dtype=np.float64)
+
 # The uniform cubic B-spline's basis in powers of u, times 6: B_i(u) = sum_a BASIS[a][i] u^a / 6
 BASIS = ((1, 4, 1, 0), (-3, 0, 3, 0), (3, -6, 3, 0), (-1, 3, -3, 1))
 # How many points a side of the grid the step bounds are sampled on (surface.SIGMA_GRID's way)
@@ -1871,7 +1885,7 @@ class SubdivisionChart:
             out = np.zeros(np.shape(u) + (3,))
             if not irregular.all():
                 rows = ~irregular
-                out[rows] = poly_sum(powers(u[rows], a, n), powers(v[rows], b, n), self.C[f[rows]])
+                out[rows] = poly_at(u[rows], v[rows], a, b, self.C[f[rows]])
             outs.append(out)
         if irregular.any():
             fl, ul, vl = f[irregular], u[irregular], v[irregular]
@@ -1893,7 +1907,7 @@ class SubdivisionChart:
             step = sign / size
             s, t = (ul - u0) * step, (vl - v0) * step
             for (a, b), out in zip(wanted, outs):
-                out[irregular] = (step ** (a + b))[:, None] * poly_sum(powers(s, a, n), powers(t, b, n), Q)
+                out[irregular] = (step ** (a + b))[:, None] * poly_at(s, t, a, b, Q)
         return outs
 
     # ----- past a face's sides -----
@@ -2017,7 +2031,7 @@ class SubdivisionChart:
         f, u, v = np.broadcast_arrays(np.asarray(f), np.asarray(u, dtype=float), np.asarray(v, dtype=float))
         n = self.order
         C = self._search_patches()
-        return [poly_sum(powers(u, a, n), powers(v, b, n), C[f]) for a, b in orders]
+        return [poly_at(u, v, a, b, C[f]) for a, b in orders]
 
     def _search_patches(self):
         """Every face's polynomial for the search for the face below (surface.Below.global_face()): a regular face's
@@ -2101,8 +2115,8 @@ class SubdivisionChart:
         n = self.order
         steps = np.array([[inv_m ** (a + b - 1) if a + b else 0.0 for b in range(n)] for a in range(n)])
         # (In one einsum: term by term, a smooth torus's floor build spent 0.2 s here)
-        return poly_sum(powers(np.asarray(gi, dtype=float), 0, n), powers(np.asarray(gj, dtype=float), 0, n),
-                        np.asarray(T * steps[:, :, None], dtype=float))
+        return poly_at(np.asarray(gi, dtype=float), np.asarray(gj, dtype=float), 0, 0,
+                       np.asarray(T * steps[:, :, None], dtype=float))
 
     def _steps_expansion(self, f, I, J, N, d):
         """Face f's expansion in level-N steps about its point (I, J), from the patch the point d steps further is in:
@@ -2559,7 +2573,7 @@ def sum_terms(E, gi, gj):
     E = np.array(E, dtype=float)
     E[0, 0] = 0.0
     n = len(E)
-    return poly_sum(powers(np.asarray(gi, dtype=float), 0, n), powers(np.asarray(gj, dtype=float), 0, n), E)
+    return poly_at(np.asarray(gi, dtype=float), np.asarray(gj, dtype=float), 0, 0, E)
 
 
 def den_bits(x):
@@ -2578,6 +2592,14 @@ def big(value):
 
 
 def evaluate(E, d, du=0, dv=0):
+    """An expansion E (n, n, 3) at the offset d (2,), or its derivative (evaluate_here(), by the core when it has it)"""
+    at = getattr(_native, "patch_evaluate", None)
+    if at is None:
+        return evaluate_here(E, d, du, dv)
+    return np.array(at(_floats(E), len(E), float(d[0]), float(d[1]), du, dv))
+
+
+def evaluate_here(E, d, du=0, dv=0):
     """An expansion E (n, n, 3) at the offset d (2,), or its derivative"""
     total = np.zeros(3)
     n = len(E)
@@ -2594,6 +2616,18 @@ def evaluate(E, d, du=0, dv=0):
 _shift_tables = {}
 
 
+def poly_at(u, v, a, b, C):
+    """Polynomials' (d/du)^a (d/dv)^b at the points (u, v) (arrays of one shape): C one patch's coefficients (n, n, 3)
+    or each point's own (..., n, n, 3); (..., 3). By the core when it has it (one pass over the points, no arrays of
+    powers), else poly_sum() of the points' powers."""
+    n = C.shape[-3]
+    at = getattr(_native, "patch_values", None)
+    if at is not None and np.shape(u) == np.shape(v) and (C.ndim == 3 or C.shape[:-3] == np.shape(u)):
+        out = np.frombuffer(at(_floats(C), n, _floats(u), _floats(v), a, b), dtype=np.float64)
+        return out.reshape(np.shape(u) + (3,))
+    return poly_sum(powers(u, a, n), powers(v, b, n), C)
+
+
 def poly_sum(pu, pv, C):
     """sum over a, b of pu[..., a] pv[..., b] C[a, b, k]: polynomials' values at many points, pu and pv the points'
     powers (..., n), C one patch's coefficients (n, n, 3) or each point's own (..., n, n, 3); (..., 3). As two einsums
@@ -2608,6 +2642,19 @@ def poly_sum(pu, pv, C):
 
 
 def taylor_steps(C, ur, vr, du, dv, small):
+    """taylor_steps_here() by the core when it has it (each patch's expansion, then each offset's sum, in one pass:
+    no arrays of the offsets' powers)"""
+    steps = getattr(_native, "patch_taylor_steps", None)
+    if steps is None or not len(C):
+        return taylor_steps_here(C, ur, vr, du, dv, small)
+    m = len(C)
+    per = int(np.prod(du.shape[1:], dtype=np.int64))
+    out = steps(_floats(C), C.shape[1], _floats(ur), _floats(vr), _floats(du.reshape(m, -1)),
+                _floats(dv.reshape(m, -1)), per, float(small))
+    return np.frombuffer(out, dtype=np.float64).reshape(du.shape + (3,))
+
+
+def taylor_steps_here(C, ur, vr, du, dv, small):
     """Polynomial patches' points at (ur + small du, vr + small dv) from their points at (ur, vr), over small: C (t, n,
     n, 3) each patch's coefficients of u^i v^j, ur and vr (t,), du and dv (t, ...); (t, ..., 3). By the patch's Taylor
     expansion about (ur, vr), T[t, a, b] = sum over i >= a, j >= b of C[i, j] binom(i, a) ur^(i - a) binom(j, b)
@@ -2653,6 +2700,14 @@ def shift_matrices(x, n):
 
 
 def derivatives(E, d):
+    """derivatives_here() by the core when it has it"""
+    at = getattr(_native, "patch_derivatives", None)
+    if at is None:
+        return derivatives_here(E, d)
+    return np.frombuffer(at(_floats(E), len(E), float(d[0]), float(d[1])), dtype=np.float64).reshape(3, 3, 3)
+
+
+def derivatives_here(E, d):
     """An expansion E (n, n, 3) at the offset d: its value (less its constant term) and its derivatives up to the
     second, D[i, j] = d^(i + j) / du^i dv^j, (3, 3, 3), in one product (term by term, a smooth map's Newton steps for
     the point below took most of its tick)"""
@@ -2679,10 +2734,19 @@ def _powers3(t, n):
 
 
 def newton(E, r, d):
+    """newton_here() by the core when it has it (a dozen steps of a few dozen products each: numpy's calls for them
+    were most of the point below's time on a smooth map)"""
+    nearest = getattr(_native, "patch_newton", None)
+    if nearest is None:
+        return newton_here(E, r, d)
+    return np.array(nearest(_floats(E), len(E), tuple(float(x) for x in r), float(d[0]), float(d[1])))
+
+
+def newton_here(E, r, d):
     """The offset d nearest r on an expansion's whole patch: Newton's steps from d (Gauss-Newton's when the full step
     wouldn't descend)"""
     for _ in range(NEWTON_STEPS):
-        D = derivatives(E, d)
+        D = derivatives_here(E, d)
         e = D[0, 0] - r
         u, v = D[1, 0], D[0, 1]
         uu, uv, vv = D[2, 0], D[1, 1], D[0, 2]
@@ -2701,12 +2765,21 @@ def newton(E, r, d):
 
 
 def side_newton(E, r, origin, direction, lo, hi, t):
+    """side_newton_here() by the core when it has it"""
+    nearest = getattr(_native, "patch_side_newton", None)
+    if nearest is None:
+        return side_newton_here(E, r, origin, direction, lo, hi, t)
+    return nearest(_floats(E), len(E), tuple(float(x) for x in r), tuple(float(x) for x in origin),
+                   tuple(float(x) for x in direction), float(lo), float(hi), float(t))
+
+
+def side_newton_here(E, r, origin, direction, lo, hi, t):
     """The point nearest r along a side of the face (offsets origin + t direction, t within [lo, hi]): its parameter
     t, Newton's steps from t"""
     du, dv = direction
     for _ in range(NEWTON_STEPS):
         d = origin + t * direction
-        D = derivatives(E, d)
+        D = derivatives_here(E, d)
         e = D[0, 0] - r
         first = du * D[1, 0] + dv * D[0, 1]
         second = du * du * D[2, 0] + 2 * du * dv * D[1, 1] + dv * dv * D[0, 2]

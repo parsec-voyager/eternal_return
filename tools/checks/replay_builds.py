@@ -2,10 +2,17 @@
 meant to be a function of what it's sent and nothing else, and one written anew (in Rust) is checked against the same
 recordings. Also what each costs with nothing else running (the seconds a build process took in the flight, and here).
 
-    <Blender's python> -I tools/checks/replay_builds.py [--core <folder>] <folder of recordings> [name's start ...]
+    <Blender's python> -I tools/checks/replay_builds.py [--core <folder>] [--tolerance <t>] <folder of recordings>
+                                                        [name's start ...]
 
 --core: where an eternal_return_core wheel is unpacked, for the builds to use its Rust (without it, a bare Python has
-no core and every build is the add-on's own Python: the answers must be the same either way).
+no core and every build is the add-on's own Python).
+--tolerance: floats may differ by this share of the biggest number of their array (1e-9, say). Without it they must
+match exactly, which the Rust does where it does the same arithmetic in the same order (tiling's cuts); where numpy
+runs matrix products (a smooth chart's patches), its sums round in another order and the last bits differ. What
+isn't a float (how many pieces, which rows, whole numbers) must match either way. The biggest difference let through
+is printed. Two more things pass under a tolerance, and are counted: an array of rows that holds the same rows in
+another order, and numbers that are rounding noise by nature (NOISE).
 
 Run outside Blender, as a build process is (build_process.py): the add-on's modules under their package's name,
 without its __init__. Numbers must match exactly; arrays that don't are printed with how far apart they are.
@@ -25,6 +32,12 @@ import numpy as np
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PACKAGE = "eternal_return"
+TOLERANCE = 0.0
+LET_THROUGH = [0.0]          # the biggest difference a tolerance has let through
+REORDERED = [0]              # how many arrays held the same rows in another order
+# Numbers that are rounding noise where they aren't 0, held to a difference of their own (under a tolerance): a
+# lattice's slopes are sqrt(1 - c^2) of two normals' c, 1e-8 for two that are the same to the last bit but one
+NOISE = {"_slopes": 1e-6}
 
 
 def different(a, b, where, found, most=6, seen=None):
@@ -46,13 +59,32 @@ def different(a, b, where, found, most=6, seen=None):
             for i, (x, y) in enumerate(zip(a.ravel(), b.ravel())):
                 different(x, y, f"{where}[{i}]", found, most, seen)
         elif not np.array_equal(a, b, equal_nan=a.dtype.kind in "fc"):
-            off = np.abs(a.astype(float) - b.astype(float))
-            off = off[np.isfinite(off)]
-            found.append(f"{where}: {int((a != b).sum())} of {a.size} values differ, by up to "
-                         f"{float(off.max()) if len(off) else float('nan'):.3g}")
+            with np.errstate(invalid="ignore", over="ignore"):
+                off = np.abs(a.astype(float) - b.astype(float))
+                finite = np.isfinite(a.astype(float)) & np.isfinite(b.astype(float))
+                size = max(float(np.abs(a[finite]).max(initial=0.0)), float(np.abs(b[finite]).max(initial=0.0)))
+            share = float(off[finite].max(initial=0.0)) / size if size else float("inf")
+            # Within the tolerance: floats, all finite in the same places, none further apart than its share
+            noise = next((n for name, n in NOISE.items() if where.endswith(f"[{name!r}]")), None)
+            same_places = (a.dtype.kind == "f" and np.array_equal(np.isnan(a), np.isnan(b))
+                           and np.array_equal(a[~finite], b[~finite], equal_nan=True))
+            if TOLERANCE and same_places and share <= TOLERANCE:
+                LET_THROUGH[0] = max(LET_THROUGH[0], share)
+            elif TOLERANCE and same_places and noise is not None and float(off[finite].max(initial=0.0)) <= noise:
+                pass
+            elif TOLERANCE and same_places and a.ndim == 2 and reordered(a, b, size):
+                # (Pieces sorted by a number that two of them all but share come out either way round)
+                REORDERED[0] += 1
+            else:
+                found.append(f"{where}: {int((a != b).sum())} of {a.size} values differ, by up to "
+                             f"{float(off[finite].max(initial=0.0)):.3g} ({share:.1e} of the biggest)")
     elif isinstance(a, float):
         if a != b and not (a != a and b != b):
-            found.append(f"{where}: {a!r} against {b!r}")
+            share = abs(a - b) / max(abs(a), abs(b)) if a - b == a - b and max(abs(a), abs(b)) > 0 else float("inf")
+            if TOLERANCE and share <= TOLERANCE:
+                LET_THROUGH[0] = max(LET_THROUGH[0], share)
+            else:
+                found.append(f"{where}: {a!r} against {b!r}")
     elif isinstance(a, (int, str, bytes, bool, Fraction, complex, type(None), np.generic)):
         if a != b:
             found.append(f"{where}: {a!r:.60} against {b!r:.60}")
@@ -81,10 +113,21 @@ def different(a, b, where, found, most=6, seen=None):
             different(mine, theirs, f"{where}.", found, most, seen)
 
 
+def reordered(a, b, size):
+    """Whether two arrays of rows hold the same rows, to within the tolerance, in another order"""
+    order = lambda m: m[np.lexsort(np.round(m / (size * max(TOLERANCE, 1e-12) * 1000.0)).T[::-1])]
+    with np.errstate(invalid="ignore"):
+        return bool(np.all(np.abs(order(a.astype(float)) - order(b.astype(float))) <= TOLERANCE * size * 2000.0))
+
+
 def main():
+    global TOLERANCE
     arguments = sys.argv[1:]
-    if arguments[:1] == ["--core"]:
-        sys.path.insert(0, arguments[1])
+    while arguments[:1] and arguments[0] in ("--core", "--tolerance"):
+        if arguments[0] == "--core":
+            sys.path.insert(0, arguments[1])
+        else:
+            TOLERANCE = float(arguments[1])
         arguments = arguments[2:]
     folder = arguments[0]
     wanted = tuple(arguments[1:])
@@ -130,7 +173,9 @@ def main():
               f"{1000 * statistics.median(row['now']):.1f} ms, total {sum(row['now']):.2f} s")
     core = sys.modules.get("eternal_return_core")
     print("FAIL" if failed or not results else "PASS", f"({sum(r['calls'] for r in results.values())} builds;",
-          f"core: {os.path.dirname(core.__file__)})" if core else "no core: all Python)")
+          f"core: {os.path.dirname(core.__file__)})" if core else "no core: all Python)",
+          f"| floats within {TOLERANCE:g}: the furthest apart {LET_THROUGH[0]:.1e}"
+          + (f"; {REORDERED[0]} arrays the same rows in another order" if REORDERED[0] else "") if TOLERANCE else "")
     sys.exit(1 if failed or not results else 0)
 
 
