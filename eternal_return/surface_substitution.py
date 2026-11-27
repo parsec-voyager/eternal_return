@@ -55,6 +55,13 @@ from . import tiling
 from .cyclotomic import RING10 as RING, float_sqrt, q_add, q_div, q_mul, q_sub
 from .motif import Edges, Hankin, Pieces
 
+# The engine in Rust (the eternal_return_core wheel's), for what's been moved there (level_below()'s tiles). A core
+# that doesn't have a function yet (an older wheel, or none) leaves the Python here to do it: the same arrays.
+try:
+    from eternal_return_core import _native
+except ImportError:
+    _native = None
+
 PROPERTY = "surface_substitution"
 KIND = "rhomb_kind"
 LEVEL_KEY = "surface_substitution_level_of"
@@ -747,6 +754,18 @@ def level_below(world, parent, center):
     rule = parent.rule
     level = Level(parent.d + 1, world, center, rule)
     level.roots = {f: [RING.mul(rule.lambda_, r[0]), None, 0.0, 0.0] for f, r in parent.roots.items()}
+    children = getattr(_native, "level_children", None)
+    if children is not None and len(parent.face) and parent.coef.dtype == np.int64:
+        # By the core (whole numbers: the same arrays, in the same order, and without Python's lock, which this
+        # holds on a worker thread)
+        row = np.ascontiguousarray
+        face, kind, rot, mirror, coef = children(
+            rule.name, row(parent.face, dtype=np.int64), row(parent.kind, dtype=np.int8), row(parent.rot, dtype=np.int8),
+            row(parent.mirror, dtype=bool).view(np.uint8), row(parent.coef))
+        level.set_tiles(np.frombuffer(face, dtype=np.int64), np.frombuffer(kind, dtype=np.int8),
+                        np.frombuffer(rot, dtype=np.int8), np.frombuffer(mirror, dtype=bool),
+                        np.frombuffer(coef, dtype=np.int64).reshape(-1, 4))
+        return level
     grown = parent.coef @ rule.lambda_matrix.T
     parts = []
     for kind in rule.kinds:
