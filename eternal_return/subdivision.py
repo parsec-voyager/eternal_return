@@ -101,6 +101,13 @@ MOST_HOPS = 8
 # piece's slope, from a piece 2^-3 of that one across, and at most 2^-8 of the face: a coarse level's corners' normals,
 # from pieces three levels down, were a degree off)
 CORNER_NORMAL = (3, 8)
+# A normal asked nearer an extraordinary corner than this share of its face is taken this far from it (off_corners()):
+# at a corner of fewer faces than regular (or on a rim), where the derivatives go to 0 (the faces round one agree on
+# its normal to 0.3 degrees there, and nearer in the rounding shows: 0.4 degrees at 2^-20); at one of more, where they
+# grow and the faces' normals close in slowly (round a corner of 10 triangles they're 4.6 degrees apart at 2^-10,
+# 0.4 at 2^-20; of 16, 19 and 8)
+CORNER_NUDGE = 2.0 ** -10
+CROWDED_NUDGE = 2.0 ** -24
 # The least step of a lattice whose offsets by a border are worked out in floats (_offsets())
 FLOAT_STEP = Fraction(1, 1 << 24)
 # Deeper than that, a tile of an irregular face is stepped from its float leaf's patch (_leaf_steps()) if it's at most
@@ -1264,6 +1271,15 @@ class SubdivisionChart:
                               and all(len(loops[g]) == scheme.sides for g in self._faces_of[x]))
 
         regular = {scheme: regular_for(scheme) for scheme in used}
+        # For off_corners(): each face's corners' places in its parameters (a triangle's last twice), how far off each
+        # a normal is taken (0: a regular corner), and its middle
+        self._corner_uv = np.array([(list(scheme.corners) + [scheme.corners[-1]])[:4] for scheme in self.schemes], dtype=float)
+        self._middle_uv = np.array([scheme.middle for scheme in self.schemes], dtype=float)
+        self._corner_nudge = np.zeros((F, 4))
+        for f, loop in enumerate(loops):
+            scheme = self.schemes[f]
+            self._corner_nudge[f, :len(loop)] = [0.0 if regular[scheme](x) else CROWDED_NUDGE if self._valence[x] > scheme.valence
+                                                 and x not in rim else CORNER_NUDGE for x in loop]
         self.controls = [self.schemes[f].control(loops, self._faces_of, f, regular[self.schemes[f]]) for f in range(F)]
         self.regular = np.array([c is not None for c in self.controls])
         self.E, self.ints = exact_ints(top.positions)
@@ -2123,8 +2139,37 @@ class SubdivisionChart:
             return [(a, b) for a in range(4) for b in range(4)]
         return [(a, b) for a in range(n) for b in range(n) if a + b <= 4]
 
+    def off_corners(self, f, u, v):
+        """Points (u, v) of faces f (1-D arrays) as a normal is taken at them: one nearer an extraordinary corner of
+        its face than CORNER_NUDGE of the face is moved that far from it, the way it lies from the corner (right at
+        it: toward the face's middle). At an extraordinary vertex the surface has a normal, but its derivatives in a
+        face's own (u, v) are 0 or unbounded there (its pieces shrink toward it by another factor than a half): where
+        they go to 0, a corner of three, their cross product was rounding and the normal any direction at all (the
+        smooth Darb torus's corners of three triangles: posts there leant by up to 65 degrees, another way each
+        build). A little way off, the normal is the vertex's to within the surface's bend over that way; nearer still
+        at a corner of more faces than regular (CROWDED_NUDGE)."""
+        u, v = np.array(u, dtype=float), np.array(v, dtype=float)
+        nudge = self._corner_nudge[f]
+        if not nudge.any():
+            return u, v
+        corners = self._corner_uv[f]
+        way = np.stack([u, v], axis=1)[:, None, :] - corners                    # (t, 4, 2)
+        reach = np.abs(way).max(axis=2)
+        near = reach < nudge
+        rows = np.flatnonzero(near.any(axis=1))
+        if len(rows):
+            k = np.argmax(near[rows], axis=1)
+            corner, off, length, share = corners[rows, k], way[rows, k], reach[rows, k], nudge[rows, k]
+            inward = self._middle_uv[f[rows]] - corner
+            inward /= np.abs(inward).max(axis=1, keepdims=True)
+            toward = np.where((length > 0.0)[:, None], off / np.maximum(length, 1e-300)[:, None], inward)
+            u[rows], v[rows] = (corner + share[:, None] * toward).T
+        return u, v
+
     def normal(self, f, u, v):
         """Face f's unit normal at (u, v), as three floats (in plain floats, a point at a time)"""
+        if self._corner_nudge[f].any():
+            (u,), (v,) = self.off_corners(np.array([f]), np.array([u]), np.array([v]))
         _x, (ax, ay, az), (bx, by, bz) = self._point_frame(f, float(u), float(v), NORMAL_DEPTH, CORNER_NORMAL)
         nx, ny, nz = ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx
         length = math.sqrt(nx * nx + ny * ny + nz * nz) or 1e-300
@@ -2137,7 +2182,10 @@ class SubdivisionChart:
         if self.border:
             return np.array([self.normal(g, x, y) for g, x, y in zip(f.tolist(), u.tolist(), v.tolist())]).reshape(
                 f.shape + (3,))
-        du, dv = self._evaluate(f, u, v, orders=((1, 0), (0, 1)), depth=NORMAL_DEPTH)
+        shape = f.shape
+        u, v = self.off_corners(f.ravel(), u.ravel(), v.ravel())
+        du, dv = self._evaluate(f.ravel(), u, v, orders=((1, 0), (0, 1)), depth=NORMAL_DEPTH)
+        du, dv = du.reshape(shape + (3,)), dv.reshape(shape + (3,))
         n = np.cross(du, dv)
         length = np.linalg.norm(n, axis=-1, keepdims=True)
         return n / np.where(length > 0.0, length, 1e-300)

@@ -56,7 +56,8 @@ def plain(obj):
     """obj as it's saved: a level without the kept levels it's a copy of, a shared object's part as that part of it"""
     for name in PARTS:
         for owner in list(SHARED_OBJECTS.values()):
-            if getattr(owner, name, None) is obj:
+            # (an owner that has no such part mustn't claim a None)
+            if obj is not None and getattr(owner, name, None) is obj:
                 return Part(owner, name)
     if type(obj).__name__.endswith("Chart"):
         # (A chart whose Topology no build has shared yet: the call is skipped)

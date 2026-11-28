@@ -339,6 +339,11 @@ class BilinearChart:
         w = self.w[f] + 0.0 * np.asarray(u, dtype=float)[..., None]
         return np.zeros_like(w), w, np.zeros_like(w)
 
+    def off_corners(self, f, u, v):
+        """(u, v) as a normal is taken at them (a smooth chart moves them off its extraordinary corners,
+        subdivision.SubdivisionChart.off_corners(); a flat patch has a normal everywhere)"""
+        return u, v
+
     def normals(self, f, u, v):
         """normal() of many points at once (arrays): (..., 3)"""
         u, v = np.asarray(u, dtype=float), np.asarray(v, dtype=float)

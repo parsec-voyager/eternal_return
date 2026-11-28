@@ -186,7 +186,7 @@ def core_lattice(top, faces):
     if found is False:
         found = None
         make = getattr(SS._native, "Lattice", None)
-        if make is not None and faces.core(top) is not None:
+        if make is not None and faces.core(top, flat=False) is not None:
             row = lambda a: np.ascontiguousarray(a, dtype=np.int64)
             try:
                 if faces.clip:
@@ -214,16 +214,48 @@ def core_near(world, faces, level, center, reach):
     numbers)"""
     if getattr(SS._native, "level_lattice_near", None) is None or level.coef.dtype != np.int64:
         return None
-    lattice = core_lattice(world.topology, faces)
+    handle = faces.core(world.topology)
+    lattice = core_lattice(world.topology, faces) if handle is not None else None
     if lattice is None or not all(type(c) is int for root in level.roots.values() for c in root[0]):
         return None
     row = np.ascontiguousarray
     arrays, width, placed = SS._native.level_lattice_near(
-        faces.core(world.topology), lattice, level.d, level.scale, row(level.face, dtype=np.int64),
+        handle, lattice, level.d, level.scale, row(level.face, dtype=np.int64),
         row(level.kind, dtype=np.int8), row(level.rot, dtype=np.int8), row(level.mirror, dtype=bool).view(np.uint8),
         row(level.coef), row(level.rel, dtype=np.float64), level.core_roots(), world.n, world.rho, world.anchor_point(),
         tuple(float(c) for c in center), float(reach))
     level.take_placed(world, placed)
+    return near_of(arrays, width, level)
+
+
+def core_given(world, faces, level, rows):
+    """lattice_near()'s corners and edges of tiles rows by the core, from their corners' places and normals worked out
+    here: on a map whose chart isn't flat, the chart's points are this side's (subdivision.py) and what's whole
+    numbers, which corners are one and which edges they share, is the core's all the same (Rust, without Python's lock:
+    half of what a smooth Penrose map's worker threads did). None where the core can't (no core with it, roots that
+    aren't whole numbers, no tiles)."""
+    if getattr(SS._native, "level_lattice_given", None) is None or level.coef.dtype != np.int64 or not len(rows):
+        return None
+    lattice = core_lattice(world.topology, faces)
+    if lattice is None or not all(type(c) is int for root in level.roots.values() for c in root[0]):
+        return None
+    kind, rot, mirror = (a[rows].astype(np.int64) for a in (level.kind, level.rot, level.mirror))
+    corners = prototiles_of(level.rule).corners if faces.clip else CORNERS
+    rel = level.coef[rows][:, None, :] + corners[kind, rot, mirror]
+    ideal = np.stack([rel @ level.rule.basis_x, rel @ level.rule.basis_y], axis=-1)
+    places = level.map_points(world, faces, rows, ideal)
+    normals = copy_normals(world, faces, level, rows, ideal)
+    row = np.ascontiguousarray
+    arrays, width = SS._native.level_lattice_given(
+        faces.core(world.topology, flat=False), lattice, level.d, row(level.face, dtype=np.int64),
+        row(level.kind, dtype=np.int8), row(level.rot, dtype=np.int8), row(level.mirror, dtype=bool).view(np.uint8),
+        row(level.coef), [(f, root[0]) for f, root in level.roots.items()], row(rows, dtype=np.int64),
+        row(places, dtype=np.float64), row(normals, dtype=np.float64))
+    return near_of(arrays, width, level)
+
+
+def near_of(arrays, width, level):
+    """The core's corners and edges of level (its arrays, and the most neighbors a corner has) as a Near"""
     floats, wholes = (lambda a: np.frombuffer(a, dtype=np.float64)), (lambda a: np.frombuffer(a, dtype=np.int64))
     out = Near()
     out.places, out.normals, out.slopes = floats(arrays[0]).reshape(-1, 3), floats(arrays[1]).reshape(-1, 3), floats(arrays[2])
@@ -253,6 +285,9 @@ def lattice_near(world, faces, level, center, reach):
             stretch = level.scale * float(faces.sigma_hi[level.face[int(np.argmin(away))]])
             near = away - rule.radii[level.kind] * size <= 1.1 * reach * stretch
         rows = rows[near]
+    found = core_given(world, faces, level, rows)
+    if found is not None:
+        return found
     if faces.clip:
         return pieces_near(world, faces, level, rows)
     return rhombs_near(world, faces, level, rows)
@@ -272,7 +307,9 @@ def copy_normals(world, faces, level, rows, ideal):
     u = np.clip(ur[:, None] + small * du, 0.0, 1.0)
     v = np.clip(vr[:, None] + small * dv, 0.0, 1.0)
     fu = np.repeat(face, k)
-    normals = np.cross(*top.chart.jacobians(fu, u.reshape(-1), v.reshape(-1)))
+    # (off a smooth chart's extraordinary corners, where a normal from its derivatives is rounding)
+    u, v = top.chart.off_corners(fu, u.reshape(-1), v.reshape(-1))
+    normals = np.cross(*top.chart.jacobians(fu, u, v))
     normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-300)
     return normals
 
@@ -691,7 +728,7 @@ class SubstitutionPieces(parts.LaidOut):
         self.world, self.faces, self.level, self.d = world, faces, level, level.d
         # (The core's handle on the surface made here, where the topology is at hand: the level's own steps that
         # aren't given it, its faces' sides, use it if it's there)
-        faces.core(world.topology)
+        faces.core(world.topology, flat=False)
         # Each face's tiles from a root among them (a kept level's can be 2^40 of its tiles from it, and float64 then
         # places a corner a ten-thousandth of a tile off, a different way for each root: a level built again turned
         # pieces by that), so every corner is a few tiles from its root, placed to ~1e-14 of a tile

@@ -43,7 +43,7 @@ LET_THROUGH = [0.0]          # the biggest difference a tolerance has let throug
 REORDERED = [0]              # how many arrays held the same rows in another order
 # Numbers that are rounding noise where they aren't 0, held to a difference of their own (under a tolerance): a
 # lattice's slopes are sqrt(1 - c^2) of two normals' c, 1e-8 for two that are the same to the last bit but one
-NOISE = {"_slopes": 1e-6}
+NOISE = {"_slopes": 1e-6, "slopes": 1e-6}
 # Attributes left out of the comparison: what an object keeps only to save working it out again (--ignore)
 IGNORED = set()
 

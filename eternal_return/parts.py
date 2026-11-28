@@ -250,13 +250,28 @@ def references(obj, settings):
     """The collection of the pieces' meshes, one object for each kind of piece (vertex, edge) and level color in turn
     (index: phase * 2 + kind), made again when the pieces change: (collection, phases, their Shape)"""
     import bpy
-    pieces = list(settings["pieces"])
-    phases = max([len(p.get("colors", [])) for p in pieces] + [1])
-    stamp = json.dumps([{k: v for k, v in dict(p).items()} for p in pieces], sort_keys=True, default=_plain)
+    # The pieces' settings as text, to tell when they change: read again STAMP_EVERY seconds on at the soonest (asked
+    # every tick, turning the properties into JSON was 0.7 ms of each: a twentieth of a smooth Penrose map's tick)
+    def read():
+        """The pieces as they are now (the properties themselves: never kept past the call), how many colors they
+        take turns in, and their stamp, kept"""
+        pieces = list(settings["pieces"])
+        phases = max([len(p.get("colors", [])) for p in pieces] + [1])
+        stamp = json.dumps([{k: v for k, v in dict(p).items()} for p in pieces], sort_keys=True, default=_plain)
+        _stamps[obj.name] = (time.perf_counter(), phases, stamp)
+        return pieces, phases, stamp
+    pieces = None
+    kept = _stamps.get(obj.name)
+    if kept is None or not 0.0 <= time.perf_counter() - kept[0] < STAMP_EVERY:
+        pieces, phases, stamp = read()
+    else:
+        _then, phases, stamp = kept
     name = obj.name + ".parts"
     collection = bpy.data.collections.get(name)
     shape = _shapes.get(stamp)
     if shape is None:
+        if pieces is None:
+            pieces, phases, stamp = read()
         if len(_shapes) > 16:
             _shapes.clear()
         shape = _shapes[stamp] = Shape(pieces)
@@ -264,6 +279,8 @@ def references(obj, settings):
         for ref in collection.objects:
             no_shadow(ref)
         return collection, phases, shape
+    if pieces is None:
+        pieces, phases, stamp = read()
     if collection is None:
         collection = bpy.data.collections.new(name)
     for child in list(collection.objects):
@@ -499,6 +516,9 @@ class Shape:
 
 
 _shapes = {}         # pieces' stamp -> Shape
+_stamps = {}         # map's name -> (when its pieces' settings were last read, their phases, their stamp)
+# How long a map's pieces' settings are taken as read (s): a change to them shows that much later at most
+STAMP_EVERY = 0.5
 
 
 def parts_material():
@@ -1865,6 +1885,7 @@ def forget(_dummy=None):
         background.forget("parts-exact:" + name)
     _maps.clear()
     _local.clear()
+    _stamps.clear()
     schedule.forget()
     sphere_exact.forget()
     import sys

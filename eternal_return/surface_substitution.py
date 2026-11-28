@@ -202,27 +202,34 @@ class Faces:
         faces.__dict__.update(data)
         return faces
 
-    def core(self, top=None):
+    def core(self, top=None, flat=True):
         """The core's handle on this surface (Rust: its chart, the rule, each face's frame), made once from these
         arrays and top's (the Topology these faces are of; without it, the handle if it's been made); None where the
-        core can't take it (a smooth chart, a core without it, a face without a frame)"""
+        core can't take it (a core without it, a face without a frame). A map whose chart isn't flat has a handle too,
+        for the calls that work no point of the surface out (its faces' sides, its corners and edges from places
+        given): asked for with flat False, else None."""
         found = self.__dict__.get("_core", False)
         if found is False and top is None:
             return None
         if found is False:
             found = None
             make = getattr(_native, "Surface", None)
-            if make is not None and top.chart_name == "bilinear" and len(self.q_ev_x) == len(top.corners):
+            if make is not None and len(self.q_ev_x) == len(top.corners):
                 row = lambda a: np.ascontiguousarray(a, dtype=np.float64)
-                flat = np.array([v for c in top.corners for v in c], dtype=np.int64)
-                clipped = (self.polygon, row(self.side_normals), row(self.side_lengths)) if self.clip else ()
+                loops = np.array([v for c in top.corners for v in c], dtype=np.int64)
+                more = dict(polygon=self.polygon, side_normals=row(self.side_normals),
+                            side_lengths=row(self.side_lengths)) if self.clip else {}
+                if top.chart_name != "bilinear":
+                    more["flat"] = False
                 try:
                     found = make(self.rule.name, row(top.positions), np.ascontiguousarray(top.sides, dtype=np.int64),
-                                 flat, row(self.ev_x), row(self.ev_y), row(self.sigma), row(self.sigma_hi), self.q_ev_x,
-                                 self.q_ev_y, *clipped)
+                                 loops, row(self.ev_x), row(self.ev_y), row(self.sigma), row(self.sigma_hi), self.q_ev_x,
+                                 self.q_ev_y, **more)
                 except (TypeError, ValueError):
                     found = None
             self._core = found
+        if found is not None and flat and not getattr(found, "flat", True):
+            return None
         return found
 
     def __init__(self, top, mesh, rule):
@@ -522,7 +529,7 @@ class Level:
         offsets = np.empty((len(fs), 4))
         grow = None
         new = [(f, self.roots[f][0]) for f in fs.tolist() if (f, self.roots[f][0]) not in kept]
-        core = self.core(faces, None, new, "level_side_offsets")
+        core = self.core(faces, None, new, "level_side_offsets", flat=False)
         if core is not None:
             # (Rust: deep down each face's is exact work in Q(sqrt 5))
             found = np.frombuffer(_native.level_side_offsets(core, self.d, new), dtype=np.float64).reshape(-1, 4)
@@ -557,16 +564,16 @@ class Level:
         fresh.source = (self, self.window)
         return fresh
 
-    def core(self, faces, top, roots, call):
+    def core(self, faces, top, roots, call, flat=True):
         """The core's handle on the surface (Faces.core()) if roots ((face, root tau) pairs, some) can go to its call:
-        whole-number roots, a surface and a call it has; else None"""
+        whole-number roots, a surface and a call it has (flat: one that works the surface's points out); else None"""
         if not roots or getattr(_native, call, None) is None:
             return None
         if not all(type(c) is int for _f, root in roots for c in root):
             return None
         # (a square or triangle map's faces, surface_cells.CellFaces, have no handle: the core has no rule of theirs)
         handle = getattr(faces, "core", None)
-        return None if handle is None else handle(top)
+        return None if handle is None else handle(top, flat)
 
     def core_roots(self):
         """The roots as the core's calls take them: (face, root tau, None or (x, y, z, u_r, v_r))"""
