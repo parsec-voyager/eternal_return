@@ -87,6 +87,21 @@ _threads = []
 # of the view drawn in time than two on an M1, and the flight's own frames over 33 ms went from 7 to 51 (three build
 # processes and Blender's main thread filled its four fast cores)
 WORKERS = 2
+# Beside them, worker threads (each with a build process of its own) that join in only while a map is behind: one
+# takes a job only when EXTRA_BACKLOG jobs worth EXTRA_WORTH or more are waiting (a job's worth is its priority's
+# negative: schedule.value(); a build that leaves nothing missing is worth far under 1, one that draws a missing level
+# some 2 to 100). With the level machinery in the core the workers' own Python is a small part of a build, and a
+# third build at once halves what a map that's behind is missing (a smooth Penrose map in a fast dive: 30% of the
+# view to 18%; its jobs waited a tenth of a second and up to two for a worker, some 70 at a time). But a third build
+# costs the tick whatever it builds (1.5 to 3 ms a frame with a third worker always on, twice the frames over 33 ms,
+# on maps with nothing missing too; taking only jobs worth EXTRA_WORTH spared none of it): only once that many wait
+# is it a third of that, and most of the gain. A fourth took the tick past a frame.
+EXTRA_WORKERS = 1
+EXTRA_WORTH = 1.0
+EXTRA_BACKLOG = 24
+# How often an extra worker with nothing to take looks again (s): a waiting job's priority changes without a word
+# (rate())
+EXTRA_LOOKS = 0.05
 # Python's switch interval once the workers run, seconds (above: at 1 ms the climb still fell to 17 frames a second, at
 # 0.2 to 23 at worst)
 SWITCH_INTERVAL = 0.0002
@@ -167,23 +182,28 @@ def give_way():
         _last_wait.at = time.perf_counter()
 
 
-def _take():
+def _take(extra=False):
     """The next job: the waiting one with the best priority (the earliest of those), waited for if there's none:
-    (number, key, its function and arguments)"""
+    (number, key, its function and arguments). An extra worker's: only of the jobs worth EXTRA_WORTH or more, and only
+    once EXTRA_BACKLOG of them wait."""
     with _ready:
         while True:
             waiting = [key for key in _work_of if key not in _running]
+            if extra:
+                waiting = [key for key in waiting if _pending[key][1] <= -EXTRA_WORTH]
+                if len(waiting) < EXTRA_BACKLOG:
+                    waiting = []
             if waiting:
                 break
-            _ready.wait()
+            _ready.wait(EXTRA_LOOKS if extra else None)
         key = min(waiting, key=lambda k: (_pending[k][1], _pending[k][0]))
         _running.add(key)
         return _pending[key][0], key, _work_of.pop(key)
 
 
-def _work():
+def _work(extra=False):
     while True:
-        number, key, (function, args) = _take()
+        number, key, (function, args) = _take(extra)
         # give way only before a job's work (giving way before each stale entry of the old line too, up
         # to GIVE_WAY_MOST each, kept both workers idle half a fast dive, the 3D frames' levels left unbuilt)
         give_way()
@@ -200,8 +220,9 @@ def _work():
                 del _pending[key]
                 _results[key] = result
             elif key in _work_of:
-                # Handed in again while this one ran (cancelled, then submitted): it can be taken now
-                _ready.notify()
+                # Handed in again while this one ran (cancelled, then submitted): it can be taken now (every waiting
+                # worker woken: an extra one that leaves it mustn't be the only one told)
+                _ready.notify_all()
 
 
 def submit(key, function, *args, priority=0, replace=False):
@@ -221,11 +242,12 @@ def submit(key, function, *args, priority=0, replace=False):
         _pending[key] = (_number, priority)
         _work_of[key] = (function, args)
         _results.pop(key, None)
-        _ready.notify()
-    if len(_threads) < WORKERS:
+        _ready.notify_all()
+    if len(_threads) < WORKERS + EXTRA_WORKERS:
         sys.setswitchinterval(SWITCH_INTERVAL)
-    while len(_threads) < WORKERS:
-        _threads.append(threading.Thread(target=_work, name=f"er-builds-{len(_threads)}", daemon=True))
+    while len(_threads) < WORKERS + EXTRA_WORKERS:
+        _threads.append(threading.Thread(target=_work, args=(len(_threads) >= WORKERS,),
+                                         name=f"er-builds-{len(_threads)}", daemon=True))
         _threads[-1].start()
     return True
 
