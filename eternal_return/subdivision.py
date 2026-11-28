@@ -101,6 +101,9 @@ MOST_HOPS = 8
 # piece's slope, from a piece 2^-3 of that one across, and at most 2^-8 of the face: a coarse level's corners' normals,
 # from pieces three levels down, were a degree off)
 CORNER_NORMAL = (3, 8)
+# A point of a triangle is on its long side when its offsets add up to the side's room to within this share of it
+# (_past())
+ON_LONG_SIDE = 1e-12
 # A normal asked nearer an extraordinary corner than this share of its face is taken this far from it (off_corners()):
 # at a corner of fewer faces than regular (or on a rim), where the derivatives go to 0 (the faces round one agree on
 # its normal to 0.3 degrees there, and nearer in the rounding shows: 0.4 degrees at 2^-20); at one of more, where they
@@ -2390,7 +2393,7 @@ class SubdivisionChart:
                 d = d - (np.array([over, 0.0]) if d[0] - lo_u > d[1] - lo_v else np.array([0.0, over]))
         return d
 
-    def _past(self, f, d, box, gu, gv, ju, jv):
+    def _past(self, f, d, box, gu, gv, ju, jv, slack=0.0):
         """Which sides offsets d (steps) is past, how far (units): {side: how far}. gu, gv: the step's derivatives of
         half the distance squared to the target (with a side's offsets, the target nearer across it if they point
         out), or None to judge by d alone; ju, jv: units a step"""
@@ -2414,7 +2417,10 @@ class SubdivisionChart:
             return {s: x for s, x in enumerate(values) if x > 0.0}
         if d[1] <= lo_v and gv > 0.0:
             past[0] = gv
-        if d[0] + d[1] >= hi_u and gu + gv < 0.0:
+        # (On the long side to within rounding: clipped onto it, d's two parts add up to its room or a last bit less,
+        # and whether a point sitting on it was seen to was that bit's to say)
+        # (slack: what d's own rounding is worth, where it comes of float parameters: steps)
+        if d[0] + d[1] >= hi_u - max(ON_LONG_SIDE * max(1.0, abs(hi_u)), slack) and gu + gv < 0.0:
             past[1] = -(gu + gv)
         if d[0] <= lo_u and gu > 0.0:
             past[2] = gu
@@ -2426,6 +2432,15 @@ class SubdivisionChart:
         the step a descent), then, if that's past the face's sides, the best point along the sides it's past. An
         irregular face: _nearest_irregular()."""
         r = np.asarray(r, dtype=float)
+        core = self.core()
+        if core is not None and getattr(core, "nearest", None) is not None:
+            # (Rust: the whole search, a regular face's or an irregular one's, shallow or deep; a point below was
+            # some 0.55 ms of Python here, five times a tick on a smooth Penrose map)
+            f, I, J, N = int(f), int(I), int(J), int(N)
+            found = self._core_ask(core, lambda: core.nearest(f, I, J, N, (float(r[0]), float(r[1]), float(r[2]))))
+            if found is not None:
+                d, free, order, place = found
+                return np.array(d), np.array(free), list(order), np.array(place)
         if not self.regular[f]:
             return self._nearest_irregular(f, I, J, N, r)
         E, c = self._steps_expansion(f, I, J, N, np.zeros(2))
@@ -2516,7 +2531,8 @@ class SubdivisionChart:
             E, c = self._steps_expansion(f, I, J, N, d)
             X = c + evaluate(E, d)
             gu, gv = float(evaluate(E, d, 1, 0) @ (X - r)), float(evaluate(E, d, 0, 1) @ (X - r))
-        past = self._past(f, d, box, gu, gv, None, None)
+        # (Shallow, d is the float parameters' difference in steps: good to the face's 2^-53, a few of them)
+        past = self._past(f, d, box, gu, gv, None, None, N * 2.0 ** -50 if N < (1 << 40) else 0.0)
         order = sorted(past, key=lambda s: -past[s])
         return d, free, order, X
 

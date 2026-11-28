@@ -24,7 +24,14 @@ where the Python can't answer (a point off the mesh's rim, a point by a border t
 mustn't either. And a lattice's steps from its points (_offsets(): the points a few steps of 2^-26 to 2^-300 of the
 face, or of 3^-20, from lattice points inside irregular faces, at their corners and beside them), which are floats
 again: within tolerance of the biggest of each call's. And tiles' steps (step(): a few offsets from points inside
-faces, by their corners and right at them, with steps of 2^-3 of a face down to 2^-60), the same way.
+faces, by their corners and right at them, with steps of 2^-3 of a face down to 2^-60), the same way. And the point
+of a face nearest a point (nearest(): targets a few steps of lattices 2^-5 to 2^-300 of the face from their points,
+over the face and off its sides): the same sides past, the offsets and the place within 1e-7 of a step (Newton's
+steps stop where they stop), or on a lattice floats still walk (under 2^40 cells) within a few of the steps' own
+rounding there, 2^-53 of the face: at 2^39 cells, a twentieth of a thousandth of a step. Right at a face's corner
+only on lattices of 2^20 cells and fewer: at an extraordinary vertex the surface's derivatives are 0 or unbounded,
+and deeper than floats hold them the sides a point there is past, and at 2^45 cells and more the expansion itself, are
+all rounding (neither has an answer worth the name).
 
 PASS or FAIL at the end, and how long each took.
 """
@@ -249,15 +256,37 @@ def exactly(own, cored, subdivision, native, rng):
         questions.append((f"step(30 tiles, small 2^{int(np.log2(small))})",
                           lambda chart, f=f, ur=ur, vr=vr, du=du, dv=dv, small=small: chart.step(f, ur, vr, du, dv, small),
                           max(TOLERANCE, 64.0 * NOISE / small)))
+    # The nearest point of a face: targets near lattice points inside faces, at their corners and off their sides
+    for f in sorted({int(g) for g in rng.permutation(len(own.sides))[:6]}):
+        triangle = own.sides[f] == 3
+        for N in (1 << 5, 1 << 20, 1 << 39, 1 << 45, 1 << 300) + (() if own.border else (3 ** 30,)):
+            for I, J in ((N // 3, N // 5), (N // 2, 0), (1, N // 4), (N - 1 if not triangle else N // 2, N // 2 - 1)) + (
+                    ((0, 0),) if N <= 1 << 20 else ()):
+                def question(chart, f=f, I=I, J=J, N=N, g=rng.uniform(-2.5, 2.5, 2), lift=rng.uniform(-0.5, 0.5, 3)):
+                    # (a target a few steps along the face from the point, lifted off it: from the chart's own steps)
+                    a, b, _w = chart.frame(f, I, J, N)
+                    r = g[0] * np.asarray(a) + g[1] * np.asarray(b) + lift * (np.linalg.norm(a) + np.linalg.norm(b))
+                    d, free, order, X = chart.nearest(f, I, J, N, r)
+                    return tuple(order), np.concatenate([d, free, X])
+                questions.append((f"nearest({f}, {I if I < 1 << 60 else '...'}, {J if J < 1 << 60 else '...'}, N of {N.bit_length()} bits)", question,
+                                  max(1e-7, 8.0 * 2.0 ** -53 * N if N < 1 << 40 else 0.0), "steps"))
     for name, question, *allowed in questions:
         a, took_a = ask(own, False, question)
         b, took_b = ask(cored, True, question)
         seconds[0] += took_a
         seconds[1] += took_b
         asked += 1
-        if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
+        sides_same = True
+        if isinstance(a, tuple) and isinstance(b, tuple) and len(a) == 2 and isinstance(a[1], np.ndarray):
+            # (nearest(): the sides past, and the numbers)
+            sides_same, a, b = a[0] == b[0], a[1], b[1]
+        if not sides_same:
+            same = False
+        elif isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
             within = allowed[0] if allowed else TOLERANCE
-            same = a.shape == b.shape and bool(np.all(np.abs(a - b) <= within * max(float(np.abs(a).max()), 1e-300)))
+            # (of the biggest of the call's; a nearest point's numbers are steps and steps' worth: of 1 at least)
+            size = max(float(np.abs(a).max()), 1.0 if len(allowed) > 1 else 1e-300)
+            same = a.shape == b.shape and bool(np.all(np.abs(a - b) <= within * size))
         else:
             same = type(a) is type(b) and a == b
         if not same:
