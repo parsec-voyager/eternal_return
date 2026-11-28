@@ -15,7 +15,17 @@ and a derivative multiplies that by its piece's size's inverse, once for each or
 corner is as small as the point is near it (down to 2^-40 of the face), and by a border as small as the depth asked
 makes it. So a value passes within tolerance (1e-9) of its size, or within NOISE (2e-15) of the mesh's size times
 that inverse to the derivative's order: points to 14 digits everywhere, derivatives to what floats hold of them
-there. PASS or FAIL at the end, and how long each took.
+there.
+
+Then exactly: the same faces' points at fractions (halves, quarters, ... down to 2^-300 of a face from its corners,
+and where the chart has no borders, thirds and sevenths), right at corners, past sides, and at points of Q(sqrt 5)
+(a Penrose map's), by _exact_point() and point_q5(): the core's fractions must be the Python's, to the last digit, and
+where the Python can't answer (a point off the mesh's rim, a point by a border that no split reaches) the core
+mustn't either. And a lattice's steps from its points (_offsets(): the points a few steps of 2^-26 to 2^-300 of the
+face, or of 3^-20, from lattice points inside irregular faces, at their corners and beside them), which are floats
+again: within tolerance of the biggest of each call's.
+
+PASS or FAIL at the end, and how long each took.
 """
 
 import importlib
@@ -25,6 +35,7 @@ import pickle
 import sys
 import time
 import types
+from fractions import Fraction
 
 import numpy as np
 
@@ -152,6 +163,87 @@ def points_of(chart, rng):
     return out
 
 
+def exact_points(chart, rng):
+    """Faces and exact (u, v) to ask a chart for: (f, u, v) with u, v Fractions"""
+    F = len(chart.sides)
+    faces = rng.permutation(F)[:min(F, 8)].tolist()
+    out = []
+    for f in faces:
+        triangle = chart.sides[f] == 3
+        corners = chart.schemes[f].corners
+        mu, mv = (Fraction(1, 3), Fraction(1, 3)) if triangle else (Fraction(1, 2), Fraction(1, 2))
+        # Inside, at halves and quarters and finer; and at thirds and sevenths where every point has an answer
+        for den in (2, 4, 8, 64, 1 << 20) + (() if chart.border else (3, 7, 3 ** 5)):
+            a, b = int(rng.integers(0, den + 1)), int(rng.integers(0, den + 1))
+            if triangle and a + b > den:
+                a, b = den - a, den - b
+            out.append((f, Fraction(a, den), Fraction(b, den)))
+        # Right at the corners, and nearer and nearer them
+        for cu, cv in corners:
+            out.append((f, Fraction(cu), Fraction(cv)))
+            for k in (3, 11, 40, 300):
+                out.append((f, cu + (mu - cu) / 2 ** k, cv + (mv - cv) / 2 ** k))
+        # Past the sides
+        out.append((f, Fraction(-1, 8), Fraction(3, 8)))
+        out.append((f, Fraction(5, 8), Fraction(5, 8) if triangle else Fraction(9, 8)))
+    return out
+
+
+def exactly(own, cored, subdivision, native, rng):
+    """The exact questions, the Python's answers against the core's: (how many asked, how many differ, a few lines
+    about those, the seconds each took)"""
+    def ask(chart, core_on, question):
+        subdivision._native = native if core_on else None
+        start = time.perf_counter()
+        try:
+            found = question(chart)
+        except subdivision.ExtraordinaryError:
+            found = "no answer"
+        return found, time.perf_counter() - start
+    asked, differ, lines, seconds = 0, 0, [], [0.0, 0.0]
+    questions = []
+    for f, u, v in exact_points(own, rng):
+        questions.append((f"_exact_point({f}, {u}, {v})", lambda chart, f=f, u=u, v=v: chart._exact_point(f, u, v)))
+        # (a + b sqrt 5 of the same point's neighborhood: b a small fraction, the point still on or just off the face)
+        q = lambda x, b: (x - b * Fraction(2), b * Fraction(8, 9))
+        if not own.border:
+            questions.append((f"point_q5({f}, {u} ~, {v} ~)",
+                              lambda chart, f=f, u=u, v=v: chart.point_q5(f, q(u, Fraction(1, 64)), q(v, Fraction(-1, 128)))))
+        questions.append((f"point_q5({f}, {u}, {v})", lambda chart, f=f, u=u, v=v: chart.point_q5(f, u, v)))
+    # A lattice's steps: from points of irregular faces, a few steps round each
+    for f in [f for f in sorted({f for f, _u, _v in exact_points(own, np.random.default_rng(7))}) if not own.regular[f]][:5]:
+        triangle = own.sides[f] == 3
+        for M in (1 << 26, 1 << 40, 1 << 300) + (() if own.border else (3 ** 20,)):
+            spots = [(M // 3, M // 5), (M // 2, M // 2 - 1 if triangle else M // 2), (M // 7, M // 64)]
+            spots += [(0, 0), (M, 0), (0, M), (1, 0), (5, 2), (M - 3, 1), (2, M - 7)]
+            for I, J in spots:
+                gi, gj = rng.uniform(-3.0, 3.0, 9), rng.uniform(-3.0, 3.0, 9)
+                gi[:3], gj[:3] = (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)
+                # (the points kept on the face: a step past its rim has no answer either way, and a corner's steps go in)
+                gi, gj = np.clip(gi, -I, M - I), np.clip(gj, -J, M - J - (I if triangle else 0))
+                if triangle:
+                    over = np.maximum(I + gi + J + gj - M, 0.0)
+                    gi, gj = gi - over / 2.0, gj - over / 2.0
+                questions.append((f"_offsets({f}, {I}/{M if M < 1 << 60 else '2^' + str(M.bit_length() - 1)}, {J}/...)",
+                                  lambda chart, f=f, I=I, J=J, M=M, gi=gi, gj=gj: chart._offsets(f, Fraction(I, M), Fraction(J, M), Fraction(1, M), gi, gj)))
+    for name, question in questions:
+        a, took_a = ask(own, False, question)
+        b, took_b = ask(cored, True, question)
+        seconds[0] += took_a
+        seconds[1] += took_b
+        asked += 1
+        if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
+            same = a.shape == b.shape and bool(np.all(np.abs(a - b) <= TOLERANCE * max(float(np.abs(a).max()), 1e-300)))
+        else:
+            same = type(a) is type(b) and a == b
+        if not same:
+            differ += 1
+            if len(lines) < 4:
+                lines.append(f"    {name}: {str(b)[:110]} for {str(a)[:110]}")
+    subdivision._native = native
+    return asked, differ, lines, seconds
+
+
 def main():
     global TOLERANCE
     arguments = sys.argv[1:]
@@ -226,12 +318,15 @@ def main():
                             row = int(np.argmax(off.max(axis=-1)))
                             lines.append(f"    {kind}, d{order}, depth {depth}: face {int(f[row])} at ({u[row]!r}, {v[row]!r}): "
                                          f"{b[row].tolist()} for {a[row].tolist()}")
-        ok = worst <= TOLERANCE
+        exact_asked, exact_differ, exact_lines, exact_seconds = exactly(own, cored, subdivision, native, rng)
+        lines += exact_lines
+        ok = worst <= TOLERANCE and not exact_differ
         failed += not ok
         shapes = len(cored._core_shapes)
         print(f"{'same' if ok else 'DIFFERENT'} {name} ({data[2]}, {len(own.sides)} faces, {int((~own.regular).sum())} irregular"
               f"{', borders' if own.border else ''}): {asked} values, the furthest apart {worst / TOLERANCE:.2g} of what's allowed | Python {seconds[0]:.2f} s, "
-              f"core {seconds[1]:.2f} s ({shapes} shapes) | charts made in {made_own:.2f} and {made_cored:.2f} s")
+              f"core {seconds[1]:.2f} s ({shapes} shapes) | charts made in {made_own:.2f} and {made_cored:.2f} s | exactly: "
+              f"{exact_asked - exact_differ} of {exact_asked} the same, Python {exact_seconds[0]:.2f} s, core {exact_seconds[1]:.2f} s")
         for line in lines:
             print(line)
     print("FAIL" if failed else "PASS", f"({len(meshes)} meshes; floats within {TOLERANCE:g})")

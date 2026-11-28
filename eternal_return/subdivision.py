@@ -1040,8 +1040,12 @@ class Leaf:
             T = shifted(self.Ql, float(s), float(t))
             n = len(T)
             step = self.sign / self.fsize
-            k = np.array([[float(h) ** (a + b - 1) * step ** (a + b) if a + b else 0.0 for b in range(n)]
-                          for a in range(n)])
+            # h^(a + b - 1) step^(a + b), as step times (h step)^(a + b - 1): h step, the lattice's step in the piece's
+            # own parameters, is a number of ordinary size, where step's powers alone overflowed (a piece 2^-130 of
+            # its face across, a quartic's eighth power: every deep lattice by a border, whose pieces are its steps'
+            # size, raised OverflowError)
+            ratio = float(h * self.sign / self.size)
+            k = np.array([[step * ratio ** (a + b - 1) if a + b else 0.0 for b in range(n)] for a in range(n)])
             E = np.array(T) * k[:, :, None]
             value = self.value(s, t)
             c = np.array([float((value[i] - S0[i]) / h) for i in range(3)])
@@ -1594,6 +1598,11 @@ class SubdivisionChart:
     def _exact_point(self, f, u, v):
         """Face f's point at exact (u, v) (Fractions): three Fractions (past its sides, the surface's there:
         relocated_exactly())"""
+        core = self.core()
+        if core is not None and getattr(core, "exact_point", None) is not None:
+            # (Rust: the same walk and the same whole numbers, without the lock)
+            u, v = Fraction(u), Fraction(v)
+            return tuple(Fraction(a, b) for a, b in self._core_ask(core, lambda: core.exact_point(int(f), u, v)))
         f, u, v = self.relocated_exactly(f, u, v)
         if self.regular[f]:
             C = self.exact_of(f)
@@ -1843,6 +1852,13 @@ class SubdivisionChart:
             points = self._evaluate(np.full(len(gi), f), u + step * gi, v + step * gj, depth=depth)
             base = self._evaluate(np.array([f]), np.array([u]), np.array([v]), depth=depth)[0]
             return ((points - base) / step).reshape(shape + (3,))
+        core = self.core()
+        if core is not None and getattr(core, "offsets", None) is not None and len(gi):
+            # (Rust: the walk down the exact tree, each leaf's expansion and the exact differences, without the lock
+            # or Python's Fractions: a seventh of a smooth Penrose map's tick, and a tenth of its worker threads' work)
+            U, V, h = Fraction(U), Fraction(V), Fraction(h)
+            found = self._core_ask(core, lambda: core.offsets(int(f), U, V, h, _floats(gi), _floats(gj)))
+            return np.frombuffer(found, dtype=np.float64).reshape(shape + (3,))
         S0 = self._exact_point(f, U, V)
         for leaf, rows in self._step_leaves(f, U, V, h, gi, gj):
             if leaf is None:
@@ -1913,7 +1929,7 @@ class SubdivisionChart:
                 try:
                     found = make(self.order, bool(self.border), whole(self.sides), np.ascontiguousarray(self.regular, dtype=bool).view(np.uint8),
                                  _floats(self.C), _floats(self._side_normal), _floats(self._side_point), whole(self._beyond),
-                                 _floats(self._beyond_map), patch_of(4), patch_of(3))
+                                 _floats(self._beyond_map), whole(self._beyond_side), patch_of(4), patch_of(3))
                 except (TypeError, ValueError):
                     found = None
             # The trees' shapes as the core numbers them (kept here, so they stay), and one giver at a time
@@ -1965,8 +1981,51 @@ class SubdivisionChart:
                     core.set_child(need[1], need[2])
                 else:
                     core.set_child(need[1], need[2], self._core_shape(core, child), _floats(W))
-            else:
+            elif need[0] == "limits":
                 core.set_limits(need[1], _floats(self._core_shapes[need[1]].limits()))
+            elif need[0] == "patch":
+                # A regular face's patch exactly: whole numbers over D 2^E
+                f = need[1]
+                core.set_patch(f, self._denominator(f), [c for row in self.exact_of(f) for cell in row for c in cell])
+            elif need[0] == "node":
+                # What's at a node of a face's exact tree: a regular piece's patch (whole numbers over one), or a split
+                # (and without borders, its corner that's an extraordinary vertex, with the vertex's limit point)
+                f, path = need[1], tuple(need[2])
+                leaf = self._leaf(f, path)
+                if leaf is not None:
+                    D, C = leaf._ints
+                    core.set_node(f, need[2], D, [c for row in C for cell in row for c in cell])
+                else:
+                    corner, point = (None, None) if self.border else self._extraordinary_corner(f, path)
+                    if corner is None:
+                        core.set_node(f, need[2])
+                    else:
+                        core.set_node(f, need[2], corner=corner, point=point)
+            else:
+                f, path, k = need[1], tuple(need[2]), need[3]
+                core.set_corner(f, need[2], k, self._corner_point(f, path, k))
+
+    def _core_ask(self, core, ask):
+        """An exact question of the core's chart (ask()), what its trees lack given as it's named and the question
+        asked again; its answer"""
+        try:
+            while True:
+                found = ask()
+                if not (type(found) is tuple and found and type(found[0]) is str):
+                    return found
+                self._core_give(core, found)
+        except ValueError as error:
+            raise ExtraordinaryError(str(error)) from None
+
+    def exact_offset(self, f, u, v, anchor, n, rho):
+        """Face f's point at exact (u, v) (Q(sqrt 5) pairs) from the anchor's (surface.World.anchor_point(): (whole
+        numbers, their denominator)), times rho 2^n, as three floats, by the core (Rust: the walk down the face's
+        tree, the patch's polynomial in Q(sqrt 5) and each difference rounded once, without Python's lock or its
+        Fractions: placing its faces' roots was 85% of a smooth Penrose map's giant frames); None without it"""
+        core = self.core()
+        if core is None or getattr(core, "exact_offset", None) is None:
+            return None
+        return np.array(self._core_ask(core, lambda: core.exact_offset(int(f), as_q(u), as_q(v), anchor, int(n), float(rho))))
 
     def _evaluate_at(self, f, u, v, wanted, depth):
         """_evaluate() of points in their faces (1-D arrays): a list, one for each (du, dv) in wanted"""
@@ -2640,6 +2699,10 @@ class SubdivisionChart:
     def point_q5(self, f, u, v):
         """Face f's point at (u, v), Q(sqrt 5) pairs, exactly: three such pairs, the mesh's units (past its sides, the
         surface's there: relocated_exactly())"""
+        core = self.core()
+        if core is not None and getattr(core, "point_q5", None) is not None:
+            u, v = as_q(u), as_q(v)
+            return [(Fraction(*a), Fraction(*b)) for a, b in self._core_ask(core, lambda: core.point_q5(int(f), u, v))]
         f, u, v = self.relocated_exactly(f, u, v, Q5)
         one = (Fraction(1), Fraction(0))
         if self.regular[f]:

@@ -375,6 +375,11 @@ def faces_of(obj, top):
 def exact_offset(world, f, u, v):
     """The face's point at exact (u, v) (Q(sqrt 5) pairs) from the anchor's, in map units, as floats"""
     ax, ad = world.anchor_point()
+    # (a smooth chart's by the core, where it has it)
+    fast = getattr(world.topology.chart, "exact_offset", None)
+    found = None if fast is None else fast(f, u, v, (ax, ad), world.n, world.rho)
+    if found is not None:
+        return found
     out = []
     for k, coordinate in enumerate(world.topology.chart.point_q5(f, u, v)):
         coordinate = q_sub(coordinate, (Fraction(ax[k], ad), Fraction(0)))
