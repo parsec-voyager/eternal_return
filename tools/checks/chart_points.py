@@ -23,7 +23,8 @@ and where the chart has no borders, thirds and sevenths), right at corners, past
 where the Python can't answer (a point off the mesh's rim, a point by a border that no split reaches) the core
 mustn't either. And a lattice's steps from its points (_offsets(): the points a few steps of 2^-26 to 2^-300 of the
 face, or of 3^-20, from lattice points inside irregular faces, at their corners and beside them), which are floats
-again: within tolerance of the biggest of each call's.
+again: within tolerance of the biggest of each call's. And tiles' steps (step(): a few offsets from points inside
+faces, by their corners and right at them, with steps of 2^-3 of a face down to 2^-60), the same way.
 
 PASS or FAIL at the end, and how long each took.
 """
@@ -226,14 +227,37 @@ def exactly(own, cored, subdivision, native, rng):
                     gi, gj = gi - over / 2.0, gj - over / 2.0
                 questions.append((f"_offsets({f}, {I}/{M if M < 1 << 60 else '2^' + str(M.bit_length() - 1)}, {J}/...)",
                                   lambda chart, f=f, I=I, J=J, M=M, gi=gi, gj=gj: chart._offsets(f, Fraction(I, M), Fraction(J, M), Fraction(1, M), gi, gj)))
-    for name, question in questions:
+    # Tiles' steps: from points inside faces, by their corners and right at them, coarse and deep
+    for small in (2.0 ** -3, 2.0 ** -10, 2.0 ** -24, 2.0 ** -30, 2.0 ** -60):
+        faces = rng.permutation(len(own.sides))[:min(len(own.sides), 10)]
+        f = np.repeat(faces, 3)
+        triangle = own.sides[f] == 3
+        ur, vr = rng.uniform(0.05, 0.45, len(f)), rng.uniform(0.05, 0.45, len(f))
+        # (every third tile by a corner of its face, every ninth right at it)
+        corner = np.array([own.schemes[g].corners[k % own.sides[g]] for k, g in enumerate(f.tolist())], dtype=float)
+        middle = np.array([own.schemes[g].middle for g in f.tolist()])
+        by = np.arange(len(f)) % 3 == 1
+        at = np.arange(len(f)) % 9 == 2
+        ur = np.where(by, corner[:, 0] + (middle[:, 0] - corner[:, 0]) * 2.0 ** -9, np.where(at, corner[:, 0], ur))
+        vr = np.where(by, corner[:, 1] + (middle[:, 1] - corner[:, 1]) * 2.0 ** -9, np.where(at, corner[:, 1], vr))
+        du, dv = rng.uniform(-2.0, 2.0, (len(f), 5)), rng.uniform(-2.0, 2.0, (len(f), 5))
+        # (a tile right at a corner steps into its face: out of it there may be no mesh)
+        inward = np.sign(middle - corner)
+        du = np.where(at[:, None], np.abs(du) * inward[:, :1] * 0.25, du)
+        dv = np.where(at[:, None], np.abs(dv) * inward[:, 1:] * 0.25, dv)
+        # (a coarse step is two float points' difference over it: their last bits, that much bigger)
+        questions.append((f"step(30 tiles, small 2^{int(np.log2(small))})",
+                          lambda chart, f=f, ur=ur, vr=vr, du=du, dv=dv, small=small: chart.step(f, ur, vr, du, dv, small),
+                          max(TOLERANCE, 64.0 * NOISE / small)))
+    for name, question, *allowed in questions:
         a, took_a = ask(own, False, question)
         b, took_b = ask(cored, True, question)
         seconds[0] += took_a
         seconds[1] += took_b
         asked += 1
         if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
-            same = a.shape == b.shape and bool(np.all(np.abs(a - b) <= TOLERANCE * max(float(np.abs(a).max()), 1e-300)))
+            within = allowed[0] if allowed else TOLERANCE
+            same = a.shape == b.shape and bool(np.all(np.abs(a - b) <= within * max(float(np.abs(a).max()), 1e-300)))
         else:
             same = type(a) is type(b) and a == b
         if not same:

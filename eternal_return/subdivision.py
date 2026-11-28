@@ -2533,6 +2533,15 @@ class SubdivisionChart:
         out = np.zeros(du.shape + (3,))
         if not len(f):
             return out
+        core = self.core()
+        if core is not None and getattr(core, "step", None) is not None and du.size:
+            # (Rust: every tile's steps, whatever its face's kind, and what's left for the exact way too, without the
+            # lock: the float leaves' walks and the tiles by odd corners were a fifth of a smooth Penrose map's worker
+            # threads' Python)
+            per = du.size // len(f)
+            found = self._core_ask(core, lambda: core.step(np.ascontiguousarray(f, dtype=np.int64), _floats(ur), _floats(vr),
+                                                           _floats(du).reshape(-1), _floats(dv).reshape(-1), per, float(small)))
+            return np.frombuffer(found, dtype=np.float64).reshape(du.shape + (3,))
         extra = (1,) * (du.ndim - 1)
         regular = self.regular[f]
         rows = np.flatnonzero(regular)
